@@ -86,20 +86,20 @@ ssl._create_default_https_context = ssl._create_unverified_context
 
 
 data_dir = './data'  # Where should the cifar10 data be downloaded?
-m = 4  # The number of models
+m = 10  # The number of models
 examples_per_class = 20  # The number of examples per class in the training set, and also the validation set
-batch_size = 25  # The batch size when training or evaluating the network
+batch_size = 50  # The batch size when training or evaluating the network
 num_classes = 10  # The number of classes in cifar10
 num_epochs = 100
 learning_rate = 0.01
 n = examples_per_class * num_classes
 num_batches = math.ceil(n / batch_size)
-reg = 0.001
-reg_power = 0.3
+reg = 0.02
+reg_power = 0.15
 epsilon = 0.00000001
 
 # Data loader for train and validation
-train_loaders, valid_loader = cifar10(data_dir, examples_per_class, batch_size, 2)
+train_loaders, valid_loader = cifar10(data_dir, examples_per_class, batch_size, m)
 
 
 class ResidualBlock(nn.Module):
@@ -172,12 +172,12 @@ class ResNet(nn.Module):
         return x
 
 
-base_model = ResNet(ResidualBlock, [3, 4, 6, 3])  # .to(device)
-models = [base_model]
-for j in range(m-1):
-    models.append(copy.deepcopy(base_model))
-models = [model.to(device) for model in models]
-# models = [ResNet(ResidualBlock, [3, 4, 6, 3]).to(device) for j in range(m)]
+# base_model = ResNet(ResidualBlock, [3, 4, 6, 3])  # .to(device)
+# models = [base_model]
+# for j in range(m-1):
+#     models.append(copy.deepcopy(base_model))
+# models = [model.to(device) for model in models]
+models = [ResNet(ResidualBlock, [2, 2, 2, 2]).to(device) for j in range(m)]
 
 all_params = []  # The params from all the models in a single list, passed to the optimizer
 params_lists = []  # The params from each model in their own list, used for variance minimization
@@ -202,13 +202,14 @@ def evaluate_accuracy(data_loader, models, name):
             logit_sum = 0.0
             for model in models:
                 outputs = model(images)
-                logit_sum += outputs.data
+                logits = outputs.data
+                logit_sum += logits
             _, predicted = torch.max(logit_sum, 1)
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
             del images, labels, outputs
 
-        print('Accuracy of the network on the {} images: {} %'.format(name, 100 * correct / total))
+        print('Accuracy of the network on the {} images (average): {} %'.format(name, 100 * correct / total))
 
 
 mean = torch.tensor([0.0], device=device) # mean of the distribution
@@ -240,10 +241,10 @@ for epoch in range(num_epochs):
             for i, param in enumerate(params):
                 total_squared_error[i] += (param.detach() - mean_params[i]) ** 2
 
-        # d_regs = [1.0 - normal.cdf(reg_power * torch.abs(mean_param) / (mse ** 0.5 / m + epsilon))
-        #                 for mean_param, mse in zip(mean_params, total_squared_error)]
-        d_regs = [torch.abs(mean_param) / (mse ** 0.5 / m + epsilon)
+        d_regs = [1.0 - normal.cdf(reg_power * torch.abs(mean_param) / (mse ** 0.5 / m + epsilon))
                         for mean_param, mse in zip(mean_params, total_squared_error)]
+        # d_regs = [torch.abs(mean_param) / (mse ** 0.5 / m + epsilon)
+        #                 for mean_param, mse in zip(mean_params, total_squared_error)]
 
         reg_loss = 0
         for params in params_lists:
