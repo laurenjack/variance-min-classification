@@ -107,11 +107,11 @@ class ResidualBlock(nn.Module):
         super(ResidualBlock, self).__init__()
         self.conv1 = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1),
-            nn.BatchNorm2d(out_channels),
+            nn.LayerNorm(out_channels),
             nn.ReLU())
         self.conv2 = nn.Sequential(
             nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(out_channels))
+            nn.LayerNorm(out_channels))
         self.downsample = downsample
         self.relu = nn.ReLU()
         self.out_channels = out_channels
@@ -128,12 +128,12 @@ class ResidualBlock(nn.Module):
 
 
 class ResNet(nn.Module):
-    def __init__(self, block, layers, num_classes=10):
+    def __init__(self, block, layers, num_classes=10, base_model=None):
         super(ResNet, self).__init__()
         self.inplanes = 64
         self.conv1 = nn.Sequential(
             nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3),
-            nn.BatchNorm2d(64),
+            nn.LayerNorm(64),
             nn.ReLU())
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer0 = self._make_layer(block, 64, layers[0], stride=1)
@@ -148,7 +148,7 @@ class ResNet(nn.Module):
         if stride != 1 or self.inplanes != planes:
             downsample = nn.Sequential(
                 nn.Conv2d(self.inplanes, planes, kernel_size=1, stride=stride),
-                nn.BatchNorm2d(planes),
+                nn.LayerNorm(planes),
             )
         layers = [block(self.inplanes, planes, stride, downsample)]
         self.inplanes = planes
@@ -189,7 +189,7 @@ for model in models:
 
 # Loss and optimizer
 criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.SGD(all_params, lr=learning_rate, momentum = 0.9) # weight_decay = 0.001,
+optimizer = torch.optim.SGD(all_params, lr=learning_rate, weight_decay = 0.001, momentum = 0.9) # ,
 
 
 def evaluate_accuracy(data_loader, models, name):
@@ -216,14 +216,19 @@ mean = torch.tensor([0.0], device=device) # mean of the distribution
 std = torch.tensor([1.0], device=device) # standard deviation of the distribution
 normal = torch.distributions.Normal(mean, std)
 
+def make_positive(module, grad_input, grad_output):
+    return [torch.abs(grad) for grad in grad_input]
+
+
 t = 0
 for epoch in range(num_epochs):
     print('Epoch {}'.format(epoch))
     train_iterators = [iter(train_loader) for train_loader in train_loaders]
+    validation_iterator = iter(valid_loader)
     for b in range(num_batches):
         classification_loss = 0.0
-        mean_params = [0.0] * len(params_lists[0])
-        for train_iterator, model, params in zip(train_iterators, models, params_lists):
+        # Update based on the classification error
+        for train_iterator, model in zip(train_iterators, models):
             images, labels = next(train_iterator)
             # Move tensors to the configured device
             images = images.to(device)
@@ -232,31 +237,31 @@ for epoch in range(num_epochs):
             outputs = model(images)
             loss = criterion(outputs, labels)
             classification_loss += loss
-            # Increment the mean of each param
-            for i, param in enumerate(params):
-                mean_params[i] += param.detach() / m
-        # increment the standard deviation of each param
-        total_squared_error = [0.0] * len(params_lists[0])
-        for params in params_lists:
-            for i, param in enumerate(params):
-                total_squared_error[i] += (param.detach() - mean_params[i]) ** 2
-
-        d_regs = [1.0 - normal.cdf(reg_power * torch.abs(mean_param) / (mse ** 0.5 / m + epsilon))
-                        for mean_param, mse in zip(mean_params, total_squared_error)]
-        # d_regs = [torch.abs(mean_param) / (mse ** 0.5 / m + epsilon)
-        #                 for mean_param, mse in zip(mean_params, total_squared_error)]
-
-        reg_loss = 0
-        for params in params_lists:
-            for param, d_reg in zip(params, d_regs):
-                reg_loss += torch.sum(reg * d_reg * torch.abs(param))
-        classification_loss /= m
-        reg_loss /= m
-        total_loss = classification_loss + reg_loss
         # Backward and optimize
         optimizer.zero_grad()
-        total_loss.backward()
+        classification_loss.backward()
         optimizer.step()
+
+        # # Calculate the regularization error
+        # val_images, val_labels = next(validation_iterator)
+        # val_images = val_images.to(device)
+        # val_labels = val_labels.to(device)
+        # outputs_per_model = []
+        # mean_output = 0
+        # for model in models:
+        #     outputs = model(val_images)
+        #     outputs_per_model.append(outputs)
+        #     mean_output += outputs / m
+        # regularization_loss = 0.0
+        # for outputs in outputs_per_model:
+        #     delta = outputs - mean_output
+        #     delta.register_hook(make_positive)
+        #     regularization_loss += delta ** 2
+        # # Backward and optimize
+        # optimizer.zero_grad()
+        # regularization_loss.backward()
+        # optimizer.step()
+
         # del images, labels, outputs
         # torch.cuda.empty_cache()
         # gc.collect()
@@ -264,8 +269,8 @@ for epoch in range(num_epochs):
         t += 1
         print('    Iteration {}, Classification Loss: {:.4f}'
               .format(t, classification_loss.item()))
-        print('    Iteration {}, Reg Loss: {:.4f}'
-              .format(t, reg_loss.item()))
+        # print('    Iteration {}, Reg Loss: {:.4f}'
+        #       .format(t, regularization_loss.item()))
 
     # for train_loader, model in zip(train_loaders, models):
     evaluate_accuracy(train_loaders[0], [models[0]], 'train')
