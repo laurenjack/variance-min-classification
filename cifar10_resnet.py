@@ -102,19 +102,33 @@ epsilon = 0.00000001
 # Data loader for train and validation
 train_loaders, valid_loader = cifar10(data_dir, examples_per_class, batch_size, m)
 
+def norm2(tensor):
+    return torch.sum(tensor ** 2, axis=0) ** 0.5
+
+def create_normed_params(weight, bias):
+    weight_mag = norm2(weight)
+    bias_mag = norm2(bias)
+    return nn.Parameter(weight), nn.Parameter(bias), nn.Parameter(weight_mag), nn.Parameter(bias_mag)
+
 def create_conv_params(c_in, out, k):
     scaler = 1 / (c_in * k ** 2) ** 0.5
     weight = 2 * (torch.rand(m, out, c_in, k, k, requires_grad=True) - 0.5) * scaler
     bias = 2 * (torch.rand(m, out, requires_grad=True) - 0.5) * scaler
-    return weight, bias
-
+    return create_normed_params(weight, bias)
 
 
 def create_linear_params(in_dim, out):
     scaler = 1 / in_dim ** 0.5
     weight = 2 * (torch.rand(m, out, in_dim, requires_grad=True) - 0.5)  * scaler
     bias = 2 * (torch.rand(m, out, requires_grad=True) - 0.5) * scaler
-    return weight, bias
+    return create_normed_params(weight, bias)
+
+def get_applied(param, param_magnitude, j):
+    param_j = param[j]
+    norm = norm2(param)
+    normed_param = param_j / norm
+    return normed_param * param_magnitude
+
 
 class LayerNorm(nn.Module):
 
@@ -159,21 +173,18 @@ class BatchNorm2d(nn.Module):
 
 
 class ConvBlock(nn.Module):
-    def __init__(self,  c_in, out, k, image_width, stride, padding=0, with_relu=False):
+    def __init__(self, c_in, out, k, image_width, stride, padding=0, with_relu=False):
         super().__init__()
         self.stride = stride
         self.padding = padding
-        weight, bias = create_conv_params(c_in, out, k)
-        self.weight = nn.Parameter(weight)
-        self.bias = nn.Parameter(bias)
-        # self.layer_norm = nn.BatchNorm2d(out)
-        # self.layer_norm = nn.LayerNorm([out, image_width, image_width])
-        #self.layer_norm = LayerNorm(out, image_width)
+        self.weight, self.bias, self.weight_mag, self.bias_mag = create_conv_params(c_in, out, k)
         self.layer_norm = BatchNorm2d(out)
         self.with_relu = with_relu
 
     def forward(self, x, j):
-        a = F.conv2d(x, weight=self.weight[j], bias=self.bias[j], stride=self.stride, padding=self.padding)
+        w = get_applied(self.weight, self.weight_mag, j)
+        b = get_applied(self.bias, self.bias_mag, j)
+        a = F.conv2d(x, weight=w, bias=b, stride=self.stride, padding=self.padding)
         a = self.layer_norm(a, j)
         if self.with_relu:
             a = F.relu(a)
@@ -184,12 +195,12 @@ class Linear(nn.Module):
 
     def __init__(self, c_in, out):
         super().__init__()
-        weight, bias = create_linear_params(out, c_in)
-        self.weight = nn.Parameter(weight)
-        self.bias = nn.Parameter(bias)
+        self.weight, self.bias, self.weight_mag, self.bias_mag = create_linear_params(out, c_in)
 
     def forward(self, x, j):
-        return F.linear(x, weight=self.weight[j], bias=self.bias[j])
+        w = get_applied(self.weight, self.weight_mag, j)
+        b = get_applied(self.bias, self.bias_mag, j)
+        return F.linear(x, weight=w, bias=b)
 
 class Sequential(nn.Sequential):
 
