@@ -98,6 +98,7 @@ num_batches = math.ceil(n / batch_size)
 reg = 0.02
 reg_power = 0.15
 epsilon = 0.00000001
+mag_epsilon = 0.00000001
 
 # Data loader for train and validation
 train_loaders, valid_loader = cifar10(data_dir, examples_per_class, batch_size, m)
@@ -125,8 +126,8 @@ def create_linear_params(in_dim, out):
 
 def get_applied(param, param_magnitude, j):
     param_j = param[j]
-    norm = norm2(param)
-    normed_param = param_j / norm
+    norm = norm2(param.detach()) # Need to detach the norm, so that gradients are not shared across datasets.
+    normed_param = param_j / (norm + mag_epsilon)
     return normed_param * param_magnitude
 
 
