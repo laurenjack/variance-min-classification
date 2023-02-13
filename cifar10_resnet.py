@@ -239,6 +239,8 @@ class ResNet(nn.Module):
         self.avgpool = nn.AvgPool2d(7, stride=1)
         self.fc = Linear(num_classes, 512)
 
+
+
     def _make_layer(self, planes, output_width, blocks, stride=1):
         downsample = None
         if stride != 1 or self.inplanes != planes:
@@ -274,38 +276,45 @@ class ResNet(nn.Module):
 # for j in range(m-1):
 #     models.append(copy.deepcopy(base_model))
 # models = [model.to(device) for model in models]
-models = [ResNet([2, 2, 2, 2]).to(device) for j in range(m)]
+# models = [ResNet([2, 2, 2, 2]).to(device) for j in range(m)]
 
 # # Create a base model, this won't be trained but is used to initialize the magnitudes
 # base_model = ResNet([2, 2, 2, 2])
 # # Create the models that will be trained, their initial values will be used as the normalized weight tensors
 # models = [ResNet([2, 2, 2, 2]) for j in range(m)]
 
-all_params = []  # The params from all the models in a single list, passed to the optimizer
-params_lists = []  # The params from each model in their own list, used for variance minimization
-for model in models:
-    params = list(model.parameters())
-    all_params.extend(params)
-    params_lists.append(params)
+
+# all_params = []  # The params from all the models in a single list, passed to the optimizer
+# params_lists = []  # The params from each model in their own list, used for variance minimization
+# for model in models:
+#     params = list(model.parameters())
+#     all_params.extend(params)
+#     params_lists.append(params)
+
+model = ResNet([2, 2, 2, 2]).to(device)
 
 
 # Loss and optimizer
 criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.SGD(all_params, lr=learning_rate, momentum = 0.9) # , weight_decay = 0.001
+optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate, momentum = 0.9) # , weight_decay = 0.001
 
 
-def evaluate_accuracy(data_loader, models, name):
+def evaluate_accuracy(data_loader, name):
     with torch.no_grad():
         correct = 0
         total = 0
         for images, labels in data_loader:
             images = images.to(device)
             labels = labels.to(device)
-            logit_sum = 0.0
-            for j, model in enumerate(models):
-                outputs = model(images, j)
-                logits = outputs.data
-                logit_sum += logits
+            if name == 'train':
+                outputs = model(images, 0)
+                logit_sum = outputs.data
+            else:
+                logit_sum = 0.0
+                for j in range(m):
+                    outputs = model(images, j)
+                    logits = outputs.data
+                    logit_sum += logits
             _, predicted = torch.max(logit_sum, 1)
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
@@ -330,7 +339,7 @@ for epoch in range(num_epochs):
     for b in range(num_batches):
         classification_loss = 0.0
         # Update based on the classification error
-        for j, train_iterator, model in zip(range(len(models)), train_iterators, models):
+        for j, train_iterator in enumerate(train_iterators):
             images, labels = next(train_iterator)
             # Move tensors to the configured device
             images = images.to(device)
@@ -375,5 +384,5 @@ for epoch in range(num_epochs):
         #       .format(t, regularization_loss.item()))
 
     # for train_loader, model in zip(train_loaders, models):
-    evaluate_accuracy(train_loaders[0], [models[0]], 'train')
-    evaluate_accuracy(valid_loader, models, 'validation')
+    evaluate_accuracy(train_loaders[0], 'train')
+    evaluate_accuracy(valid_loader, 'validation')
