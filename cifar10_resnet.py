@@ -111,6 +111,12 @@ def create_normed_params(weight, bias):
     bias_mag = norm2(bias)
     return nn.Parameter(weight), nn.Parameter(bias), nn.Parameter(weight_mag), nn.Parameter(bias_mag)
 
+
+def create_batch_norm_params(num_features):
+    weight = torch.ones(m, num_features)
+    bias = torch.zeros(m, num_features)
+    return create_normed_params(weight, bias)
+
 def create_conv_params(c_in, out, k):
     scaler = 1 / (c_in * k ** 2) ** 0.5
     weight = 2 * (torch.rand(m, out, c_in, k, k, requires_grad=True) - 0.5) * scaler
@@ -130,44 +136,20 @@ def get_applied(param, param_magnitude, j):
     normed_param = param_j / (norm + mag_epsilon)
     return normed_param * param_magnitude
 
-
-class LayerNorm(nn.Module):
-
-    def __init__(self, channels, image_width):
-        super().__init__()
-        self.normalized_shape = [channels, image_width, image_width]
-        self.weight = nn.Parameter(torch.ones(self.normalized_shape, requires_grad=True))
-        self.bias = nn.Parameter(torch.zeros(self.normalized_shape, requires_grad=True))
-
-    def forward(self, x, j):
-        return F.layer_norm(x, self.normalized_shape, weight=self.weight, bias=self.bias)
-
 class BatchNorm2d(nn.Module):
     def __init__(self, num_features, eps=1e-5, momentum=0.1):
         super(BatchNorm2d, self).__init__()
         self.num_features = num_features
         self.eps = eps
         self.momentum = momentum
-        self.weight = nn.Parameter(torch.ones(m, num_features))
-        self.bias = nn.Parameter(torch.zeros(m, num_features))
+        self.weight, self.bias, self.weight_mag, self.bias_mag = create_batch_norm_params(num_features)
         self.register_buffer('running_mean', torch.zeros(num_features))
         self.register_buffer('running_var', torch.ones(num_features))
 
     def forward(self, x, j):
-        # if self.training:
-        #     # Compute batch mean and variance
-        #     batch_mean = x.mean(dim=(0, 2, 3))
-        #     batch_var = x.var(dim=(0, 2, 3), unbiased=False)
-        #     # Update running mean and variance
-        #     self.running_mean = (1 - self.momentum) * self.running_mean + self.momentum * batch_mean
-        #     self.running_var = (1 - self.momentum) * self.running_var + self.momentum * batch_var
-        # else:
-        #     # Use running mean and variance during evaluation
-        #     batch_mean = self.running_mean
-        #     batch_var = self.running_var
-
-        # Apply batch normalization
-        y = F.batch_norm(x, self.running_mean, self.running_var, self.weight[j], self.bias[j], training=self.training,
+        w = get_applied(self.weight, self.weight_mag, j)
+        b = get_applied(self.bias, self.bias_mag, j)
+        y = F.batch_norm(x, self.running_mean, self.running_var, weight=w, bias=b, training=self.training,
                          momentum=self.momentum, eps=self.eps)
         return y
 
