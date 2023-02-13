@@ -4,13 +4,14 @@ import ssl
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from torchvision import datasets
 from torchvision import transforms
 from torch.utils.data import DataLoader, SubsetRandomSampler, TensorDataset
 
 torch.manual_seed(575)
-BIG_BATCH = 1000
+BIG_BATCH = 400
 CIFAR_NUM_CLASSES = 10
 
 
@@ -86,8 +87,8 @@ ssl._create_default_https_context = ssl._create_unverified_context
 
 
 data_dir = './data'  # Where should the cifar10 data be downloaded?
-m = 10  # The number of models
-examples_per_class = 20  # The number of examples per class in the training set, and also the validation set
+m = 2  # The number of models
+examples_per_class = 10  # The number of examples per class in the training set, and also the validation set
 batch_size = 50  # The batch size when training or evaluating the network
 num_classes = 10  # The number of classes in cifar10
 num_epochs = 100
@@ -101,83 +102,190 @@ epsilon = 0.00000001
 # Data loader for train and validation
 train_loaders, valid_loader = cifar10(data_dir, examples_per_class, batch_size, m)
 
+def create_conv_params(c_in, out, k):
+    scaler = 1 / (c_in * k ** 2) ** 0.5
+    weight = 2 * (torch.rand(m, out, c_in, k, k, requires_grad=True) - 0.5) * scaler
+    bias = 2 * (torch.rand(m, out, requires_grad=True) - 0.5) * scaler
+    return weight, bias
+
+
+
+def create_linear_params(in_dim, out):
+    scaler = 1 / in_dim ** 0.5
+    weight = 2 * (torch.rand(m, out, in_dim, requires_grad=True) - 0.5)  * scaler
+    bias = 2 * (torch.rand(m, out, requires_grad=True) - 0.5) * scaler
+    return weight, bias
+
+class LayerNorm(nn.Module):
+
+    def __init__(self, channels, image_width):
+        super().__init__()
+        self.normalized_shape = [channels, image_width, image_width]
+        self.weight = nn.Parameter(torch.ones(self.normalized_shape, requires_grad=True))
+        self.bias = nn.Parameter(torch.zeros(self.normalized_shape, requires_grad=True))
+
+    def forward(self, x, j):
+        return F.layer_norm(x, self.normalized_shape, weight=self.weight, bias=self.bias)
+
+class BatchNorm2d(nn.Module):
+    def __init__(self, num_features, eps=1e-5, momentum=0.1):
+        super(BatchNorm2d, self).__init__()
+        self.num_features = num_features
+        self.eps = eps
+        self.momentum = momentum
+        self.weight = nn.Parameter(torch.ones(m, num_features))
+        self.bias = nn.Parameter(torch.zeros(m, num_features))
+        self.register_buffer('running_mean', torch.zeros(num_features))
+        self.register_buffer('running_var', torch.ones(num_features))
+
+    def forward(self, x, j):
+        # if self.training:
+        #     # Compute batch mean and variance
+        #     batch_mean = x.mean(dim=(0, 2, 3))
+        #     batch_var = x.var(dim=(0, 2, 3), unbiased=False)
+        #     # Update running mean and variance
+        #     self.running_mean = (1 - self.momentum) * self.running_mean + self.momentum * batch_mean
+        #     self.running_var = (1 - self.momentum) * self.running_var + self.momentum * batch_var
+        # else:
+        #     # Use running mean and variance during evaluation
+        #     batch_mean = self.running_mean
+        #     batch_var = self.running_var
+
+        # Apply batch normalization
+        y = F.batch_norm(x, self.running_mean, self.running_var, self.weight[j], self.bias[j], training=self.training,
+                         momentum=self.momentum, eps=self.eps)
+        return y
+
+
+
+class ConvBlock(nn.Module):
+    def __init__(self,  c_in, out, k, image_width, stride, padding=0, with_relu=False):
+        super().__init__()
+        self.stride = stride
+        self.padding = padding
+        weight, bias = create_conv_params(c_in, out, k)
+        self.weight = nn.Parameter(weight)
+        self.bias = nn.Parameter(bias)
+        # self.layer_norm = nn.BatchNorm2d(out)
+        # self.layer_norm = nn.LayerNorm([out, image_width, image_width])
+        #self.layer_norm = LayerNorm(out, image_width)
+        self.layer_norm = BatchNorm2d(out)
+        self.with_relu = with_relu
+
+    def forward(self, x, j):
+        a = F.conv2d(x, weight=self.weight[j], bias=self.bias[j], stride=self.stride, padding=self.padding)
+        a = self.layer_norm(a, j)
+        if self.with_relu:
+            a = F.relu(a)
+        return a
+
+
+class Linear(nn.Module):
+
+    def __init__(self, c_in, out):
+        super().__init__()
+        weight, bias = create_linear_params(out, c_in)
+        self.weight = nn.Parameter(weight)
+        self.bias = nn.Parameter(bias)
+
+    def forward(self, x, j):
+        return F.linear(x, weight=self.weight[j], bias=self.bias[j])
+
+class Sequential(nn.Sequential):
+
+    def forward(self, x, j):
+        for module in self:
+            x = module(x, j)
+        return x
+
 
 class ResidualBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=1, downsample=None):
+    def __init__(self, in_channels, out_channels, output_width, stride=1, downsample=None):
         super(ResidualBlock, self).__init__()
-        self.conv1 = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1),
-            nn.LayerNorm(out_channels),
-            nn.ReLU())
-        self.conv2 = nn.Sequential(
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1),
-            nn.LayerNorm(out_channels))
+        # self.conv1 = nn.Sequential(
+        #     nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1),
+        #     nn.BatchNorm2d(out_channels),
+        #     nn.ReLU())
+        # self.conv2 = nn.Sequential(
+        #     nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1),
+        #     nn.BatchNorm2d(out_channels))
+        self.conv1 = ConvBlock(in_channels, out_channels, 3, output_width, stride, padding=1, with_relu=True)
+        self.conv2 = ConvBlock(out_channels, out_channels, 3, output_width, 1, padding=1, with_relu=False)
         self.downsample = downsample
         self.relu = nn.ReLU()
         self.out_channels = out_channels
 
-    def forward(self, x):
+    def forward(self, x, j):
         residual = x
-        out = self.conv1(x)
-        out = self.conv2(out)
+        out = self.conv1(x, j)
+        out = self.conv2(out, j)
         if self.downsample:
-            residual = self.downsample(x)
+            residual = self.downsample(x, j)
         out += residual
         out = self.relu(out)
         return out
 
-
 class ResNet(nn.Module):
-    def __init__(self, block, layers, num_classes=10, base_model=None):
+
+    def __init__(self, layers, num_classes=10, base_model=None):
         super(ResNet, self).__init__()
         self.inplanes = 64
-        self.conv1 = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3),
-            nn.LayerNorm(64),
-            nn.ReLU())
+        k = 7
+        c_in = 3
+        # self.conv1 = nn.Sequential(
+        #     nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3),
+        #     nn.BatchNorm2d(64),
+        #     nn.ReLU())
+        self.conv1 = ConvBlock(c_in, self.inplanes, k, 112, 2, 3, True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        self.layer0 = self._make_layer(block, 64, layers[0], stride=1)
-        self.layer1 = self._make_layer(block, 128, layers[1], stride=2)
-        self.layer2 = self._make_layer(block, 256, layers[2], stride=2)
-        self.layer3 = self._make_layer(block, 512, layers[3], stride=2)
+        self.layer0 = self._make_layer(64, 56,  layers[0], stride=1)
+        self.layer1 = self._make_layer(128, 28, layers[1], stride=2)
+        self.layer2 = self._make_layer(256, 14, layers[2], stride=2)
+        self.layer3 = self._make_layer(512, 7, layers[3], stride=2)
         self.avgpool = nn.AvgPool2d(7, stride=1)
-        self.fc = nn.Linear(512, num_classes)
+        self.fc = Linear(num_classes, 512)
 
-    def _make_layer(self, block, planes, blocks, stride=1):
+    def _make_layer(self, planes, output_width, blocks, stride=1):
         downsample = None
         if stride != 1 or self.inplanes != planes:
-            downsample = nn.Sequential(
-                nn.Conv2d(self.inplanes, planes, kernel_size=1, stride=stride),
-                nn.LayerNorm(planes),
-            )
-        layers = [block(self.inplanes, planes, stride, downsample)]
+            # downsample = nn.Sequential(
+            #     nn.Conv2d(self.inplanes, planes, kernel_size=1, stride=stride),
+            #     nn.BatchNorm2d(planes),
+            # )
+            downsample = ConvBlock(self.inplanes, planes, 1, output_width, stride, with_relu=False)
+        layers = [ResidualBlock(self.inplanes, planes, output_width, stride, downsample)]
         self.inplanes = planes
         for i in range(1, blocks):
-            layers.append(block(self.inplanes, planes))
+            layers.append(ResidualBlock(self.inplanes, planes, output_width))
 
-        return nn.Sequential(*layers)
+        return Sequential(*layers)
 
-    def forward(self, x):
-        x = self.conv1(x)
+    def forward(self, x, j):
+        x = self.conv1(x, j)
         x = self.maxpool(x)
-        x = self.layer0(x)
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
+        x = self.layer0(x, j)
+        x = self.layer1(x, j)
+        x = self.layer2(x, j)
+        x = self.layer3(x, j)
 
         x = self.avgpool(x)
         x = x.view(x.size(0), -1)
-        x = self.fc(x)
+        x = self.fc(x, j)
 
         return x
 
 
-# base_model = ResNet(ResidualBlock, [3, 4, 6, 3])  # .to(device)
+# base_model = ResNet([3, 4, 6, 3])  # .to(device)
 # models = [base_model]
 # for j in range(m-1):
 #     models.append(copy.deepcopy(base_model))
 # models = [model.to(device) for model in models]
-models = [ResNet(ResidualBlock, [2, 2, 2, 2]).to(device) for j in range(m)]
+models = [ResNet([2, 2, 2, 2]).to(device) for j in range(m)]
+
+# # Create a base model, this won't be trained but is used to initialize the magnitudes
+# base_model = ResNet([2, 2, 2, 2])
+# # Create the models that will be trained, their initial values will be used as the normalized weight tensors
+# models = [ResNet([2, 2, 2, 2]) for j in range(m)]
 
 all_params = []  # The params from all the models in a single list, passed to the optimizer
 params_lists = []  # The params from each model in their own list, used for variance minimization
@@ -189,7 +297,7 @@ for model in models:
 
 # Loss and optimizer
 criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.SGD(all_params, lr=learning_rate, weight_decay = 0.001, momentum = 0.9) # ,
+optimizer = torch.optim.SGD(all_params, lr=learning_rate, momentum = 0.9) # , weight_decay = 0.001
 
 
 def evaluate_accuracy(data_loader, models, name):
@@ -200,8 +308,8 @@ def evaluate_accuracy(data_loader, models, name):
             images = images.to(device)
             labels = labels.to(device)
             logit_sum = 0.0
-            for model in models:
-                outputs = model(images)
+            for j, model in enumerate(models):
+                outputs = model(images, j)
                 logits = outputs.data
                 logit_sum += logits
             _, predicted = torch.max(logit_sum, 1)
@@ -228,13 +336,13 @@ for epoch in range(num_epochs):
     for b in range(num_batches):
         classification_loss = 0.0
         # Update based on the classification error
-        for train_iterator, model in zip(train_iterators, models):
+        for j, train_iterator, model in zip(range(len(models)), train_iterators, models):
             images, labels = next(train_iterator)
             # Move tensors to the configured device
             images = images.to(device)
             labels = labels.to(device)
             # Forward pass
-            outputs = model(images)
+            outputs = model(images, j)
             loss = criterion(outputs, labels)
             classification_loss += loss
         # Backward and optimize
