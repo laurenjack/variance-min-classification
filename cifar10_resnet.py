@@ -11,7 +11,7 @@ from torchvision import transforms
 from torch.utils.data import DataLoader, SubsetRandomSampler, TensorDataset
 
 torch.manual_seed(575)
-BIG_BATCH = 400
+BIG_BATCH = 600
 CIFAR_NUM_CLASSES = 10
 
 
@@ -91,7 +91,7 @@ m = 2  # The number of models
 examples_per_class = 10  # The number of examples per class in the training set, and also the validation set
 batch_size = 50  # The batch size when training or evaluating the network
 num_classes = 10  # The number of classes in cifar10
-num_epochs = 100
+num_epochs = 300
 learning_rate = 0.01
 n = examples_per_class * num_classes
 num_batches = math.ceil(n / batch_size)
@@ -130,10 +130,14 @@ def create_linear_params(in_dim, out):
     bias = 2 * (torch.rand(m, out, requires_grad=True) - 0.5) * scaler
     return create_normed_params(weight, bias)
 
-def get_applied(param, param_magnitude, j):
+def get_applied(param, param_magnitude, j, is_variance):
     param_j = param[j]
     norm = norm2(param.detach()) # Need to detach the norm, so that gradients are not shared across datasets.
     normed_param = param_j / (norm + mag_epsilon)
+    # Detach the entire normed weight if this is the variance forward pass, because we cannot minimize variance using
+    # the weight parameters (the signal will disappear)
+    if is_variance:
+        normed_param = normed_param.detach()
     return normed_param * param_magnitude
 
 class BatchNorm2d(nn.Module):
@@ -146,9 +150,9 @@ class BatchNorm2d(nn.Module):
         self.register_buffer('running_mean', torch.zeros(num_features))
         self.register_buffer('running_var', torch.ones(num_features))
 
-    def forward(self, x, j):
-        w = get_applied(self.weight, self.weight_mag, j)
-        b = get_applied(self.bias, self.bias_mag, j)
+    def forward(self, x, j, is_variance):
+        w = get_applied(self.weight, self.weight_mag, j, is_variance)
+        b = get_applied(self.bias, self.bias_mag, j, is_variance)
         y = F.batch_norm(x, self.running_mean, self.running_var, weight=w, bias=b, training=self.training,
                          momentum=self.momentum, eps=self.eps)
         return y
@@ -164,11 +168,11 @@ class ConvBlock(nn.Module):
         self.layer_norm = BatchNorm2d(out)
         self.with_relu = with_relu
 
-    def forward(self, x, j):
-        w = get_applied(self.weight, self.weight_mag, j)
-        b = get_applied(self.bias, self.bias_mag, j)
+    def forward(self, x, j, is_variance):
+        w = get_applied(self.weight, self.weight_mag, j, is_variance)
+        b = get_applied(self.bias, self.bias_mag, j, is_variance)
         a = F.conv2d(x, weight=w, bias=b, stride=self.stride, padding=self.padding)
-        a = self.layer_norm(a, j)
+        a = self.layer_norm(a, j, is_variance)
         if self.with_relu:
             a = F.relu(a)
         return a
@@ -180,16 +184,16 @@ class Linear(nn.Module):
         super().__init__()
         self.weight, self.bias, self.weight_mag, self.bias_mag = create_linear_params(out, c_in)
 
-    def forward(self, x, j):
-        w = get_applied(self.weight, self.weight_mag, j)
-        b = get_applied(self.bias, self.bias_mag, j)
+    def forward(self, x, j, is_variance):
+        w = get_applied(self.weight, self.weight_mag, j, is_variance)
+        b = get_applied(self.bias, self.bias_mag, j, is_variance)
         return F.linear(x, weight=w, bias=b)
 
 class Sequential(nn.Sequential):
 
-    def forward(self, x, j):
+    def forward(self, x, j, is_variance):
         for module in self:
-            x = module(x, j)
+            x = module(x, j, is_variance)
         return x
 
 
@@ -209,12 +213,12 @@ class ResidualBlock(nn.Module):
         self.relu = nn.ReLU()
         self.out_channels = out_channels
 
-    def forward(self, x, j):
+    def forward(self, x, j, is_variance):
         residual = x
-        out = self.conv1(x, j)
-        out = self.conv2(out, j)
+        out = self.conv1(x, j, is_variance)
+        out = self.conv2(out, j, is_variance)
         if self.downsample:
-            residual = self.downsample(x, j)
+            residual = self.downsample(x, j, is_variance)
         out += residual
         out = self.relu(out)
         return out
@@ -239,6 +243,13 @@ class ResNet(nn.Module):
         self.avgpool = nn.AvgPool2d(7, stride=1)
         self.fc = Linear(num_classes, 512)
 
+        # self.shared_parameters = []
+        # self.non_shared_parameters = []
+        # for name, parameter in self.named_parameters():
+        #     if name.endswith('_mag'):
+        #         self.shared_parameters.append(parameter)
+        #     else:
+        #         self.non_shared_parameters.append(parameter)
 
 
     def _make_layer(self, planes, output_width, blocks, stride=1):
@@ -256,17 +267,17 @@ class ResNet(nn.Module):
 
         return Sequential(*layers)
 
-    def forward(self, x, j):
-        x = self.conv1(x, j)
+    def forward(self, x, j, is_variance):
+        x = self.conv1(x, j, is_variance)
         x = self.maxpool(x)
-        x = self.layer0(x, j)
-        x = self.layer1(x, j)
-        x = self.layer2(x, j)
-        x = self.layer3(x, j)
+        x = self.layer0(x, j, is_variance)
+        x = self.layer1(x, j, is_variance)
+        x = self.layer2(x, j, is_variance)
+        x = self.layer3(x, j, is_variance)
 
         x = self.avgpool(x)
         x = x.view(x.size(0), -1)
-        x = self.fc(x, j)
+        x = self.fc(x, j, is_variance)
 
         return x
 
@@ -296,7 +307,9 @@ model = ResNet([2, 2, 2, 2]).to(device)
 
 # Loss and optimizer
 criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate, momentum = 0.9) # , weight_decay = 0.001
+optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate, momentum = 0.9)
+# optimizer_shared = torch.optim.SGD(model.shared_parameters, lr=learning_rate, momentum = 0.9) # , weight_decay = 0.001
+# optimizer_non_shared = torch.optim.SGD(model.non_shared_parameters, lr=learning_rate, momentum = 0.9)
 
 
 def evaluate_accuracy(data_loader, name):
@@ -307,12 +320,14 @@ def evaluate_accuracy(data_loader, name):
             images = images.to(device)
             labels = labels.to(device)
             if name == 'train':
-                outputs = model(images, 0)
+                # TODO(Jack) replace with eval method
+                outputs = model(images, 0, False) # Is variance flag is irrelevant here
                 logit_sum = outputs.data
             else:
                 logit_sum = 0.0
                 for j in range(m):
-                    outputs = model(images, j)
+                    # TODO(Jack) replace with eval method
+                    outputs = model(images, j, False) # Is variance flag is irrelevant here
                     logits = outputs.data
                     logit_sum += logits
             _, predicted = torch.max(logit_sum, 1)
@@ -327,8 +342,36 @@ mean = torch.tensor([0.0], device=device) # mean of the distribution
 std = torch.tensor([1.0], device=device) # standard deviation of the distribution
 normal = torch.distributions.Normal(mean, std)
 
-def make_positive(module, grad_input, grad_output):
-    return [torch.abs(grad) for grad in grad_input]
+def bias(batch_per_model):
+    classification_loss = 0.0
+    for j, batch in enumerate(batch_per_model):
+        images, labels = batch
+        # Move tensors to the configured device
+        images = images.to(device)
+        labels = labels.to(device)
+        # Forward pass
+        outputs = model(images, j, False)
+        loss = criterion(outputs, labels)
+        classification_loss += loss
+    return classification_loss
+
+
+def variance(images):
+    output_list = []
+    output_mean = 0.0
+    for j in range(m):
+        output = model(images, j, True)
+        output_mean += output / m
+        output_list.append(output)
+    variance_loss = 0.0
+    for output in output_list:
+        delta = output - output_mean
+        delta_square = delta ** 2
+        variance_loss += torch.mean(torch.sum(delta_square, axis=1), axis=0)
+    return 1.0 * variance_loss
+
+
+
 
 
 t = 0
@@ -337,51 +380,37 @@ for epoch in range(num_epochs):
     train_iterators = [iter(train_loader) for train_loader in train_loaders]
     validation_iterator = iter(valid_loader)
     for b in range(num_batches):
-        classification_loss = 0.0
-        # Update based on the classification error
-        for j, train_iterator in enumerate(train_iterators):
-            images, labels = next(train_iterator)
-            # Move tensors to the configured device
-            images = images.to(device)
-            labels = labels.to(device)
-            # Forward pass
-            outputs = model(images, j)
-            loss = criterion(outputs, labels)
-            classification_loss += loss
-        # Backward and optimize
+        # optimizer_non_shared.zero_grad()
+        # optimizer_shared.zero_grad()
         optimizer.zero_grad()
-        classification_loss.backward()
+        # Get the batch for each model
+        batch_per_model = [next(train_iterator) for train_iterator in train_iterators]
+        # Apply just the bias loss to the weights
+        first_bias_loss = bias(batch_per_model)
+        first_bias_loss.backward()
+        images, _ = next(validation_iterator)
+        images = images.to(device)
+        variance_loss = variance(images)
+        variance_loss.backward()
         optimizer.step()
+        # Now apply the combined bias and variance loss to the magnitude
+        # second_bias_loss = bias(batch_per_model)
+        # images, _ = next(validation_iterator)
+        # images = images.to(device)
+        # # variance_loss = variance(images)
+        # total_loss = second_bias_loss # + variance_loss
+        # total_loss.backward()
 
-        # # Calculate the regularization error
-        # val_images, val_labels = next(validation_iterator)
-        # val_images = val_images.to(device)
-        # val_labels = val_labels.to(device)
-        # outputs_per_model = []
-        # mean_output = 0
-        # for model in models:
-        #     outputs = model(val_images)
-        #     outputs_per_model.append(outputs)
-        #     mean_output += outputs / m
-        # regularization_loss = 0.0
-        # for outputs in outputs_per_model:
-        #     delta = outputs - mean_output
-        #     delta.register_hook(make_positive)
-        #     regularization_loss += delta ** 2
-        # # Backward and optimize
-        # optimizer.zero_grad()
-        # regularization_loss.backward()
-        # optimizer.step()
-
-        # del images, labels, outputs
-        # torch.cuda.empty_cache()
-        # gc.collect()
+        # optimizer_non_shared.step()
+        # optimizer_shared.step()
 
         t += 1
-        print('    Iteration {}, Classification Loss: {:.4f}'
-              .format(t, classification_loss.item()))
-        # print('    Iteration {}, Reg Loss: {:.4f}'
-        #       .format(t, regularization_loss.item()))
+        print('    Iteration {}, First Bias Loss: {:.4f}'
+              .format(t, first_bias_loss.item()))
+        # print('    Iteration {}, Second Bias Loss: {:.4f}'
+        #       .format(t, second_bias_loss.item()))
+        print('    Iteration {}, Variance Loss: {:.4f}'
+              .format(t, variance_loss.item()))
 
     # for train_loader, model in zip(train_loaders, models):
     evaluate_accuracy(train_loaders[0], 'train')
