@@ -1,83 +1,10 @@
 import math
-import copy
 import ssl
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from torchvision import datasets
-from torchvision import transforms
-from torch.utils.data import DataLoader, SubsetRandomSampler, TensorDataset
-
 torch.manual_seed(575)
-BIG_BATCH = 600
-CIFAR_NUM_CLASSES = 10
-
-
-def cifar10(data_dir, examples_per_class, batch_size, m):
-    normalize = transforms.Normalize(
-        mean=[0.4914, 0.4822, 0.4465],
-        std=[0.2023, 0.1994, 0.2010],
-    )
-
-    # define transforms
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        normalize,
-    ])
-
-    original_dataset = datasets.CIFAR10(
-        root=data_dir, train=True,
-        download=True, transform=transform,
-    )
-
-    data_loader = DataLoader(original_dataset, batch_size=BIG_BATCH, shuffle=True)
-
-    # Get the first BIG_BATCH images and labels
-    for images, labels in data_loader:
-        break
-
-    indices = []
-    # For each class get every index where it occurs
-    per_class_indices_list = []
-    for c in range(CIFAR_NUM_CLASSES):
-        is_c = torch.eq(labels, c)
-        indices_of_c = torch.nonzero(is_c)
-        per_class_indices_list.append(indices_of_c)
-    # Now take from each class one by one
-    total_examples_per_class = examples_per_class * 3
-    for i in range(total_examples_per_class):
-        for c in range(CIFAR_NUM_CLASSES):
-            index = per_class_indices_list[c][i]
-            indices.append(index)
-
-    balanced_images = images[indices]
-    balanced_labels = labels[indices]
-    balanced_dataset = TensorDataset(balanced_images, balanced_labels)
-
-    total_n = total_examples_per_class * CIFAR_NUM_CLASSES
-    n = total_n // 3
-    indices = list(range(total_n))
-    all_train_idx, valid_idx = indices[n:], indices[:n]
-
-    splits = m // 2
-    train_idx_list = []
-    for s in range(splits):
-        np.random.shuffle(all_train_idx)
-        train_idx_list.append(all_train_idx[:n])
-        train_idx_list.append(all_train_idx[n:])
-
-    train_loaders = []
-    for train_idx in train_idx_list:
-        train_sampler = SubsetRandomSampler(train_idx)
-        train_loader = DataLoader(balanced_dataset, batch_size=batch_size, sampler=train_sampler)
-        train_loaders.append(train_loader)
-
-    valid_sampler = SubsetRandomSampler(valid_idx)
-    valid_loader = torch.utils.data.DataLoader(balanced_dataset, batch_size=batch_size, sampler=valid_sampler)
-    return train_loaders, valid_loader
 
 # Device configuration
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -87,7 +14,7 @@ ssl._create_default_https_context = ssl._create_unverified_context
 
 
 data_dir = './data'  # Where should the cifar10 data be downloaded?
-m = 2  # The number of models
+m = 10  # The number of models
 examples_per_class = 10  # The number of examples per class in the training set, and also the validation set
 batch_size = 50  # The batch size when training or evaluating the network
 num_classes = 10  # The number of classes in cifar10
@@ -101,7 +28,8 @@ epsilon = 0.00000001
 mag_epsilon = 0.00000001
 
 # Data loader for train and validation
-train_loaders, valid_loader = cifar10(data_dir, examples_per_class, batch_size, m)
+import dataset_creator
+train_loaders, valid_loader = dataset_creator.cifar10(data_dir, examples_per_class, batch_size, m)
 
 def norm2(tensor):
     return torch.sum(tensor ** 2, axis=0) ** 0.5
@@ -153,6 +81,8 @@ class BatchNorm2d(nn.Module):
     def forward(self, x, j, is_variance):
         w = get_applied(self.weight, self.weight_mag, j, is_variance)
         b = get_applied(self.bias, self.bias_mag, j, is_variance)
+        # w = self.weight[j]
+        # b = self.bias[j]
         y = F.batch_norm(x, self.running_mean, self.running_var, weight=w, bias=b, training=self.training,
                          momentum=self.momentum, eps=self.eps)
         return y
@@ -171,6 +101,8 @@ class ConvBlock(nn.Module):
     def forward(self, x, j, is_variance):
         w = get_applied(self.weight, self.weight_mag, j, is_variance)
         b = get_applied(self.bias, self.bias_mag, j, is_variance)
+        # w = self.weight[j]
+        # b = self.bias[j]
         a = F.conv2d(x, weight=w, bias=b, stride=self.stride, padding=self.padding)
         a = self.layer_norm(a, j, is_variance)
         if self.with_relu:
@@ -187,6 +119,8 @@ class Linear(nn.Module):
     def forward(self, x, j, is_variance):
         w = get_applied(self.weight, self.weight_mag, j, is_variance)
         b = get_applied(self.bias, self.bias_mag, j, is_variance)
+        # w = self.weight[j]
+        # b = self.bias[j]
         return F.linear(x, weight=w, bias=b)
 
 class Sequential(nn.Sequential):
@@ -368,7 +302,7 @@ def variance(images):
         delta = output - output_mean
         delta_square = delta ** 2
         variance_loss += torch.mean(torch.sum(delta_square, axis=1), axis=0)
-    return 1.0 * variance_loss
+    return 5.0 * variance_loss
 
 
 

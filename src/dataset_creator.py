@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import torch
 from torchvision import datasets
@@ -72,3 +73,44 @@ def cifar10(data_dir, examples_per_class, batch_size, m):
     valid_sampler = SubsetRandomSampler(valid_idx)
     valid_loader = torch.utils.data.DataLoader(balanced_dataset, batch_size=batch_size, sampler=valid_sampler)
     return train_loaders, valid_loader
+
+
+def class_pattern_with_noise(n, num_class, noisy_d, percent_correct=1.0, noisy_dim_scalar=1.0):
+    num_correct = int(round(percent_correct * n))
+    class_d = math.ceil(np.log2(num_class))
+    ones = np.ones(class_d)
+    class_to_perm = np.array(get_perms(class_d, ones)).astype(np.float32)
+    class_to_perm = torch.tensor(class_to_perm)
+    # Now shuffle, so that each class has a random permutation
+    shuffler = torch.randperm(num_class)
+    class_to_perm = class_to_perm[shuffler]
+    x = []
+    y = []
+    for i in range(n):
+        c = i % num_class
+        first_part = class_to_perm[c]
+        # Once we get more than percent_correct through the dataset, start randomly changing the class.
+        # Yes this throws off perfect class balance, but still a uniform prob of each class
+        if i >= num_correct:
+            # Starting at 1 means we cant get the same class back
+            random_offset = torch.randint(low=1, high=num_class, size=(1,))[0].item()
+            c = (c + random_offset) % num_class
+        noisy_dims = float(noisy_dim_scalar) * torch.randint(low=0, high=2, size=(noisy_d,)) * 2 - 1
+        example = torch.cat([first_part, noisy_dims])
+        x.append(example)
+        y.append(c)
+
+    return TensorDataset(torch.stack(x), torch.tensor(y))
+
+
+def get_perms(i, perm):
+    if i == 0:
+        return [perm]
+    i -= 1
+    left = perm.copy()
+    left[i] = -1.0
+    left_perms = get_perms(i, left)
+    right = perm.copy()
+    right[i] = 1.0
+    right_perms = get_perms(i, right)
+    return left_perms + right_perms
