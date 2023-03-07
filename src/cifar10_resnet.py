@@ -39,7 +39,6 @@ def create_normed_params(weight, bias):
     bias_mag = norm2(bias)
     return nn.Parameter(weight), nn.Parameter(bias), nn.Parameter(weight_mag), nn.Parameter(bias_mag)
 
-
 def create_batch_norm_params(num_features):
     weight = torch.ones(m, num_features)
     bias = torch.zeros(m, num_features)
