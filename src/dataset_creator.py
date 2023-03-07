@@ -95,7 +95,7 @@ def class_pattern_with_noise(n, num_class, noisy_d, percent_correct=1.0, noisy_d
             # Starting at 1 means we cant get the same class back
             random_offset = torch.randint(low=1, high=num_class, size=(1,))[0].item()
             c = (c + random_offset) % num_class
-        noisy_dims = float(noisy_dim_scalar) * torch.randint(low=0, high=2, size=(noisy_d,)) * 2 - 1
+        noisy_dims = float(noisy_dim_scalar) * (torch.randint(low=0, high=2, size=(noisy_d,)) * 2 - 1)
         example = torch.cat([first_part, noisy_dims])
         x.append(example)
         y.append(c)
