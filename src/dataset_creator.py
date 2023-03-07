@@ -6,7 +6,7 @@ from torchvision import transforms
 from torch.utils.data import DataLoader, SubsetRandomSampler, TensorDataset
 
 
-BIG_BATCH = 500
+BIG_BATCH = 800
 CIFAR_NUM_CLASSES = 10
 
 
@@ -42,7 +42,7 @@ def cifar10(data_dir, examples_per_class, batch_size, m):
         indices_of_c = torch.nonzero(is_c)
         per_class_indices_list.append(indices_of_c)
     # Now take from each class one by one
-    total_examples_per_class = examples_per_class * 3
+    total_examples_per_class = examples_per_class * 2
     for i in range(total_examples_per_class):
         for c in range(CIFAR_NUM_CLASSES):
             index = per_class_indices_list[c][i]
@@ -51,28 +51,7 @@ def cifar10(data_dir, examples_per_class, batch_size, m):
     balanced_images = images[indices]
     balanced_labels = labels[indices]
     balanced_dataset = TensorDataset(balanced_images, balanced_labels)
-
-    total_n = total_examples_per_class * CIFAR_NUM_CLASSES
-    n = total_n // 3
-    indices = list(range(total_n))
-    all_train_idx, valid_idx = indices[n:], indices[:n]
-
-    splits = m // 2
-    train_idx_list = []
-    for s in range(splits):
-        np.random.shuffle(all_train_idx)
-        train_idx_list.append(all_train_idx[:n])
-        train_idx_list.append(all_train_idx[n:])
-
-    train_loaders = []
-    for train_idx in train_idx_list:
-        train_sampler = SubsetRandomSampler(train_idx)
-        train_loader = DataLoader(balanced_dataset, batch_size=batch_size, sampler=train_sampler)
-        train_loaders.append(train_loader)
-
-    valid_sampler = SubsetRandomSampler(valid_idx)
-    valid_loader = torch.utils.data.DataLoader(balanced_dataset, batch_size=batch_size, sampler=valid_sampler)
-    return train_loaders, valid_loader
+    return balanced_dataset
 
 
 def class_pattern_with_noise(n, num_class, noisy_d, percent_correct=1.0, noisy_dim_scalar=1.0):
