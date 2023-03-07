@@ -18,23 +18,23 @@ data_dir = './data'  # Where should the cifar10 data be downloaded?
 examples_per_class = 20
 m = 10  # The number of models
 batch_size = 40  # The batch size when training or evaluating the network
-# total_n = 160
-num_classes = 10 # 8
-# noisy_d = 30
-# percent_correct = 1.0
+total_n = 160
+num_classes =  8 # 10
+noisy_d = 30
+percent_correct = 1.0
 
-# binary_pattern_dataset = dataset_creator.class_pattern_with_noise(total_n, num_classes, noisy_d, percent_correct, 1)
-dataset = dataset_creator.cifar10(data_dir, examples_per_class, batch_size, m)
+dataset = dataset_creator.class_pattern_with_noise(total_n, num_classes, noisy_d, percent_correct, 1)
+# dataset = dataset_creator.cifar10(data_dir, examples_per_class, batch_size, m)
 train_loader, val_loader = splitter.train_val_split(dataset, batch_size, m)
 
 num_input = train_loader.num_input()
 num_hidden = 10
 num_epochs = 100
-learning_rate = 0.01
+learning_rate = 0.1
 momentum = 0.9
 epsilon = 0.00000001
 is_learned = True
-weight_decay = 0.3
+weight_decay = 1.0
 
 def create_params(base_weight, base_bias):
     """Take a base_weight and a base_bias tensor, create multi-model versions of the same shape, and then return the
@@ -240,15 +240,15 @@ class Mlp(nn.Module):
     def reg_loss(self):
         return self.hidden_layer.reg_loss() + self.output_layer.reg_loss() # + self.hidden_layer2.reg_loss() + self.hidden_layer3.reg_loss()
 
-# mlp = Mlp(num_input, num_hidden, num_classes)
-model = ResNet([2, 2, 2, 2]).to(device)
+model = Mlp(num_input, num_hidden, num_classes).to(device)
+# model = ResNet([2, 2, 2, 2]).to(device)
 
 # Loss and optimizer
 softmax = nn.Softmax(dim=1)
 softmax_second_dim = nn.Softmax(dim=2)
 log_softmax = nn.LogSoftmax(dim=1)
 log_softmax_without = nn.LogSoftmax(dim=1)
-optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate, weight_decay=0.001, momentum = momentum)
+optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate, weight_decay=0.00, momentum = momentum)
 ap = AveragePrecision(task='multiclass', num_classes=num_classes)
 
 def eval_train_accuracy(y_train, label):
@@ -301,6 +301,7 @@ for epoch in range(num_epochs):
         base_y_hat = model(image, None)
         ls = log_softmax(base_y_hat)
         loss = -torch.mean(torch.sum(one_hot * ls, axis=1))
+        loss += weight_decay * model.reg_loss()
         print('Loss: {}'.format(loss.item()))
         optimizer.zero_grad()
         loss.backward()
