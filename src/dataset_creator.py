@@ -6,7 +6,7 @@ from torchvision import transforms
 from torch.utils.data import DataLoader, SubsetRandomSampler, TensorDataset
 
 
-BIG_BATCH = 800
+BIG_BATCH = 600
 CIFAR_NUM_CLASSES = 10
 
 
