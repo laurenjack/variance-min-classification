@@ -36,8 +36,8 @@ learning_rate = 0.02
 momentum = 0.9
 epsilon = 0.00000001
 is_learned = True
-weight_decay = 1.0
-reg_const = 3.0
+weight_decay = 0.001
+reg_const = 0.0
 
 # def create_params(base_weight, base_bias):
 #     """Take a base_weight and a base_bias tensor, create multi-model versions of the same shape, and then return the
@@ -290,7 +290,7 @@ softmax = nn.Softmax(dim=1)
 softmax_second_dim = nn.Softmax(dim=2)
 log_softmax = nn.LogSoftmax(dim=1)
 log_softmax_without = nn.LogSoftmax(dim=1)
-optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate, weight_decay=0.00, momentum = momentum)
+optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay, momentum=momentum)
 ap = AveragePrecision(task='multiclass', num_classes=num_classes)
 
 def eval_train_accuracy(y_train, label):
@@ -368,15 +368,17 @@ def train():
             z_hat_mean = torch.mean(z_hat_without, axis=0, keepdim=True)
             z_delta = z_hat_without - z_hat_mean
             y_hat_probs = softmax_second_dim(z_hat_without)
-            y_hat_mean = torch.mean(y_hat_probs, axis=0, keepdim=True) #.detach()
+            y_hat_mean = torch.mean(y_hat_probs, axis=0, keepdim=True).detach()
             var_delta = y_hat_probs - y_hat_mean
             var_delta = var_delta.detach()
 
             loss = 0.0
             for j in range(m // 2):
                 ls = log_softmax(z_hat_train[j])
+                ls_without = log_softmax_without(z_hat_without[j])
                 loss -= torch.mean(torch.sum(one_hot * ls, axis=1))
-                loss += reg_const * torch.mean(torch.sum(var_delta[j] * z_delta[j]))
+                loss -= reg_const * torch.mean(torch.sum(y_hat_mean * ls_without, axis=1))
+                # loss += reg_const * torch.mean(torch.sum(var_delta[j] * z_delta[j]))
                 # loss += reg_const * torch.mean(torch.sum(var_delta ** 2, axis=1))
             optimizer.zero_grad()
             loss.backward()
