@@ -4,3 +4,5 @@ Attempting to directly minimize the bias variance trade off.
 # Introduction
 
 Machine Learning is 
+
+![Example image](example.png)
