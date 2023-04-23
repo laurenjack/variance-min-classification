@@ -1,5 +1,6 @@
 import torch
-from torch.utils.data import DataLoader, SubsetRandomSampler, TensorDataset
+from torch.utils.data import Dataset, DataLoader, Subset
+
 
 def train_val_split(dataset, batch_size, m, val_percentage=0.5):
     """Take a Dataset and return:
@@ -12,44 +13,28 @@ def train_val_split(dataset, batch_size, m, val_percentage=0.5):
     indices = torch.randperm(len(dataset), dtype=torch.int64)
     train_indices = indices[:n_train]
     val_indices = indices[n_train:]
-    train_loader = MultModelDataLoader(dataset, batch_size, m, train_indices)
-    val_loader = DataLoader(dataset, batch_size=batch_size, sampler=SubsetRandomSampler(val_indices))
+    train_set = Subset(dataset, train_indices)
+    validation_set = Subset(dataset, val_indices)
+    # Use a special data loader for the training set that also returns train_with and train_without
+    multi_train_set = MultiModelDataSet(train_set, m)
+    train_loader = DataLoader(multi_train_set, batch_size=batch_size)
+    val_loader = DataLoader(validation_set, batch_size=batch_size)
     return train_loader, val_loader
 
 
-class MultiModelIterator(object):
+class MultiModelDataSet(Dataset):
 
-    def __init__(self, index_iterator, dataset, train_with, train_without):
-        self.index_iterator = index_iterator
-        self.dataset = dataset
-        self.train_with = train_with
-        self.train_without = train_without
-
-    def __next__(self):
-        batch_indices = next(self.index_iterator)
-        x, y = self.dataset[batch_indices]
-        train_with = self.train_with[batch_indices]
-        train_without = self.train_without[batch_indices]
-        return x, y, train_with, train_without
-class MultModelDataLoader(object):
-
-    def __init__(self, dataset, batch_size, m, subset_indices=None):
-        self.dataset = dataset
+    def __init__(self, dataset, m):
         n = len(dataset)
-        # if subset_indices is set, some of these will never be used, but that is totally OK
+        self.dataset = dataset
         self.train_with, self.train_without = _get_model_indices(n, m)
-        if subset_indices is None:
-            self.indices = torch.arange(n, dtype=torch.int64)
-        else:
-            self.indices = subset_indices
-        self.index_loader = DataLoader(TensorDataset(self.indices), batch_size, shuffle=True)
 
-    def __iter__(self):
-        index_iterator = self.index_loader.__iter__()
-        return MultiModelIterator(index_iterator, self.dataset, self.train_with, self.train_without)
+    def __len__(self):
+        return len(self.dataset)
 
-    def num_input(self):
-        return self.dataset[0][0].shape[0]
+    def __getitem__(self, index):
+        x, y = self.dataset[index]
+        return x, y, self.train_with[index], self.train_without[index]
 
 
 def _get_model_indices(n, m):
@@ -62,6 +47,3 @@ def _get_model_indices(n, m):
         train_with[i] = random_perm[:models_per_example]
         train_without[i] = random_perm[models_per_example:]
     return train_with, train_without
-
-
-

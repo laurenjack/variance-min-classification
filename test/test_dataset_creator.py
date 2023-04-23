@@ -3,7 +3,7 @@ from src import dataset_creator
 
 
 def test_when_class_pattern_with_noise_first_class_matches_then_class_doesnt_match():
-    dataset = dataset_creator.class_pattern_with_noise(100, 16, 40, percent_correct=0.8, noisy_dim_scalar=3.0)
+    dataset = dataset_creator.binary_class_pattern_with_noise(100, 16, 40, percent_correct=0.8, noisy_dim_scalar=3.0)
     x, y = dataset[0:100]
     assert (100, 44) == x.shape
     assert (100,) == y.shape

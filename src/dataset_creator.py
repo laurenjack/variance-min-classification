@@ -3,14 +3,13 @@ import numpy as np
 import torch
 from torchvision import datasets
 from torchvision import transforms
-from torch.utils.data import DataLoader, SubsetRandomSampler, TensorDataset
+from torch.utils.data import DataLoader, SubsetRandomSampler, TensorDataset, Subset
 
 
-BIG_BATCH = 600
 CIFAR_NUM_CLASSES = 10
 
 
-def cifar10(data_dir, examples_per_class, batch_size, m):
+def cifar10(data_dir, examples_per_class):
     normalize = transforms.Normalize(
         mean=[0.4914, 0.4822, 0.4465],
         std=[0.2023, 0.1994, 0.2010],
@@ -28,33 +27,30 @@ def cifar10(data_dir, examples_per_class, batch_size, m):
         download=True, transform=transform,
     )
 
-    data_loader = DataLoader(original_dataset, batch_size=BIG_BATCH, shuffle=True)
+    # Split the dataset into class-specific indices
+    class_indices_list = [[] for _ in range(CIFAR_NUM_CLASSES)]
+    for index, label in enumerate(original_dataset.targets):
+        class_indices_list[label].append(index)
 
-    # Get the first BIG_BATCH images and labels
-    for images, labels in data_loader:
-        break
+    # Randomly sample the required number of examples from each class
+    sampled_indices = []
+    for class_indices in class_indices_list:
+        # Generate a random permutation of the indices and select the first examples_per_class indices
+        permuted_indices = torch.randperm(len(class_indices))
+        selected_indices = [class_indices[i] for i in permuted_indices[:examples_per_class]]
+        sampled_indices.extend(selected_indices)
 
-    indices = []
-    # For each class get every index where it occurs
-    per_class_indices_list = []
-    for c in range(CIFAR_NUM_CLASSES):
-        is_c = torch.eq(labels, c)
-        indices_of_c = torch.nonzero(is_c)
-        per_class_indices_list.append(indices_of_c)
-    # Now take from each class one by one
-    total_examples_per_class = examples_per_class * 2
-    for i in range(total_examples_per_class):
-        for c in range(CIFAR_NUM_CLASSES):
-            index = per_class_indices_list[c][i]
-            indices.append(index)
+    # Shuffle the combined indices
+    sampled_indices = torch.tensor(sampled_indices)
+    permuted_indices = torch.randperm(len(sampled_indices))
+    sampled_indices = sampled_indices[permuted_indices].tolist()
 
-    balanced_images = images[indices]
-    balanced_labels = labels[indices]
-    balanced_dataset = TensorDataset(balanced_images, balanced_labels)
+    # Create a Subset dataset using the combined indices
+    balanced_dataset = Subset(original_dataset, sampled_indices)
     return balanced_dataset
 
 
-def class_pattern_with_noise(n, num_class, noisy_d, percent_correct=1.0, noisy_dim_scalar=1.0):
+def binary_class_pattern_with_noise(n, num_class, noisy_d, percent_correct=1.0, noisy_dim_scalar=1.0):
     num_correct = int(round(percent_correct * n))
     class_d = math.ceil(np.log2(num_class))
     ones = np.ones(class_d)
