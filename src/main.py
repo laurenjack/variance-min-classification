@@ -1,9 +1,9 @@
 import ssl
 import torch
 from torch import nn
-from src import dataset_creator, splitter
+from src import dataset_creator, train_val_split
 from torchmetrics import AveragePrecision
-from models import Mlp, ResNet
+from models import MultiMlp, ResNet
 
 
 # Set the seed for reproduce-ability
@@ -21,16 +21,16 @@ num_epochs = 100
 learning_rate = 0.02
 momentum = 0.9
 epsilon = 0.00000001
-weight_decay = 0.00
-reg_const = 0.3
+weight_decay = 0.01
+reg_const = 0.0
 # Must be set when running the CIFAR10 dataset  + resnet
 data_dir = './data' # Where should the cifar10 data be downloaded?
 examples_per_class = 160
 # Must be set when using the binary class pattern dataset + MLP
-num_input = None
+num_input = 23
 num_hidden = 10
-total_n = 160
-num_classes = 10 # 8
+total_n = 320
+num_classes = 8
 noisy_d = 20
 percent_correct = 1.0
 
@@ -40,6 +40,7 @@ def eval_train_accuracy(y_train, label):
     total = y_train.size(0) * y_train.size(1)
     correct = (predicted == label).sum().item()
     return correct / total
+
 
 def eval_accuracy(data_loader, model):
     softmax = nn.Softmax(dim=1)
@@ -70,12 +71,12 @@ def eval_accuracy(data_loader, model):
         return correct / total, average_precision, y_bar_sums, targets  #, auc
 
 def train():
-    dataset = dataset_creator.cifar10(data_dir, examples_per_class)
-    # dataset = dataset_creator.binary_class_pattern_with_noise(total_n, num_classes, noisy_d, percent_correct, 4)
-    train_loader, val_loader = splitter.train_val_split(dataset, batch_size, m)
+    # dataset = dataset_creator.cifar10(data_dir, examples_per_class)
+    dataset, _ = dataset_creator.binary_class_pattern_with_noise(total_n, num_classes, noisy_d, percent_correct)
+    train_loader, val_loader = splitter.on_percentage(dataset, batch_size, m)
 
-    model = ResNet(m, [2, 2, 2, 2]).to(device)
-    # model = Mlp(m, num_input, num_hidden, num_classes).to(device)
+    # model = ResNet(m, [2, 2, 2, 2]).to(device)
+    model = MultiMlp(m, num_input, num_hidden, num_classes).to(device)
 
     # Loss and optimizer
     softmax_second_dim = nn.Softmax(dim=2)

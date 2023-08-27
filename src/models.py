@@ -206,10 +206,34 @@ class ResNet(nn.Module):
     def reg_loss(self):
         return self.conv1.reg_loss() + sum([r.reg_loss() for r in self.all_residual_blocks]) + self.fc.reg_loss()
 
+
 class Mlp(nn.Module):
 
-    def __init__(self, m, num_input, num_hidden, num_classes):
+    def __init__(self, sizes, num_class):
         super(Mlp, self).__init__()
+        self.num_input = sizes[0]
+        self.linear_layers = []
+        ops = []
+        num_output = sizes[0] # For the case where there are no hidden layers
+        for num_input, num_output in zip(sizes[:-1], sizes[1:]):
+            linear = nn.Linear(num_input, num_output)
+            # linear.retain_grad()
+            self.linear_layers.append(linear)
+            ops.append(linear)
+            ops.append(nn.ReLU())
+        linear = nn.Linear(num_output, num_class)
+        self.linear_layers.append(linear)
+        ops.append(linear)
+        self.layers = nn.Sequential(*ops)
+
+    def forward(self, x):
+        return self.layers(x)
+
+
+class MultiMlp(nn.Module):
+
+    def __init__(self, m, num_input, num_hidden, num_classes):
+        super(MultiMlp, self).__init__()
         self.hidden_layer = Linear(m, num_input, num_hidden)
         self.relu = nn.ReLU()
         self.output_layer = Linear(m, num_hidden, num_classes)
