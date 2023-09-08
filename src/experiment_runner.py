@@ -2,7 +2,7 @@ import copy
 import torch
 from torch.utils.data import Dataset, Subset, DataLoader
 
-from src import train_val_split, train, hyper_parameters
+from src import train_val_split, train, hyper_parameters, helpers
 from src.models import Mlp
 from src.dataset_creator import BinaryRandomAssigned
 
@@ -12,7 +12,7 @@ num_classes = 8
 signal_bits = 3
 input_perms = 2 ** signal_bits
 val_n = input_perms * 10
-min_n = input_perms * 5
+min_n = input_perms * 10
 step_n = input_perms
 max_n = 321
 
@@ -31,7 +31,7 @@ hps = hyper_parameters.with_different_gradients(hp)
 num_hidden = 10
 
 
-binary_random_assigned = BinaryRandomAssigned(num_classes, signal_bits, noisy_d=50, percent_correct=1.0)
+binary_random_assigned = BinaryRandomAssigned(num_classes, signal_bits, noisy_d=20, percent_correct=0.8)
 # We'll always use the same test set, to keep a consistent measuring stick as we increase n
 test_loader = DataLoader(binary_random_assigned.generate_dataset(val_n), batch_size=hp.batch_size)
 num_input = binary_random_assigned.num_input
@@ -44,6 +44,7 @@ initial_params = copy.deepcopy(model.state_dict())
 for n in range(min_n, max_n, step_n):
     # n is the current size of the train set.
     train_set = binary_random_assigned.generate_dataset(n)
+    # helpers.report_patternwise_accurarices(train_set, signal_bits, num_classes)
     train_loader = DataLoader(train_set, batch_size=hp.batch_size) # TODO (Make batch size a dataset param)
     for hp in hps:
         model.load_state_dict(initial_params)

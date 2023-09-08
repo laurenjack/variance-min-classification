@@ -74,22 +74,31 @@ class BinaryRandomAssigned():
         self.noisy_d = noisy_d
         self.num_input = num_input_bits + noisy_d
 
-    def generate_dataset(self, n):
+    def generate_dataset(self, n, shuffle=True):
         all_inputs = []
         all_labels = []
         first_incorrect_index = round(n * self.percent_correct)
         i = 0
+        # Choose a random class offset. This is used to change one class into another, i.e. create an incorrect example
+        # This amount is added to each class, so that the correctness of each class equals percent_correct
+        offset = _random_int(1, self.num_class)
+        class_index = 0  # This variable is used to track when the offset should be incremented
         while i < n:
-            pattern_indices = torch.randperm(self.num_patterns)
+            # We'll build the dataset by adding each pattern 1 at a time, in the same order
             places_left = min(n - i, self.num_patterns)
-            for p in pattern_indices[:places_left]:
-                p = p.item()
+            for p in range(places_left):
                 pattern = self.all_possible_patterns[p]
                 c = self.classes[p]
                 if i >= first_incorrect_index:  # i > n * percent_correct:
-                    # Starting at 1 means we can't get the same class back
-                    random_offset = _random_int(1, self.num_class)
-                    c = (c + random_offset) % self.num_class
+                    # Increment the offset once we've used the same offset on every class
+                    if class_index == self.num_class:
+                        class_index = 0
+                        offset += 1
+                        # Rather than using the modulo operator, reset to 1 (a zero offset would not change the class)
+                        if offset == self.num_class:
+                            offset = 1
+                    class_index += 1
+                    c = (c + offset) % self.num_class
                 if self.noisy_d > 0:
                     noisy_bits = _random_bits((self.noisy_d,))
                     pattern = torch.cat([pattern, noisy_bits])
@@ -98,9 +107,10 @@ class BinaryRandomAssigned():
                 i += 1
         x = torch.stack(all_inputs)
         y = torch.tensor(all_labels)
-        all_indices = torch.randperm(n)
-        x = x[all_indices]
-        y = y[all_indices]
+        if shuffle:
+            all_indices = torch.randperm(n)
+            x = x[all_indices]
+            y = y[all_indices]
         dataset = TensorDataset(x, y)
         return dataset
 
