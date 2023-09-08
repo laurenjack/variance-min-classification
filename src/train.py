@@ -61,7 +61,7 @@ def run(model: nn.Module, train_loader: DataLoader, validation_loader: DataLoade
                     numerator += new_grad
                     denominator += part_denominator
                     gradient_purity = torch.abs(numerator) / (denominator + 0.0000001)
-                    gradient_filter = (gradient_purity > 0.9).float()
+                    gradient_filter = (gradient_purity > 0.5).float()
                     new_grad *= gradient_filter
                 old_grad = model.linear_layers[-1].weight.grad
                 model.linear_layers[-1].weight.grad = new_grad
