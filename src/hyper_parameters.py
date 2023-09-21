@@ -10,6 +10,8 @@ class HyperParameters:
     momentum: float
     weight_decay: float
     gradient: str = 'xe'
+    purity_components: str = 'lagging'
+    purity_threshold: float = 0.5
     print_epoch: bool = False
     print_batch: bool = False
 
@@ -22,3 +24,15 @@ def with_different_gradients(hp: HyperParameters):
         new_hp.learning_rate = learning_rate
         new_hp.gradient = gradient
     return hps
+
+def with_different_purity_components(hp: HyperParameters):
+    purity_components = ['leading', 'lagging']
+    hps = []
+    for pc in purity_components:
+        new_hp = copy.deepcopy(hp)
+        new_hp.purity_components = pc
+        hps.append(new_hp)
+    return hps
+
+
+

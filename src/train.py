@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader
 from src.hyper_parameters import HyperParameters
 
 
-def run(model: nn.Module, train_loader: DataLoader, validation_loader: DataLoader, hp: HyperParameters, num_class: int):
+def run(model: nn.Module, train_loader: DataLoader, validation_loader: DataLoader, hp: HyperParameters, num_class, gradient):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
     optimizer = torch.optim.SGD(model.parameters(),
@@ -13,13 +13,7 @@ def run(model: nn.Module, train_loader: DataLoader, validation_loader: DataLoade
                                 weight_decay=hp.weight_decay,
                                 momentum=hp.momentum)
     softmax_cross_entropy = nn.CrossEntropyLoss()
-
-    # Setup for calculating gradient purity
-    d = model.num_input
-    numerator = torch.zeros(num_class, d)
-    denominator = torch.zeros(num_class, d)
-    previous_numerator = torch.zeros(num_class, d)
-    previous_denominator = torch.zeros(num_class, d)
+    log_softmax = nn.LogSoftmax(dim=1)
 
     for epoch in range(hp.epochs):
         if hp.print_epoch:
@@ -27,44 +21,27 @@ def run(model: nn.Module, train_loader: DataLoader, validation_loader: DataLoade
             val_accuracy = _evaluate_accuracy(model, validation_loader, device)
             print('Validation accuracy: {}\n'.format(val_accuracy))
 
-        numerator -= previous_numerator
-        denominator -= previous_denominator
-        previous_numerator = numerator.clone()
-        previous_denominator = denominator.clone()
-
+        gradient.reset_purity()
 
         for image, label in train_loader:
             image = image.to(device)
             label = label.to(device)
-            logits = model(image)
-            logits.retain_grad() # Retain grad for future calculation
-            loss = softmax_cross_entropy(logits, label)
-
             batch_size = image.shape[0]
-            batch_indices = torch.range(0, batch_size - 1, dtype=torch.int64)
+            batch_indices = torch.arange(batch_size, dtype=torch.int64)
+            logits = model(image)
+            # logits.retain_grad()  # Retain grad for future calculation
+
+            # Manually construct the cross entropy
+            one_hot = torch.zeros(batch_size, num_class) #.to(device)
+            one_hot[batch_indices, label] = 1.0
+            one_not = torch.ones(batch_size, num_class) - one_hot
+            a = -log_softmax(logits) # [batch_indices, label]
+            loss = torch.mean(torch.sum(one_hot * a, dim=1)) #  + one_not * (1 - a)
+            # loss = softmax_cross_entropy(logits, label)
 
             optimizer.zero_grad()
             loss.backward()
-
-            if hp.gradient == 'xe-single' or hp.gradient == 'purity-scaled':
-                x = image.detach()
-                y = label.detach()
-                logit_gradient = logits.grad.detach()[batch_indices, y].unsqueeze(1)
-                # .unsqueeze(1)
-                element_wise_grad = logit_gradient * x
-                new_grad = torch.zeros(num_class, d)
-                part_denominator = torch.zeros(num_class, d)
-                for i in range(d):
-                    new_grad[:, i] = torch.zeros(num_class).scatter_add_(0, y, element_wise_grad[:, i])
-                    part_denominator[:, i] = torch.zeros(num_class).scatter_add_(0, y, torch.abs(element_wise_grad[:, i]))
-                if hp.gradient == 'purity-scaled':
-                    numerator += new_grad
-                    denominator += part_denominator
-                    gradient_purity = torch.abs(numerator) / (denominator + 0.0000001)
-                    gradient_filter = (gradient_purity > 0.5).float()
-                    new_grad *= gradient_filter
-                old_grad = model.linear_layers[-1].weight.grad
-                model.linear_layers[-1].weight.grad = new_grad
+            gradient.modify_gradient(hp, image, label, batch_indices)
             optimizer.step()
             if hp.print_batch:
                 print(f'Batch train loss: {loss.item()}')

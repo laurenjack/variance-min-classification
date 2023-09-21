@@ -3,6 +3,8 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
+from hyper_parameters import HyperParameters
+
 
 NORM_EPSILON = 0.00000001 # Stops dividing by zero when normalizing the weights and biases.
 IS_PROP_VAR = True # when true, use regularization in proportion to variance, when False, use L2 regularization
@@ -99,7 +101,7 @@ class Linear(SharedMagnitude):
 
 class BatchNorm2d(SharedMagnitude):
     def __init__(self, m, num_features, eps=1e-5, momentum=0.1):
-        super(BatchNorm2d, self).__init__()
+        super().__init__()
         self.num_features = num_features
         self.eps = eps
         self.momentum = momentum
@@ -137,7 +139,7 @@ class ConvBlock(SharedMagnitude):
 
 class ResidualBlock(nn.Module):
     def __init__(self, m, in_channels, out_channels, stride=1, downsample=None):
-        super(ResidualBlock, self).__init__()
+        super().__init__()
         self.conv1 = ConvBlock(m, in_channels, out_channels, 3, stride, padding=1, with_relu=True)
         self.conv2 = ConvBlock(m, out_channels, out_channels, 3, 1, padding=1, with_relu=False)
         self.downsample = downsample
@@ -163,7 +165,7 @@ class ResidualBlock(nn.Module):
 class ResNet(nn.Module):
 
     def __init__(self, m, layers, num_classes=10):
-        super(ResNet, self).__init__()
+        super().__init__()
         self.all_residual_blocks = []
         self.inplanes = 64
         k = 7
@@ -207,33 +209,11 @@ class ResNet(nn.Module):
         return self.conv1.reg_loss() + sum([r.reg_loss() for r in self.all_residual_blocks]) + self.fc.reg_loss()
 
 
-class Mlp(nn.Module):
-
-    def __init__(self, sizes, num_class):
-        super(Mlp, self).__init__()
-        self.num_input = sizes[0]
-        self.linear_layers = []
-        ops = []
-        num_output = sizes[0] # For the case where there are no hidden layers
-        for num_input, num_output in zip(sizes[:-1], sizes[1:]):
-            linear = nn.Linear(num_input, num_output)
-            # linear.retain_grad()
-            self.linear_layers.append(linear)
-            ops.append(linear)
-            ops.append(nn.ReLU())
-        linear = nn.Linear(num_output, num_class)
-        self.linear_layers.append(linear)
-        ops.append(linear)
-        self.layers = nn.Sequential(*ops)
-
-    def forward(self, x):
-        return self.layers(x)
-
 
 class MultiMlp(nn.Module):
 
     def __init__(self, m, num_input, num_hidden, num_classes):
-        super(MultiMlp, self).__init__()
+        super().__init__()
         self.hidden_layer = Linear(m, num_input, num_hidden)
         self.relu = nn.ReLU()
         self.output_layer = Linear(m, num_hidden, num_classes)
@@ -294,3 +274,47 @@ class SharedBase(MultiModule):
 #     base_weight = 2 * (torch.rand(out, in_dim, requires_grad=True) - 0.5)  * scaler
 #     base_bias = 2 * (torch.rand(out, requires_grad=True) - 0.5) * scaler
 #     return create_params(m, base_weight, base_bias)
+
+
+class RetainedSequential(nn.Sequential):
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.recent_activations = None
+
+    def forward(self, x):
+        self.recent_activations = []
+        for module in self:
+            x = module(x)
+            # The first condition makes sure we only track the linear outputs, the second stops that from happening
+            # when the network is in evaluation mode.
+            if isinstance(module, nn.Linear) and x.requires_grad:
+                x.retain_grad()  # So that we may recompute the gradient to the weight at that layer.
+                self.recent_activations.append(x)
+        return x
+
+
+class Mlp(nn.Module):
+
+    def __init__(self, sizes, num_class):
+        super().__init__()
+        self.num_input = sizes[0]
+        self.linear_layers = []
+        ops = []
+        num_output = sizes[0] # For the case where there are no hidden layers
+        for num_input, num_output in zip(sizes[:-1], sizes[1:]):
+            self._append_to_layer(num_input, num_output, ops)
+            ops.append(nn.ReLU())
+        self._append_to_layer(num_output, num_class, ops)
+        self.layers = RetainedSequential(*ops)
+
+    def _append_to_layer(self, num_input, num_output, ops):
+        linear = nn.Linear(num_input, num_output)
+        self.linear_layers.append(linear)
+        ops.append(linear)
+
+    def forward(self, x):
+        return self.layers(x)
+
+
+
