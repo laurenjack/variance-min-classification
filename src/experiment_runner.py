@@ -2,7 +2,7 @@ import copy
 import torch
 from torch.utils.data import Dataset, Subset, DataLoader
 
-from src import train_val_split, train, hyper_parameters, helpers
+from src import train, hyper_parameters, helpers, gradient
 from src.models import Mlp
 from src.dataset_creator import BinaryRandomAssigned
 
@@ -27,6 +27,7 @@ hp = hyper_parameters.HyperParameters(batch_size=40,
 
 # hps = [hp]
 hps = hyper_parameters.with_different_gradients(hp)
+# hps = hyper_parameters.with_different_purity_components(hp)
 
 num_hidden = 10
 
@@ -48,7 +49,9 @@ for n in range(min_n, max_n, step_n):
     train_loader = DataLoader(train_set, batch_size=hp.batch_size) # TODO (Make batch size a dataset param)
     for hp in hps:
         model.load_state_dict(initial_params)
-        result = train.run(model, train_loader, test_loader, hp, num_classes)
+        gradient_modifier = gradient.create_gradient(hp, model)
+        result = train.run(model, train_loader, test_loader, hp, num_classes, gradient_modifier)
+        # print(f'{n}, {hp.purity_components}: {result}')
         print(f'{n}, {hp.gradient}: {result}')
 
 
