@@ -8,6 +8,9 @@ class Xe:
     def __init__(self, model):
         self.model = model
 
+    def logit_clipper(self, logits, y):
+        return logits
+
     def reset_purity(self):
         pass
 
@@ -15,22 +18,30 @@ class Xe:
         pass
 
 
+class LogitClipper(Function):
+
+    @staticmethod
+    def forward(ctx, logits, y):
+        ctx.save_for_backward(y)
+        return logits.clone()
+
+    @staticmethod
+    def backward(ctx, logit_gradient):
+        y, = ctx.saved_tensors
+        batch_size = y.shape[0]
+        batch_indices = torch.arange(batch_size, dtype=torch.int64)
+        single_logit_gradient = torch.zeros(*logit_gradient.shape)
+        single_logit_gradient[batch_indices, y] = logit_gradient[batch_indices, y]
+        return single_logit_gradient, None
+
+
 class SingleXe(Xe):
 
     def __init__(self, model):
         super().__init__(model)
 
-    def single_logit_gradient(self, y, batch_indices):
-        logit_gradient = self.model.layers.recent_activations[-1].grad.detach()
-        single_logit_gradient = torch.zeros(*logit_gradient.shape)
-        single_logit_gradient[batch_indices, y] = logit_gradient[batch_indices, y]
-        return single_logit_gradient
-
-    def modify_gradient(self, hp: HyperParameters, image, label, batch_indices):
-        x = image.detach()
-        y = label.detach()
-        grad = self.single_logit_gradient(y, batch_indices)
-        self.model.linear_layers[-1].weight.grad = grad.t() @ x
+    def logit_clipper(self, logits, y):
+        return LogitClipper.apply(logits, y)
 
 
 class Pure(SingleXe):
@@ -58,10 +69,10 @@ class Pure(SingleXe):
     def modify_gradient(self, hp: HyperParameters, image, label, batch_indices):
         x = image.detach()
         y = label.detach()
-        grad = self.single_logit_gradient(y, batch_indices)
+        grad = self.model.layers.recent_activations[-1].grad.detach()
         for i in range(len(self.model.linear_layers)):
             grad_t = grad.t()
-            weight_grad =grad_t  @ x
+            weight_grad = grad_t  @ x
             self.numerators[i] += weight_grad
             self.denominators[i] += torch.abs(grad_t) @ torch.abs(x)
             if hp.purity_components == 'leading':
