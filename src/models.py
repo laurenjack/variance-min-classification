@@ -296,20 +296,20 @@ class RetainedSequential(nn.Sequential):
 
 class Mlp(nn.Module):
 
-    def __init__(self, sizes, num_class):
+    def __init__(self, sizes, num_class, is_bias: bool):
         super().__init__()
         self.num_input = sizes[0]
         self.linear_layers = []
         ops = []
         num_output = sizes[0] # For the case where there are no hidden layers
         for num_input, num_output in zip(sizes[:-1], sizes[1:]):
-            self._append_to_layer(num_input, num_output, ops)
+            self._append_to_layer(num_input, num_output, ops, is_bias)
             ops.append(nn.ReLU())
-        self._append_to_layer(num_output, num_class, ops)
+        self._append_to_layer(num_output, num_class, ops, is_bias)
         self.layers = RetainedSequential(*ops)
 
-    def _append_to_layer(self, num_input, num_output, ops):
-        linear = nn.Linear(num_input, num_output)
+    def _append_to_layer(self, num_input, num_output, ops, is_bias: bool):
+        linear = nn.Linear(num_input, num_output, bias=is_bias)
         self.linear_layers.append(linear)
         ops.append(linear)
 

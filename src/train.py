@@ -13,7 +13,6 @@ def run(model: nn.Module, train_loader: DataLoader, validation_loader: DataLoade
                                 weight_decay=hp.weight_decay,
                                 momentum=hp.momentum)
     softmax_cross_entropy = nn.CrossEntropyLoss()
-    log_softmax = nn.LogSoftmax(dim=1)
 
     for epoch in range(hp.epochs):
         if hp.print_epoch:
@@ -29,15 +28,9 @@ def run(model: nn.Module, train_loader: DataLoader, validation_loader: DataLoade
             batch_size = image.shape[0]
             batch_indices = torch.arange(batch_size, dtype=torch.int64)
             logits = model(image)
-            # logits.retain_grad()  # Retain grad for future calculation
+            logits = gradient.logit_clipper(logits, label)
 
-            # Manually construct the cross entropy
-            one_hot = torch.zeros(batch_size, num_class) #.to(device)
-            one_hot[batch_indices, label] = 1.0
-            one_not = torch.ones(batch_size, num_class) - one_hot
-            a = -log_softmax(logits) # [batch_indices, label]
-            loss = torch.mean(torch.sum(one_hot * a, dim=1)) #  + one_not * (1 - a)
-            # loss = softmax_cross_entropy(logits, label)
+            loss = softmax_cross_entropy(logits, label)
 
             optimizer.zero_grad()
             loss.backward()
