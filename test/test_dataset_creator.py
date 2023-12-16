@@ -80,7 +80,11 @@ def test_binary_random_assigned_small_and_some_incorrect():
             assert y[i] == (c + offset) % 4
         else:
             # The offset should have increased
-            assert y[i] == (c + offset + 1) % 4
+            if offset == 3:
+                new_offset = 1
+            else:
+                new_offset = offset + 1
+            assert y[i] == (c + new_offset) % 4
 
 
     for pattern_key, input_tracker in patterns.items():

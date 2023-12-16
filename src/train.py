@@ -25,8 +25,6 @@ def run(model: nn.Module, train_loader: DataLoader, validation_loader: DataLoade
         for image, label in train_loader:
             image = image.to(device)
             label = label.to(device)
-            batch_size = image.shape[0]
-            batch_indices = torch.arange(batch_size, dtype=torch.int64)
             logits = model(image)
             logits = gradient.logit_clipper(logits, label)
 
@@ -34,7 +32,7 @@ def run(model: nn.Module, train_loader: DataLoader, validation_loader: DataLoade
 
             optimizer.zero_grad()
             loss.backward()
-            gradient.modify_gradient(hp, image, label, batch_indices)
+            gradient.modify_gradient(hp, label)
             optimizer.step()
             if hp.print_batch:
                 print(f'Batch train loss: {loss.item()}')

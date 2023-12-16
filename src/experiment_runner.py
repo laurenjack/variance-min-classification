@@ -6,39 +6,37 @@ from src import train, hyper_parameters, helpers, gradient
 from src.models import Mlp
 from src.dataset_creator import BinaryRandomAssigned
 
-torch.manual_seed(837203)
+torch.manual_seed(837205)
 
-num_classes = 8
-signal_bits = 3
+num_classes = 16 # 64
+signal_bits = 5 # 8
 input_perms = 2 ** signal_bits
 val_n = input_perms * 50
-min_n = input_perms * 10
-step_n = input_perms
-max_n = 321
+min_n = input_perms * 1
+step_n = input_perms * 1
+max_n = input_perms * 20 + 1
 
 hp = hyper_parameters.HyperParameters(batch_size=40,
-                                      epochs=2,
-                                      learning_rate=0.05,
+                                      epochs=300, # 300
+                                      learning_rate=0.05, # 0.01
                                       momentum=0.9,
-                                      weight_decay=0.00,
-                                      gradient='xe-single',
+                                      weight_decay=0.000,
+                                      gradient='xe',
                                       print_epoch=False,
                                       print_batch=False)
 
-# hps = [hp]
+hps = [hp]
 # hps = hyper_parameters.with_different_gradients(hp)
-# hps = hyper_parameters.with_different_purity_components(hp)
-hps = hyper_parameters.with_different_single_calculators(hp)
 
-num_hidden = 10
+num_hidden = 20 # 20
 
 
-binary_random_assigned = BinaryRandomAssigned(num_classes, signal_bits, noisy_d=20, percent_correct=0.8)
+binary_random_assigned = BinaryRandomAssigned(num_classes, signal_bits, noisy_d=20, percent_correct=1.0)
 # We'll always use the same test set, to keep a consistent measuring stick as we increase n
 validation_set = binary_random_assigned.generate_dataset(val_n)
 num_input = binary_random_assigned.num_input
 
-sizes = [num_input]  # [num_input, num_hidden]
+sizes = [num_input, num_hidden]  # [num_input, num_hidden, num_hidden]
 model = Mlp(sizes, num_classes, hp.is_bias)
 # Take a copy of the models initial parameters, so we can re-initialize it each training run, to keep a consistent init.
 initial_params = copy.deepcopy(model.state_dict())
@@ -57,9 +55,7 @@ for n in range(min_n, max_n, step_n):
         model.load_state_dict(initial_params)
         gradient_modifier = gradient.create_gradient(hp, model)
         result = train.run(model, train_loader, test_loader, hp, num_classes, gradient_modifier)
-        # print(f'{n}, {hp.purity_components}: {result}')
-        # print(f'{n}, {hp.gradient}: {result}')
-        print(f'{n}, {hp.single_calculator}: {result}')
+        print(f'{n}, {hp.gradient}: {result}')
     training_run_seed += 1
 
 

@@ -280,9 +280,11 @@ class RetainedSequential(nn.Sequential):
 
     def __init__(self, *args):
         super().__init__(*args)
+        self.recent_input = None
         self.recent_activations = None
 
     def forward(self, x):
+        self.recent_input = x
         self.recent_activations = []
         for module in self:
             x = module(x)

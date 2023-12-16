@@ -14,7 +14,7 @@ class Xe:
     def reset_purity(self):
         pass
 
-    def modify_gradient(self, hp: HyperParameters, image, label, batch_indices):
+    def modify_gradient(self, hp: HyperParameters, y):
         pass
 
 
@@ -66,22 +66,23 @@ class Pure(SingleXe):
             self.previous_numerators[i] = self.numerators[i].clone()
             self.previous_denominators[i] = self.denominators[i].clone()
 
-    def modify_gradient(self, hp: HyperParameters, image, label, batch_indices):
-        x = image.detach()
-        y = label.detach()
-        grad = self.model.layers.recent_activations[-1].grad.detach()
+    def modify_gradient(self, hp: HyperParameters, y):
+        x = self.model.layers.recent_input
         for i in range(len(self.model.linear_layers)):
+            next_layer = self.model.layers.recent_activations[i]
+            grad = next_layer.grad.detach()
             grad_t = grad.t()
             weight_grad = grad_t  @ x
             self.numerators[i] += weight_grad
             self.denominators[i] += torch.abs(grad_t) @ torch.abs(x)
             if hp.purity_components == 'leading':
-                gradient_purity = torch.abs(self.numerators[0]) / (self.denominators[0] + 0.0000001)
+                gradient_purity = torch.abs(self.numerators[i]) / (self.denominators[i] + 0.0000001)
             elif hp.purity_components == 'lagging':
-                gradient_purity = torch.abs(self.previous_numerators[0]) / (self.previous_denominators[0] + 0.0000001)
+                gradient_purity = torch.abs(self.previous_numerators[i]) / (self.previous_denominators[i] + 0.0000001)
             gradient_filter = (gradient_purity > hp.purity_threshold).float()
             new_grad = weight_grad * gradient_filter
             self.model.linear_layers[i].weight.grad = new_grad
+            x = next_layer
 
 
 def create_gradient(hp: HyperParameters, model):
