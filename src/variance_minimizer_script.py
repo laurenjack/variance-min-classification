@@ -73,7 +73,7 @@ def eval_accuracy(data_loader, model):
 def train():
     # dataset = dataset_creator.cifar10(data_dir, examples_per_class)
     dataset, _ = dataset_creator.binary_class_pattern_with_noise(total_n, num_classes, noisy_d, percent_correct)
-    train_loader, val_loader = splitter.on_percentage(dataset, batch_size, m)
+    train_loader, val_loader = train_val_split.on_percentage(dataset, batch_size, m)
 
     # model = ResNet(m, [2, 2, 2, 2]).to(device)
     model = MultiMlp(m, num_input, num_hidden, num_classes).to(device)

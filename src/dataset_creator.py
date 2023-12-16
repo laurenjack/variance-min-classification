@@ -1,23 +1,12 @@
-from typing import List
-from dataclasses import dataclass
 import math
-from collections import deque
 import numpy as np
 import torch
-from torch import Tensor
 from torchvision import datasets
 from torchvision import transforms
-from torch.utils.data import DataLoader, SubsetRandomSampler, TensorDataset, Subset, Dataset
+from torch.utils.data import TensorDataset, Subset
 
 
 CIFAR_NUM_CLASSES = 10
-
-
-# @dataclass
-# class DatasetProperties:
-#
-#     dataset: Dataset
-#     input_shape: List[int]
 
 
 def cifar10(data_dir, examples_per_class):
@@ -145,55 +134,6 @@ def binary_class_pattern_with_noise(n, num_class, noisy_d, percent_correct=1.0, 
     x = torch.stack(x)
     y = torch.tensor(y)
     return TensorDataset(x, y), x.shape
-
-
-class BalancedDataset(TensorDataset):
-
-    def __init__(self, x: Tensor, y: Tensor, num_patterns: int, first_incorrect_index: int):
-        super().__init__(x, y)
-        self.x = x
-        self.y = y
-        self.num_patterns = num_patterns
-        self.first_incorrect_index = first_incorrect_index
-        self.n = len(self)
-        self.num_correct = first_incorrect_index
-
-    def subset(self, n, forbidden_indices=[]):
-        assert n < len(self)
-        num_correct = int(round(self.num_correct * n / self.n))
-        num_incorrect = n - num_correct
-        correct_indices = _pattern_balanced_subset(0, num_correct, self.num_patterns, forbidden_indices)
-        incorrect_indices = _pattern_balanced_subset(self.first_incorrect_index, num_incorrect, self.num_patterns, forbidden_indices)
-        subset_indices = correct_indices + incorrect_indices
-        return subset_indices
-
-
-def _pattern_balanced_subset(starting_index, sub_n, num_patterns, forbidden_indices):
-    indices_shuffle = torch.randperm(sub_n, dtype=torch.int64) + starting_index
-    # Group all the indices of each single pattern together, inside a deque
-    pattern_to_input = {p: deque() for p in range(num_patterns)}
-    for i in indices_shuffle:
-        i = i.item()
-        if i not in forbidden_indices:
-            p = i % num_patterns
-            pattern_to_input[p].append(i)
-    # Now add examples from each pattern until the dataset is full
-    sub_count = 0
-    p = _random_int(0, num_patterns)
-    sub_indices = []
-    while sub_count < sub_n:
-        q = pattern_to_input[p]
-        assert len(q) > 0, "Not enough examples in this dataset for class balance, create more."
-        sub_indices.append(q.pop())
-        sub_count += 1
-        p += 1
-        p %= num_patterns  # Loop back around
-    return sub_indices
-
-
-
-
-
 
 
 def get_perms(d: int):
