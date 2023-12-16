@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader
 from src.hyper_parameters import HyperParameters
 
 
-def run(model: nn.Module, train_loader: DataLoader, validation_loader: DataLoader, hp: HyperParameters, num_class, gradient):
+def run(model: nn.Module, train_loader: DataLoader, validation_loader: DataLoader, hp: HyperParameters):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
     optimizer = torch.optim.SGD(model.parameters(),
@@ -20,19 +20,15 @@ def run(model: nn.Module, train_loader: DataLoader, validation_loader: DataLoade
             val_accuracy = _evaluate_accuracy(model, validation_loader, device)
             print('Validation accuracy: {}\n'.format(val_accuracy))
 
-        gradient.reset_purity()
-
         for image, label in train_loader:
             image = image.to(device)
             label = label.to(device)
             logits = model(image)
-            logits = gradient.logit_clipper(logits, label)
 
             loss = softmax_cross_entropy(logits, label)
 
             optimizer.zero_grad()
             loss.backward()
-            gradient.modify_gradient(hp, label)
             optimizer.step()
             if hp.print_batch:
                 print(f'Batch train loss: {loss.item()}')

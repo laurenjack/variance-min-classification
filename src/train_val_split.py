@@ -1,7 +1,7 @@
 from collections import deque
 
 import torch
-from torch.utils.data import Dataset, DataLoader, Subset
+from torch.utils.data import Dataset, Subset
 
 
 def on_validation_n(dataset: Dataset, val_n: int, is_class_balanced=False, num_class=None, m: int = 1):

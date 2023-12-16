@@ -1,8 +1,8 @@
 import copy
 import torch
-from torch.utils.data import Dataset, Subset, DataLoader
+from torch.utils.data import DataLoader
 
-from src import train, hyper_parameters, helpers, gradient
+from src import train, hyper_parameters, helpers
 from src.models import Mlp
 from src.dataset_creator import BinaryRandomAssigned
 
@@ -21,7 +21,6 @@ hp = hyper_parameters.HyperParameters(batch_size=40,
                                       learning_rate=0.05, # 0.01
                                       momentum=0.9,
                                       weight_decay=0.000,
-                                      gradient='xe',
                                       print_epoch=False,
                                       print_batch=False)
 
@@ -53,9 +52,8 @@ for n in range(min_n, max_n, step_n):
         train_loader = DataLoader(train_set, batch_size=hp.batch_size)  # TODO (Make batch size a dataset param)
         test_loader = DataLoader(validation_set, batch_size=hp.batch_size)
         model.load_state_dict(initial_params)
-        gradient_modifier = gradient.create_gradient(hp, model)
-        result = train.run(model, train_loader, test_loader, hp, num_classes, gradient_modifier)
-        print(f'{n}, {hp.gradient}: {result}')
+        result = train.run(model, train_loader, test_loader, hp)
+        print(f'{n}: {result}')
     training_run_seed += 1
 
 
