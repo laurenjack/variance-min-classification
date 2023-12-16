@@ -65,8 +65,11 @@ class BinaryRandomAssigned():
 
     def __init__(self, num_class: int, num_input_bits: int, noisy_d=0, percent_correct=1.0):
         self.num_class = num_class
-        self.all_possible_patterns = get_perms(num_input_bits)
-        self.num_patterns = self.all_possible_patterns.shape[0]
+        all_possible_patterns = get_perms(num_input_bits)
+        self.num_patterns = all_possible_patterns.shape[0]
+        # Shuffle the patterns so class assignment is random
+        self.all_possible_patterns = all_possible_patterns[torch.randperm(self.num_patterns)]
+
         assert self.num_patterns >= num_class, "Must be at least one pattern per class"
         # Assign each of the possible inputs to a class
         self.classes = [p % num_class for p in range(self.num_patterns)]
