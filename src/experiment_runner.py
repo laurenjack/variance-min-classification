@@ -52,7 +52,7 @@ for n in range(min_n, max_n, step_n):
         train_loader = DataLoader(train_set, batch_size=hp.batch_size)  # TODO (Make batch size a dataset param)
         test_loader = DataLoader(validation_set, batch_size=hp.batch_size)
         model.load_state_dict(initial_params)
-        result = train.run(model, train_loader, test_loader, hp)
+        result = train.run(model, train_loader, test_loader, num_classes, hp)
         print(f'{n}: {result}')
     training_run_seed += 1
 
