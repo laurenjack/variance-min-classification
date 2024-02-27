@@ -1,3 +1,6 @@
+import torch
+
+
 class PatternCounter(object):
 
     def __init__(self, first_class, num_class):
@@ -33,6 +36,13 @@ def pattern_key(pattern):
     return total
 
 
+def index_key(index):
+    key = 0
+    for i in index:
+        key += 2 ** i
+    return key
+
+
 def fill_pattern_counters(dataset, true_input_bits, num_class):
     n = len(dataset)
     x, y = dataset[0:n]
@@ -62,6 +72,17 @@ def report_patternwise_accurarices(dataset, true_input_bits, num_class):
     for p in range(2 ** true_input_bits):
         percent_correct = pattern_counters[p].percent_max_class()
         print(f'{p}: {percent_correct}')
+
+
+def calc_dimension_purity(tensor_dataset):
+    x, y = tensor_dataset.tensors
+    y = y.bool()
+    class1 = x[y]
+    class0= x[~y]
+    class_sum1 = torch.sum(class1, axis=0)
+    class_sum0 = torch.sum(-class0, axis=0)
+    return torch.abs(class_sum1 + class_sum0) / y.shape[0]
+
 
 
 
