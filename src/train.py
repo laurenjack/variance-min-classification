@@ -13,13 +13,13 @@ def run(model: nn.Module, train_loader: DataLoader, validation_loader: DataLoade
                                 weight_decay=hp.weight_decay,
                                 momentum=hp.momentum)
     softmax_cross_entropy = nn.CrossEntropyLoss()
-    log_softmax = nn.LogSoftmax(dim=1)
+    # n = len(train_loader.dataset)
 
     for epoch in range(hp.epochs):
         if hp.print_epoch:
             print('Before epoch {}'.format(epoch))
-            val_accuracy = _evaluate_accuracy(model, validation_loader, device)
-            print('Validation accuracy: {}\n'.format(val_accuracy))
+            r = _evaluate_accuracy(model, train_loader, device), _evaluate_accuracy(model, validation_loader, device)
+            print('Accuracy: {}\n'.format(r))
 
         for image, label in train_loader:
             image = image.to(device)
@@ -30,9 +30,11 @@ def run(model: nn.Module, train_loader: DataLoader, validation_loader: DataLoade
             indices_for_batch = torch.arange(current_batch_size, dtype=torch.int64)
             one_hot = torch.zeros(current_batch_size, num_classes).to(device)
             one_hot[indices_for_batch, label] = 1.0
+            # alpha = hp.k / (num_classes * n)
+            one_hot += hp.k
+            one_hot /= torch.sum(one_hot, axis=1, keepdim=True)
 
-            loss = -torch.mean(torch.sum(one_hot * log_softmax(logits), axis=1))
-            # loss = softmax_cross_entropy(logits, label)
+            loss = softmax_cross_entropy(logits, one_hot)
 
             optimizer.zero_grad()
             loss.backward()
@@ -45,12 +47,16 @@ def run(model: nn.Module, train_loader: DataLoader, validation_loader: DataLoade
 def _evaluate_accuracy(model: nn.Module, data_loader: DataLoader, device):
     model.eval()
     with torch.no_grad():
+        softmax = torch.nn.Softmax()
         correct = 0
         total = 0
         for image, label in data_loader:
             image = image.to(device)
             label = label.to(device)
             logits = model(image)
+            # if image.shape[0] <= 12:
+            #     a = softmax(logits)
+            #     print(a)
             _, predicted = torch.max(logits, dim=1)
             is_correct = predicted == label
             correct += is_correct.sum().item()
