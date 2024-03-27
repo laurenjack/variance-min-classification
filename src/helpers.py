@@ -43,6 +43,24 @@ def index_key(index):
     return key
 
 
+def dual_index_key(index, n):
+    if len(index) > 0 and max(index) == n - 1:
+        index = [i for i in range(n) if i not in index]
+    return index_key(index)
+
+
+def from_index(key):
+    index = []
+    i = 0
+    while key > 0:
+        if key % 2 != 0:
+            index.append(i)
+        i += 1
+        key //= 2
+    return index
+
+
+
 def fill_pattern_counters(dataset, true_input_bits, num_class):
     n = len(dataset)
     x, y = dataset[0:n]

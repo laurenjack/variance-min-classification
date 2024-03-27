@@ -2,12 +2,37 @@ import itertools
 import math
 from itertools import combinations
 import numpy as np
+from scipy import special, integrate, optimize
 
 from src import helpers
 
 
 def gen(n, d, c=3):
     return np.random.uniform(low=-c, high=c, siz=(n, d))
+
+
+def find_segmentations_dual(x):
+    n, d = x.shape
+    point_indices = [i for i in range(n)]
+    b = np.ones(d)
+    plane_counter = set()
+    for plane_indices in combinations(point_indices, d):
+        plane_indices = list(plane_indices)
+        plane_points = x[plane_indices]
+        inv = np.linalg.inv(plane_points)
+        plane = inv.dot(-b)
+        red_indices = []
+        colour = x.dot(plane) + 1.0
+        for i in range(n):
+            if i not in plane_indices:
+                if colour[i] > 0:
+                    red_indices.append(i)
+        for k in range(0, d+1):
+            for sub_indices in itertools.combinations(plane_indices, k):
+                sub_indices = list(sub_indices)
+                new_red = red_indices + sub_indices
+                plane_counter.add(helpers.dual_index_key(new_red, n))
+    return plane_counter
 
 
 def count_segmentations_new(x):
@@ -37,66 +62,73 @@ def count_segmentations_new(x):
                 new_blue = blue_indices + other_indices
                 plane_counter.add(helpers.index_key(new_red))
                 plane_counter.add(helpers.index_key(new_blue))
-    return len(plane_counter)
+    return plane_counter
 
 
-def _add_sub_indices(indices, plane_counter):
-    d = len(indices)
-    for k in range(1, d):
-        for sub_indices in itertools.combinations(indices, k):
-            index_key = helpers.index_key(sub_indices)
-            plane_counter.add(index_key)
+def most_likely_plane(segmentations, y):
+    n = y.shape[0]
+    normalizer = 0.0
+    integrated_noramlizer = 0.0
+    max_mle = 0.0
+    max_mle_reg = 0.0
+    reg_normalizer = 0.0
+    max_correct = 0
+    segs = 0
+    for key in segmentations:
+        segmentation_index = helpers.from_index(key)
+        predictions = np.zeros(n, dtype=np.int64)
+        predictions[segmentation_index] = 1
+        is_correct = predictions == y
+        n_correct = is_correct.sum()
+        p_max = n_correct / n
+        mle = p_max ** n_correct * (1 - p_max) ** (n - n_correct)
+        p_max = (n_correct + 2) / (n + 4)
+        mle_reg = p_max ** (n_correct + 2) * (1 - p_max) ** (n - n_correct + 2)
+        max_mle_reg = max(max_mle_reg, mle_reg)
+        max_mle = max(mle, max_mle)
+        max_correct = max(max_correct, n_correct, n - n_correct)
+        normalizer += mle
+        reg_normalizer += mle_reg
+        segs += 1
+        integrated_noramlizer += special.beta(n_correct + 3, n - n_correct + 3)
+    t_zero = 1 / segs
+    return max_correct, max_mle, max_mle / normalizer, max_mle_reg / reg_normalizer, max_mle_reg / integrated_noramlizer, t_zero
 
 
-
-def count_segmentations(x):
+def iterate_problem(x, y):
     n, d = x.shape
-    point_indices = [i for i in range(n)]
-    b = np.ones(d)
-    plane_counter = set()
-    big_plan_counter = set()
-    max_in_plane = 0
-    min_out_of_plane = 100000
-    edges = 0
-    for plane_indices in combinations(point_indices, d):
-        plane_indices = list(plane_indices)
-        plane_points = x[plane_indices]
-        # plane, _, _, _ = np.linalg.lstsq(plane_points, b, rcond=None)
-        inv = np.linalg.inv(plane_points)
-        plane = inv.dot(-b)
-        red_indices = []
-        blue_indices = []
-        colour = x.dot(plane) + 1.0
+    for k in range(1, d+1):
+        # Take k dimensions
+        x_sub = x[:,:k]
+        print(f'Dim: {k}')
+        segmentations = find_segmentations_dual(x_sub)
+        max_correct, mle, max_posterior, post1, post2, t_zero = most_likely_plane(segmentations, y)
+        print(f'    Max correct: {max_correct} MLE: {mle} Posteriors: {max_posterior, post1, post2}, t zero: {t_zero}')
 
-        for i in range(n):
-            if i not in plane_indices:
-                if colour[i] > 0:
-                    red_indices.append(i)
-                else:
-                    blue_indices.append(i)
-                min_out_of_plane = abs(colour[i]) if abs(colour[i]) < min_out_of_plane else min_out_of_plane
-            else:
-                max_in_plane = abs(colour[i]) if abs(colour[i]) > max_in_plane else max_in_plane
-        # if max_in_plane > min_out_of_plane:
-        #     error_count += 1
-        # assert len(blue_indices) + len(red_indices) + d == n
-        if len(red_indices) == 0 or len(blue_indices) == 0:
-            edges += 1
-            for k in range(1, d):
-                for sub_indices in itertools.combinations(plane_indices, k):
-                    index_key = helpers.index_key(sub_indices)
-                    plane_counter.add(index_key)
-        plane_counter.add(helpers.index_key(red_indices))
-        big_plan_counter.add(helpers.index_key(red_indices))
-        plane_counter.add(helpers.index_key(blue_indices))
-        big_plan_counter.add(helpers.index_key(blue_indices))
-        red_indices.extend(plane_indices)
-        blue_indices.extend(plane_indices)
-        plane_counter.add(helpers.index_key(red_indices))
-        big_plan_counter.add(helpers.index_key(red_indices))
-        plane_counter.add(helpers.index_key(blue_indices))
-        big_plan_counter.add(helpers.index_key(blue_indices))
-    return len(plane_counter), len(big_plan_counter), min_out_of_plane, max_in_plane, edges
+
+def integral(x, y):
+
+    def p(w):
+        return 1.0 / (1 + np.exp(-x * w))
+
+    def log_sigmoid(x):
+        # For positive x
+        if x >= 0:
+            return -np.log(1 + np.exp(-x))
+        # For negative x
+        else:
+            return x - np.log(1 + np.exp(x))
+
+    def mle(w):
+        a = p(w)
+        return np.sum(np.log(a) * y + np.log(1 - a) * (1 - y))
+
+    def to_min(x):
+        return -mle(x[0], x[1])
+
+    # maximum = -optimize.minimize(to_min, np.array([-1.0, -1.0])).fun
+    # return integrate.nquad(mle, [(-10, 10), (-10, 10)])[0]
+    return integrate.quad(mle, -1, 1)[0]
 
 
 def analytic_segmentations(n, d):
@@ -116,15 +148,20 @@ def new_bound(n, d):
     return math.comb(n, d) + new_bound(n, d - 1)
 
 
-
-
-
-# n, d = 20, 10
+n = 10
+d = 1
 # x = np.random.randn(n, d)
-# print(math.comb(n, d))
-# print(count_segmentations(x))
-# print(analytic_segmentations(n, d))
-# print(np.finfo(np.float32))
-# print(np.finfo(np.float64))
-# print(np.finfo(np.longdouble))
-# print(np.finfo(np.float128))
+x = np.arange(n) - (n - 1) / 2
+x /= n
+half_zeros = np.zeros(n // 2, dtype=np.int64)
+half_ones = np.ones(n // 2, dtype=np.int64)
+y = np.concatenate((half_zeros, half_ones))
+# np.random.shuffle(y)
+# iterate_problem(x, y)
+# x = np.random.randn(n)
+print(integral(x, y))
+
+
+
+
+
