@@ -38,12 +38,14 @@ def test_count_segmentations():
                 # x = np.array(x).transpose()
                 x = np.random.randn(n, d) # .astype(np.float32)
                 # empirical_result, er2, min_out_of_plane, max_in_plane, edges = d_dim_problem.count_segmentations(x)
-                true_result = d_dim_problem.count_segmentations_new(x)
+                dual_result = len(d_dim_problem.find_segmentations_dual(x))
+                two_sided_result = len(d_dim_problem.count_segmentations_new(x))
                 # if empirical_result < comb:
                 print(n, d)
                 print(comb)
                 # print(empirical_result)
-                print(true_result)
+                print(dual_result)
+                print(two_sided_result)
                 # print(er2)
                 print(new_bound)
                 # print(other_bound)
@@ -55,7 +57,19 @@ def test_count_segmentations():
                 # assert empirical_result >= comb
 
 
+def test_most_likely_plane():
+    segmentations = set([0, 1, 3])
+    y = np.array([1, 1, 0])
+    expected = 1 / ((2 / 3) ** 2 * (1 / 3) * 2 + 1)
+    result = d_dim_problem.most_likely_plane(segmentations, y)
+    assert math.isclose(result, expected, rel_tol=1e-8)
+
+    y = np.array([1, 0, 1])
+    result = d_dim_problem.most_likely_plane(segmentations, y)
+    assert math.isclose(result, 1 / 3, rel_tol=1e-8)
+
 
 if __name__ == '__main__':
-    test_count_segmentations()
+    # test_count_segmentations()
+    test_most_likely_plane()
     print("All tests passed!")
