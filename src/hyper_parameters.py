@@ -10,17 +10,9 @@ class HyperParameters:
     learning_rate: float
     momentum: float
     weight_decay: float
-    k: float = 0.0
     is_bias = False
     print_epoch: bool = False
     print_batch: bool = False
-
-
-def with_different_k(hp: HyperParameters, ks: List[float]):
-    hps = [copy.deepcopy(hp) for _ in ks]
-    for hp, k in zip(hps, ks):
-        hp.k = k
-    return hps
 
 
 def with_different_weight_decay(hp: HyperParameters, weight_decays: List[float]):

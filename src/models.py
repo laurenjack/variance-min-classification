@@ -1,64 +1,10 @@
-from abc import abstractmethod
 import torch
 from torch import nn
 import torch.nn.functional as F
 
-from hyper_parameters import HyperParameters
+from src.custom_modules import NORM_EPSILON, MultiModule, SharedMagnitude, create_conv_params, Linear, BatchNorm2d
 
-
-NORM_EPSILON = 0.00000001 # Stops dividing by zero when normalizing the weights and biases.
 IS_PROP_VAR = True # when true, use regularization in proportion to variance, when False, use L2 regularization
-
-
-class MultiModule(nn.Module):
-    """Represents a neural network module with multiple sub models, in the context of variance minimization"""
-
-    def __init__(self):
-        super().__init__()
-
-    @abstractmethod
-    def get_params(self, j, is_variance):
-        return None
-
-
-class SharedMagnitude(MultiModule):
-
-    def __init__(self):
-        super().__init__()
-
-    def get_params(self, j, is_variance):
-        w = get_applied(self.weight, self.weight_mag, j, is_variance)
-        b = get_applied(self.bias, self.bias_mag, j, is_variance)
-        return w, b
-
-
-def norm2(tensor):
-    return torch.sum(tensor ** 2, axis=0) ** 0.5
-
-
-def create_normed_params(weight, bias):
-    weight_mag = norm2(weight)
-    bias_mag = norm2(bias)
-    return nn.Parameter(weight), nn.Parameter(bias), nn.Parameter(weight_mag), nn.Parameter(bias_mag)
-
-def create_batch_norm_params(m, num_features):
-    weight = torch.ones(m, num_features)
-    bias = torch.zeros(m, num_features)
-    return create_normed_params(weight, bias)
-
-
-def create_conv_params(m, c_in, out, k):
-    scaler = 1 / (c_in * k ** 2) ** 0.5
-    weight = 2 * (torch.rand(m, out, c_in, k, k, requires_grad=True) - 0.5) * scaler
-    bias = 2 * (torch.rand(m, out, requires_grad=True) - 0.5) * scaler
-    return create_normed_params(weight, bias)
-
-
-def create_linear_params(m, in_dim, out):
-    scaler = 1 / in_dim ** 0.5
-    weight = 2 * (torch.rand(m, out, in_dim, requires_grad=True) - 0.5)  * scaler
-    bias = 2 * (torch.rand(m, out, requires_grad=True) - 0.5) * scaler
-    return create_normed_params(weight, bias)
 
 
 def get_reg(tensor, base_tensor):
@@ -76,46 +22,8 @@ class Sequential(nn.Sequential):
             x = module(x, j, is_variance)
         return x
 
-def get_applied(param, param_magnitude, j, is_variance):
-    param_j = param[j]
-    norm = norm2(param.detach())  # Need to detach the norm, so that gradients are not shared across datasets.
-    normed_param = param_j / (norm + NORM_EPSILON)
-    # Detach the entire normed weight if this is the variance forward pass, because we cannot minimize variance using
-    # the weight parameters (the signal will disappear)
-    if is_variance:
-        normed_param = normed_param.detach()
-    return normed_param * param_magnitude
 
-class Linear(SharedMagnitude):
-
-    def __init__(self, m, c_in, out):
-        super().__init__()
-        self.weight, self.bias, self.weight_mag, self.bias_mag = create_linear_params(m, c_in, out)
-        #self.base_weight, self.base_bias, self.weight, self.bias = create_linear_params(m, c_in, out)
-
-    def forward(self, x, j, is_variance):
-        w, b = self.get_params(j, is_variance)
-        return F.linear(x, weight=w, bias=b)
-
-
-
-class BatchNorm2d(SharedMagnitude):
-    def __init__(self, m, num_features, eps=1e-5, momentum=0.1):
-        super().__init__()
-        self.num_features = num_features
-        self.eps = eps
-        self.momentum = momentum
-        self.weight, self.bias, self.weight_mag, self.bias_mag = create_batch_norm_params(m, num_features)
-        # self.base_weight, self.base_bias, self.weight, self.bias = create_batch_norm_params(m, num_features)
-        self.register_buffer('running_mean', torch.zeros(num_features))
-        self.register_buffer('running_var', torch.ones(num_features))
-
-    def forward(self, x, j, is_variance):
-        w, b = self.get_params(j, is_variance)
-        y = F.batch_norm(x, self.running_mean, self.running_var, weight=w, bias=b, training=self.training,
-                         momentum=self.momentum, eps=self.eps)
-        return y
-
+# TODO(Jack) remove m, j and is_variance from this point on.
 class ConvBlock(SharedMagnitude):
     def __init__(self, m, c_in, out, k, stride, padding=0, with_relu=False):
         super().__init__()
@@ -161,6 +69,7 @@ class ResidualBlock(nn.Module):
         if self.downsample:
             total += self.downsample.reg_loss()
         return total
+
 
 class ResNet(nn.Module):
 
