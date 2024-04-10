@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
+from torch.nn import functional as F
 
 from src.hyper_parameters import HyperParameters
 
@@ -21,15 +22,25 @@ class Trainer(object):
                 r = self._eval_accuracy(model, train_loader, device), self._eval_accuracy(model, validation_loader,
                                                                                           device)
                 print('Accuracy: {}\n'.format(r))
+                # if epoch >= 75:
+                #     print(model.weight)
+                #     print(model.weight_mag)
+                #     print(model.w)
 
             for image, label in train_loader:
                 image = image.to(device)
                 label = label.to(device)
                 logits = model(image)
-                loss = self.loss(logits, label)
+                loss = self.loss(logits, label) + hp.post_constant * model.weight_mag
 
                 optimizer.zero_grad()
                 loss.backward()
+                # print(model.weight)
+                # print(model.weight.grad) # += 3 * model.weight / torch.sum(model.weight ** 2) ** 0.5
+                # reg_term = 0.03 * model.weight / torch.sum(model.weight ** 2)
+                # print(reg_term)
+                # model.weight_mag.grad += 0.03
+                # print(model.weight.grad)
                 optimizer.step()
                 if hp.print_batch:
                     print(f'Batch train loss: {loss.item()}')
@@ -44,6 +55,8 @@ class Trainer(object):
                 image = image.to(device)
                 label = label.to(device)
                 logits = model(image)
+                # w = torch.tensor([[1.0, 1.0, 1.0]])
+                # logits = F.linear(image, weight=w)
                 predicted = self.predict(logits)
                 is_correct = predicted == label
                 correct += is_correct.sum().item()

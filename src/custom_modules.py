@@ -38,7 +38,7 @@ class SharedMagnitude(MultiModule):
 
 
 def norm2(tensor):
-    return torch.sum(tensor ** 2, dim=0) ** 0.5
+    return torch.sum(tensor ** 2) ** 0.5
 
 
 def create_normed_params(weight, bias):
@@ -49,7 +49,8 @@ def create_normed_params(weight, bias):
 
 def create_normed_param(tensor):
     tensor_mag = norm2(tensor)
-    return nn.Parameter(tensor), nn.Parameter(tensor_mag)
+    log_mag = torch.log(tensor_mag)
+    return nn.Parameter(tensor), nn.Parameter(log_mag)
 
 
 def create_batch_norm_params(num_features):
@@ -82,9 +83,9 @@ def create_bias(out):
 
 
 def get_applied(param, param_magnitude):
-    norm = norm2(param)
+    norm = torch.norm(param).detach()
     normed_param = param / (norm + NORM_EPSILON)
-    return normed_param * param_magnitude
+    return normed_param * torch.exp(param_magnitude)
 
 
 class Linear(SharedMagnitude):

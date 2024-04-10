@@ -10,6 +10,7 @@ class HyperParameters:
     learning_rate: float
     momentum: float
     weight_decay: float
+    post_constant: float
     is_bias = False
     print_epoch: bool = False
     print_batch: bool = False
