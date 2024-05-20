@@ -52,7 +52,7 @@ def cifar10(data_dir, examples_per_class):
 
 class BinaryRandomAssigned():
 
-    def __init__(self, num_class: int, num_input_bits: int, noisy_d=0, percent_correct=1.0):
+    def __init__(self, num_class: int, num_input_bits: int, noisy_d=0):
         self.num_class = num_class
         all_possible_patterns = get_perms(num_input_bits)
         self.num_patterns = all_possible_patterns.shape[0]
@@ -62,14 +62,13 @@ class BinaryRandomAssigned():
         assert self.num_patterns >= num_class, "Must be at least one pattern per class"
         # Assign each of the possible inputs to a class
         self.classes = [p % num_class for p in range(self.num_patterns)]
-        self.percent_correct = percent_correct
         self.noisy_d = noisy_d
         self.num_input = num_input_bits + noisy_d
 
-    def generate_dataset(self, n, shuffle=True):
+    def generate_dataset(self, n, percent_correct, shuffle=True):
         all_inputs = []
         all_labels = []
-        first_incorrect_index = round(n * self.percent_correct)
+        first_incorrect_index = round(n * percent_correct)
         i = 0
         # Choose a random class offset. This is used to change one class into another, i.e. create an incorrect example
         # This amount is added to each class, so that the correctness of each class equals percent_correct
@@ -103,8 +102,8 @@ class BinaryRandomAssigned():
             all_indices = torch.randperm(n)
             x = x[all_indices]
             y = y[all_indices]
-        dataset = TensorDataset(x, y)
-        return dataset
+        # dataset = TensorDataset(x, y)
+        return x, y
 
 
 def binary_class_pattern_with_noise(n, num_class, noisy_d, percent_correct=1.0, noisy_dim_scalar=1.0):
