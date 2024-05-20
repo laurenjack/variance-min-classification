@@ -12,37 +12,46 @@ def run(model: nn.Module, image, label, hp: HyperParameters, c_values: list[floa
                                 momentum=hp.momentum)
     bce_with_sigmoid = nn.BCEWithLogitsLoss()
 
-    grads = []
-    regs = []
-    totals = []
+    # grads = []
+    # totals = []
+    # regs = []
     w0s = []
+    w1s = []
     w2s = []
+    final_weight = model.weight.data
+    normed_weight = final_weight / torch.norm(final_weight)
     for c in c_values:
         # Update the weight
-        model.weight_mag.data = torch.tensor(c)
+        model.weight.data = normed_weight * c
+        # model.weight_mag.data = torch.tensor(c)
         logits = model(image)
-        loss = bce_with_sigmoid(logits[:, 0], label)  # + 0.1 * model.weight_mag
+        loss = bce_with_sigmoid(logits[:, 0], label.float())  # + 0.1 * model.weight_mag
         optimizer.zero_grad()
         loss.backward()
-        grad = model.weight_mag.grad.item()
-        grad_w = model.w.grad
+        # grad = model.weight_mag.grad.item()
+        # grads.append(grad)
+        grad_w = model.weight.grad  # + hp.post_constant * model.weight.data / c ** 2
+        grad_w += 0.1 * torch.sign(normed_weight)
         grad_w0 = grad_w[0, 0].item()
+        grad_w1 = grad_w[0, 1].item()
         grad_w2 = grad_w[0, 2].item()
-        reg = hp.post_constant
-        total = grad + reg
-        grads.append(grad)
-        regs.append(reg)
-        totals.append(total)
+        # reg =  hp.post_constant * model.weight.data[0, 0] / c ** 2
+
+
+        # regs.append(reg)
+        # total = grad + reg
+        # totals.append(total)
         w0s.append(grad_w0)
+        w1s.append(grad_w1)
         w2s.append(grad_w2)
 
     plt.figure(figsize=(10, 6))  # Creates a new figure with a specified size
 
-    # Plotting both grads and regs against c_values
-    plt.plot(c_values, grads, label='Grads', marker='o')  # Adds a line plot for grads
-    plt.plot(c_values, regs, label='Regs', marker='x') # Adds a line plot for regs
-    plt.plot(c_values, totals, label='Totals')
+    # plt.plot(c_values, grads, label='Grads')
+    # plt.plot(c_values, totals, label='Totals')
+    # plt.plot(c_values, regs, label='Regs')
     plt.plot(c_values, w0s, label='w0_grads')
+    plt.plot(c_values, w1s, label='w1_grads')
     plt.plot(c_values, w2s, label='w2_grads')
 
     plt.xlabel('C Values')  # X-axis label

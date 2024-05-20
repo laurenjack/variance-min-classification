@@ -1,20 +1,26 @@
+import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
 from torch.nn import functional as F
 
 from src.hyper_parameters import HyperParameters
+from src.posterior_minimizer import numeric_integrals
 
 
 class Trainer(object):
 
-    def run(self, model: nn.Module, train_loader: DataLoader, validation_loader: DataLoader, hp: HyperParameters):
+    def run(self, model: nn.Module, train_loader: DataLoader, validation_loader: DataLoader, hp: HyperParameters, direct_reg_constructor=None):
+        if direct_reg_constructor is None:
+            direct_reg_constructor = DirectReg
+        direct_reg = direct_reg_constructor(hp.post_constant)
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model = model.to(device)
-        optimizer = torch.optim.SGD(model.parameters(),
-                                    lr=hp.learning_rate,
-                                    weight_decay=hp.weight_decay,
-                                    momentum=hp.momentum)
+        # optimizer = torch.optim.SGD(model.parameters(),
+        #                             lr=hp.learning_rate,
+        #                             weight_decay=hp.weight_decay,
+        #                             momentum=hp.momentum)
+        optimizer = torch.optim.Adam(model.parameters(), lr=hp.learning_rate, weight_decay=hp.weight_decay)
 
         for epoch in range(hp.epochs):
             if hp.print_epoch:
@@ -31,16 +37,14 @@ class Trainer(object):
                 image = image.to(device)
                 label = label.to(device)
                 logits = model(image)
-                loss = self.loss(logits, label) + hp.post_constant * model.weight_mag
+                loss = self.loss(logits, label) # + hp.post_constant * model.weight_mag
 
                 optimizer.zero_grad()
                 loss.backward()
-                # print(model.weight)
-                # print(model.weight.grad) # += 3 * model.weight / torch.sum(model.weight ** 2) ** 0.5
-                # reg_term = 0.03 * model.weight / torch.sum(model.weight ** 2)
+                # reg_term = hp.post_constant * model.weight / torch.sum(model.weight ** 2)
                 # print(reg_term)
-                # model.weight_mag.grad += 0.03
-                # print(model.weight.grad)
+                with torch.no_grad():
+                    direct_reg.apply(model, image, label)
                 optimizer.step()
                 if hp.print_batch:
                     print(f'Batch train loss: {loss.item()}')
@@ -83,11 +87,56 @@ class SigmoidBxeTrainer(Trainer):
         self.sigmoid = nn.Sigmoid()
 
     def loss(self, logits, labels):
-        return self.bce_with_sigmoid(logits[:, 0], labels)
+        return self.bce_with_sigmoid(logits[:, 0], labels.float())
 
     def predict(self, logits):
         probs = self.sigmoid(logits[:, 0])
         return torch.round(probs, decimals=0)
+
+
+class DirectReg:
+    """
+    Modify the gradients of a model directly, to apply a regularizer.
+    """
+
+    def __init__(self, post_constant):
+        self.post_constant = post_constant
+
+    def apply(cls, model, x, y):
+        pass
+
+
+class L1(DirectReg):
+
+    def apply(self, model, x, y):
+        n = x.shape[0]
+        model.weight.grad += self.post_constant / n * torch.sign(model.weight.data)
+
+
+class BoxScaled(DirectReg):
+
+    def __init__(self, epsilon):
+        self.epsilon = epsilon
+
+    def apply(self, model, x, y):
+        w = model.weight.data
+        model.weight.grad += w
+
+
+
+class BoundsAsParam(DirectReg):
+
+    def apply(self, model, x, y):
+        w = model.weight.data
+        posterior_grad = self.post_constant * numeric_integrals.d_posterior(x.numpy(), y.numpy(), w.numpy()[0])
+        print(model.weight)
+        print(model.weight.grad)
+        print(posterior_grad)
+        model.weight.grad += posterior_grad.astype(np.float32)
+        print(model.weight.grad)
+
+
+
 
 
 

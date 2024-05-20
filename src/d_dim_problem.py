@@ -106,30 +106,6 @@ def iterate_problem(x, y):
         print(f'    Max correct: {max_correct} MLE: {mle} Posteriors: {max_posterior, post1, post2}, t zero: {t_zero}')
 
 
-def integral(x, y):
-
-    def p(w):
-        return 1.0 / (1 + np.exp(-x * w))
-
-    def log_sigmoid(x):
-        # For positive x
-        if x >= 0:
-            return -np.log(1 + np.exp(-x))
-        # For negative x
-        else:
-            return x - np.log(1 + np.exp(x))
-
-    def mle(w):
-        a = p(w)
-        return np.sum(np.log(a) * y + np.log(1 - a) * (1 - y))
-
-    def to_min(x):
-        return -mle(x[0], x[1])
-
-    # maximum = -optimize.minimize(to_min, np.array([-1.0, -1.0])).fun
-    # return integrate.nquad(mle, [(-10, 10), (-10, 10)])[0]
-    return integrate.quad(mle, -1, 1)[0]
-
 
 def analytic_segmentations(n, d):
     mid = (n + 1) // 2
@@ -149,17 +125,17 @@ def new_bound(n, d):
 
 
 n = 10
-d = 1
-# x = np.random.randn(n, d)
-x = np.arange(n) - (n - 1) / 2
-x /= n
+d = 4
+x = np.random.randn(n, d)
+# x = np.arange(n) - (n - 1) / 2
+# x /= n
 half_zeros = np.zeros(n // 2, dtype=np.int64)
 half_ones = np.ones(n // 2, dtype=np.int64)
 y = np.concatenate((half_zeros, half_ones))
-# np.random.shuffle(y)
-# iterate_problem(x, y)
+np.random.shuffle(y)
+iterate_problem(x, y)
 # x = np.random.randn(n)
-print(integral(x, y))
+# print(integral(x, y))
 
 
 
