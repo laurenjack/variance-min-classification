@@ -4,9 +4,7 @@ from src import helpers
 
 
 def test_binary_random_assigned_large():
-    dataset = dataset_creator.BinaryRandomAssigned(4, 8).generate_dataset(1027)
-    assert len(dataset) == 1027
-    x, y = dataset[0:1027]
+    x, y = dataset_creator.BinaryRandomAssigned(4, 8).generate_dataset(1027)
     assert (1027, 8) == x.shape
     assert (1027,) == y.shape
 
@@ -36,13 +34,11 @@ def test_binary_random_assigned_large():
 
 
 def test_binary_random_assigned_medium_and_some_incorrect():
-    dataset = dataset_creator.BinaryRandomAssigned(4, 4, noisy_d=3, percent_correct=0.5).generate_dataset(192, shuffle=False)
-    assert len(dataset) == 192
-    x, y = dataset[0:192]
+    x, y = dataset_creator.BinaryRandomAssigned(4, 4, noisy_d=3).generate_dataset(192, percent_correct=0.5, shuffle=False)
     assert (192, 7) == x.shape
     assert (192,) == y.shape
     # Build up counts of each class for each input.
-    pattern_counters = helpers.fill_pattern_counters(dataset, 4, 4)
+    pattern_counters = helpers.fill_pattern_counters(x, y, 4, 4)
     assert len(pattern_counters) == 16
     for pattern_counter in pattern_counters.values():
         class_map = pattern_counter.class_map
@@ -58,9 +54,7 @@ def test_binary_random_assigned_medium_and_some_incorrect():
 
 
 def test_binary_random_assigned_small_and_some_incorrect():
-    dataset = dataset_creator.BinaryRandomAssigned(4, 3, percent_correct=0.75).generate_dataset(32, shuffle=False)
-    assert len(dataset) == 32
-    x, y = dataset[0:32]
+    x, y = dataset_creator.BinaryRandomAssigned(4, 3).generate_dataset(32, percent_correct=0.75, shuffle=False)
     assert (32, 3) == x.shape
     assert (32,) == y.shape
 
@@ -130,10 +124,35 @@ def test_when_class_pattern_with_noise_first_class_matches_then_class_doesnt_mat
         torch.allclose(torch.abs(example[4:]), 3.0 * torch.ones(40))
 
 
+def test_distinct_inputs_for_features():
+    data_gen = dataset_creator.DistinctInputsForFeatures(2, 3, 4, noisy_d=7)
+    x, y = data_gen.generate_dataset(10, 9, shuffle=False)
+    assert x.shape == (60, 31)
+    assert y.shape == (60,)
+    first_pattern = [x[0, 0:4], x[1, 4:8], x[2, 8:12], x[3, 12:16], x[4, 16:20], x[5, 20:24]]
+    for i in range(54):
+        p = i % 6
+        for p_anti in range(6):
+            does_match = _matches_first(first_pattern, x, i, p_anti)
+            if p_anti == p:
+                assert does_match
+            else:
+                assert not does_match
+    for i in range(54, 60, 1):
+        for p_anti in range(6):
+            assert not _matches_first(first_pattern, x, i, p_anti)
+    assert torch.equal(torch.tensor([0.0, 1.0]).repeat(30), y)
+
+
+def _matches_first(first_pattern, x, i, p):
+    return x[i, 4*p] == first_pattern[p][0] and x[i, 4*p+1] == first_pattern[p][1] and x[i, 4*p+2] == first_pattern[p][2] and x[i, 4*p+3] == first_pattern[p][3]
+
+
 if __name__ == '__main__':
     torch.manual_seed(23721)
     test_binary_random_assigned_small_and_some_incorrect()
     test_binary_random_assigned_medium_and_some_incorrect()
     test_binary_random_assigned_large()
     test_when_class_pattern_with_noise_first_class_matches_then_class_doesnt_match()
-    print('All tests passed')
+    test_distinct_inputs_for_features()
+    print('All tests passed!')

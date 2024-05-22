@@ -61,9 +61,8 @@ def from_index(key):
 
 
 
-def fill_pattern_counters(dataset, true_input_bits, num_class):
-    n = len(dataset)
-    x, y = dataset[0:n]
+def fill_pattern_counters(x, y, true_input_bits, num_class):
+    n = x.shape[0]
     pattern_counters = {}
     for i in range(n):
         p = pattern_key(x[i, 0:true_input_bits])
@@ -75,16 +74,16 @@ def fill_pattern_counters(dataset, true_input_bits, num_class):
     return pattern_counters
 
 
-def report_patternwise_class_balance(dataset, true_input_bits, num_class):
-    pattern_counters = fill_pattern_counters(dataset, true_input_bits, num_class)
+def report_patternwise_class_balance(x, y, true_input_bits, num_class):
+    pattern_counters = fill_pattern_counters(x, y, true_input_bits, num_class)
     for p, pattern_counter in pattern_counters.items():
         print(f'{p}:')
         for c, count in pattern_counter.class_map.items():
             print(f'    {c}: {count}')
 
 
-def report_patternwise_accurarices(dataset, true_input_bits, num_class):
-    pattern_counters = fill_pattern_counters(dataset, true_input_bits, num_class)
+def report_patternwise_accurarices(x, y, true_input_bits, num_class):
+    pattern_counters = fill_pattern_counters(x, y, true_input_bits, num_class)
     # The max class will be the true class, unless the percent_correct is very low (near chance)
     # pattern_true_class = {p: counter.max_class for p, counter in pattern_counters.items()}
     for p in range(2 ** true_input_bits):
