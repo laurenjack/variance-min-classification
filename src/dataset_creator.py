@@ -50,7 +50,46 @@ def cifar10(data_dir, examples_per_class):
     return balanced_dataset
 
 
-class BinaryRandomAssigned():
+class DistinctInputsForFeatures:
+
+    def __init__(self, num_class: int, patterns_per_class: int, bits_per_pattern: int, noisy_d=0):
+        self.num_class = num_class
+        self.patterns_per_class = patterns_per_class
+        self.num_patterns = num_class * patterns_per_class
+        self.noisy_d = noisy_d
+        all_patterns = get_perms(bits_per_pattern)
+        self.patterns = [] # Keeps track of the specific pattern
+        self.all_anti_patterns = [] # Keeps track permutation that is not the pattern
+        for c in range(num_class):
+            for pc in range(patterns_per_class):
+                pattern, anti_patterns = _random_row(all_patterns, anti_too=True)
+                self.patterns.append(pattern)
+                self.all_anti_patterns.append(anti_patterns)
+
+    def generate_dataset(self, n_per_pattern, correct_per_pattern, shuffle=True):
+        assert isinstance(n_per_pattern, int)
+        assert isinstance(correct_per_pattern, int)
+        assert 0 <= correct_per_pattern <= n_per_pattern
+        x = []
+        y = []
+        for i in range(n_per_pattern):
+            for p in range(self.num_patterns):
+                # Choose a random set of anything but that pattern for all positions
+                full_pattern = [_random_row(anti_patterns) for anti_patterns in self.all_anti_patterns]
+                # Set the actual pattern, if this instance is supposed to be correct
+                if i < correct_per_pattern:
+                    full_pattern[p] = self.patterns[p]
+                full_pattern = torch.cat(full_pattern)
+                # Now add the noisy dimensions
+                full_pattern = torch.cat([full_pattern, _random_bits((self.noisy_d,))])
+                # Don't use a convnet on this problem coz classes are evenly spaced!
+                c = p % self.num_class
+                x.append(full_pattern)
+                y.append(c)
+        return _return_xy(x, y, shuffle)
+
+
+class BinaryRandomAssigned:
 
     def __init__(self, num_class: int, num_input_bits: int, noisy_d=0):
         self.num_class = num_class
@@ -65,7 +104,7 @@ class BinaryRandomAssigned():
         self.noisy_d = noisy_d
         self.num_input = num_input_bits + noisy_d
 
-    def generate_dataset(self, n, percent_correct, shuffle=True):
+    def generate_dataset(self, n, percent_correct=1.0, shuffle=True):
         all_inputs = []
         all_labels = []
         first_incorrect_index = round(n * percent_correct)
@@ -96,14 +135,18 @@ class BinaryRandomAssigned():
                 all_inputs.append(pattern)
                 all_labels.append(c)
                 i += 1
-        x = torch.stack(all_inputs)
-        y = torch.tensor(all_labels)
-        if shuffle:
-            all_indices = torch.randperm(n)
-            x = x[all_indices]
-            y = y[all_indices]
-        # dataset = TensorDataset(x, y)
-        return x, y
+        return _return_xy(all_inputs, all_labels, shuffle)
+
+
+def _return_xy(x_list, y_list, shuffle):
+    n = len(x_list)
+    x = torch.stack(x_list)
+    y = torch.tensor(y_list)
+    if shuffle:
+        all_indices = torch.randperm(n)
+        x = x[all_indices]
+        y = y[all_indices]
+    return x, y
 
 
 def binary_class_pattern_with_noise(n, num_class, noisy_d, percent_correct=1.0, noisy_dim_scalar=1.0):
@@ -151,6 +194,17 @@ def _get_perms(i, perm):
     right[i] = 1.0
     right_perms = _get_perms(i, right)
     return left_perms + right_perms
+
+
+def _random_row(tensor, anti_too=False):
+    num_rows = tensor.shape[0]
+    random_index = torch.randint(0, num_rows, (1,)).item()
+    # If this flag is set, return all the rows that are not the randomly selected row, in a second tensor
+    if anti_too:
+        anti_indices = [i for i in range(num_rows)]
+        del anti_indices[random_index]
+        return tensor[random_index], tensor[anti_indices]
+    return tensor[random_index]
 
 
 def _random_int(low, high):

@@ -14,7 +14,7 @@ def analytic_p_single_dim(n, p):
 
 
 def single_dim_problem(l, n, p):
-    return np.less(np.random.rand(n, l), p).astype(np.int)
+    return np.less(np.random.rand(n, l), p).astype(int)
 
 
 def iterate_single_dim(y):
@@ -70,11 +70,11 @@ def get_p_max_equals_x_dict(t, n, p=0.5):
 
 
 if __name__ == '__main__':
-    t = 3
-    n = 3
+    t = 1000
+    n = 1000
     p = 0.5
     print(expected_max_x(t, n, p))
     # print(prob_p_equals_p(t, n, 0.5, 3))
     # print(prob_p_equals_p(t, n, 0.6, 3))
-    print(maximum_x_in_l_tries(10000000, t, n, p))
-    print(expected_success_single_dim(10000000, n, p))
+    # print(maximum_x_in_l_tries(10000000, t, n, p))
+    # print(expected_success_single_dim(10000000, n, p))

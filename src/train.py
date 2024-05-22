@@ -110,7 +110,7 @@ class L1(DirectReg):
 
     def apply(self, model, x, y):
         n = x.shape[0]
-        model.weight.grad += self.post_constant / n * torch.sign(model.weight.data)
+        model.weight.grad += self.post_constant / n ** 0.5 * torch.sign(model.weight.data)
 
 
 class BoxScaled(DirectReg):
