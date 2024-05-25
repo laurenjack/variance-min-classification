@@ -115,3 +115,44 @@ class BatchNorm2d(SharedMagnitude):
         y = F.batch_norm(x, self.running_mean, self.running_var, weight=w, bias=b, training=self.training,
                          momentum=self.momentum, eps=self.eps)
         return y
+
+
+class Mlp(nn.Module):
+
+    def __init__(self, sizes, is_bias: bool):
+        super().__init__()
+        self.num_input = sizes[0]
+        self.linears = []
+        ops = []
+        num_output = sizes[0] # For the case where there are no hidden layers
+        for num_input, num_output in zip(sizes[:-2], sizes[1:-1]):
+            self._append_to_layer(num_input, num_output, ops, is_bias)
+            ops.append(nn.ReLU())
+        self._append_to_layer(num_output, sizes[-1], ops, is_bias)
+        self.layers = nn.Sequential(*ops)
+
+    def _append_to_layer(self, num_input, num_output, ops, is_bias: bool):
+        linear = nn.Linear(num_input, num_output, bias=is_bias)
+        self.linears.append(linear)
+        ops.append(linear)
+
+    def forward(self, x):
+        return 1 * self.layers(x)
+
+
+class HiddenLayerFixed(nn.Module):
+
+    def __init__(self, d, fixed):
+        super().__init__()
+        in_shape = fixed.shape[1]
+        self.linear = nn.Linear(d, in_shape, bias=False)
+        self.relu = nn.ReLU()
+        # For the regularizer
+        self.linears = [self.linear]
+        self.fixed = fixed
+
+    def forward(self, x):
+        z = self.linears[0](x)
+        a = self.relu(z)
+        return F.linear(a, self.fixed)
+

@@ -110,7 +110,11 @@ class L1(DirectReg):
 
     def apply(self, model, x, y):
         n = x.shape[0]
-        model.weight.grad += self.post_constant / n ** 0.5 * torch.sign(model.weight.data)
+        for linear in model.linears:
+            # if linear.weight.shape[1] == 8:
+            #     print(linear.weight)
+            #     print(linear.weight.grad)
+            linear.weight.grad += self.post_constant / n ** 0.5 * torch.sign(linear.weight.data)
 
 
 class BoxScaled(DirectReg):
