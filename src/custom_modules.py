@@ -119,7 +119,7 @@ class BatchNorm2d(SharedMagnitude):
 
 class Mlp(nn.Module):
 
-    def __init__(self, sizes, is_bias: bool):
+    def __init__(self, sizes, is_bias: bool, all_linear=False):
         super().__init__()
         self.num_input = sizes[0]
         self.linears = []
@@ -127,9 +127,18 @@ class Mlp(nn.Module):
         num_output = sizes[0] # For the case where there are no hidden layers
         for num_input, num_output in zip(sizes[:-2], sizes[1:-1]):
             self._append_to_layer(num_input, num_output, ops, is_bias)
-            ops.append(nn.ReLU())
+            if not all_linear:
+                ops.append(nn.ReLU())
         self._append_to_layer(num_output, sizes[-1], ops, is_bias)
         self.layers = nn.Sequential(*ops)
+        for o, layer in enumerate(self.layers):
+            if isinstance(layer, nn.Linear):
+                non_linearity = 'relu'
+                if o == 0 or all_linear:
+                    non_linearity = 'linear'
+                nn.init.kaiming_uniform_(layer.weight, nonlinearity=non_linearity)
+        #self.apply(self.he_init_uniform)
+
 
     def _append_to_layer(self, num_input, num_output, ops, is_bias: bool):
         linear = nn.Linear(num_input, num_output, bias=is_bias)
@@ -137,22 +146,31 @@ class Mlp(nn.Module):
         ops.append(linear)
 
     def forward(self, x):
-        return 1 * self.layers(x)
+        return self.layers(x)
+
+    @staticmethod
+    def he_init_uniform(layer):
+        if isinstance(layer, nn.Linear):
+            nn.init.kaiming_uniform_(layer.weight, nonlinearity='relu')
 
 
-class HiddenLayerFixed(nn.Module):
+class HiddenLayersFixed(nn.Module):
 
-    def __init__(self, d, fixed):
+    def __init__(self, sizes):
         super().__init__()
-        in_shape = fixed.shape[1]
-        self.linear = nn.Linear(d, in_shape, bias=False)
+        d = sizes[0]
+        d1 = sizes[1]
+        self.linear = nn.Linear(d, d1, bias=False)
         self.relu = nn.ReLU()
         # For the regularizer
         self.linears = [self.linear]
-        self.fixed = fixed
+        # Generate the fixed layers
+        self.fixed_layers = [1.0 / d2 ** 0.5 + 2.0 / d2 ** 0.5 * torch.rand(d2, d1) for d1, d2 in zip(sizes[1:-1], sizes[2:])]
 
     def forward(self, x):
         z = self.linears[0](x)
         a = self.relu(z)
-        return F.linear(a, self.fixed)
+        for fixed in self.fixed_layers:
+            a = F.linear(a, fixed)
+        return a
 

@@ -3,35 +3,37 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 from torch.nn import functional as F
+from torch.optim.lr_scheduler import StepLR
 
 from src.hyper_parameters import HyperParameters
-from src.posterior_minimizer import numeric_integrals
-
+from src.posterior_minimizer import numeric_integrals, weight_tracker as wt
 
 class Trainer(object):
 
-    def run(self, model: nn.Module, train_loader: DataLoader, validation_loader: DataLoader, hp: HyperParameters, direct_reg_constructor=None):
+    def run(self, model: nn.Module, train_loader: DataLoader, validation_loader: DataLoader, hp: HyperParameters, direct_reg_constructor=None, weight_tracker=None):
         if direct_reg_constructor is None:
             direct_reg_constructor = DirectReg
         direct_reg = direct_reg_constructor(hp.post_constant)
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model = model.to(device)
-        # optimizer = torch.optim.SGD(model.parameters(),
-        #                             lr=hp.learning_rate,
-        #                             weight_decay=hp.weight_decay,
-        #                             momentum=hp.momentum)
-        optimizer = torch.optim.Adam(model.parameters(), lr=hp.learning_rate, weight_decay=hp.weight_decay)
+        if hp.is_adam:
+            optimizer = torch.optim.Adam(model.parameters(), lr=hp.learning_rate, weight_decay=hp.weight_decay)
+        else:
+            optimizer = torch.optim.SGD(model.parameters(),
+                                        lr=hp.learning_rate,
+                                        weight_decay=hp.weight_decay,
+                                        momentum=hp.momentum)
 
+        scheduler = StepLR(optimizer, step_size=10, gamma=hp.gamma)
+        if weight_tracker is None:
+            weight_tracker = wt.WeightTracker()
         for epoch in range(hp.epochs):
             if hp.print_epoch:
                 print('Before epoch {}'.format(epoch))
                 r = self._eval_accuracy(model, train_loader, device), self._eval_accuracy(model, validation_loader,
                                                                                           device)
                 print('Accuracy: {}\n'.format(r))
-                # if epoch >= 75:
-                #     print(model.weight)
-                #     print(model.weight_mag)
-                #     print(model.w)
+                # print(model.linears[0].weight[:, 0])
 
             for image, label in train_loader:
                 image = image.to(device)
@@ -44,10 +46,14 @@ class Trainer(object):
                 # reg_term = hp.post_constant * model.weight / torch.sum(model.weight ** 2)
                 # print(reg_term)
                 with torch.no_grad():
+                    weight_tracker.pre_reg(model)
                     direct_reg.apply(model, image, label)
+                    weight_tracker.post_reg(model)
                 optimizer.step()
                 if hp.print_batch:
                     print(f'Batch train loss: {loss.item()}')
+            weight_tracker.update(model)
+            scheduler.step()
         return self._eval_accuracy(model, train_loader, device), self._eval_accuracy(model, validation_loader, device)
 
     def _eval_accuracy(self, model: nn.Module, data_loader: DataLoader, device):
@@ -106,15 +112,36 @@ class DirectReg:
         pass
 
 
+
 class L1(DirectReg):
 
     def apply(self, model, x, y):
         n = x.shape[0]
-        for linear in model.linears:
-            # if linear.weight.shape[1] == 8:
-            #     print(linear.weight)
-            #     print(linear.weight.grad)
-            linear.weight.grad += self.post_constant / n ** 0.5 * torch.sign(linear.weight.data)
+        d0 = x.shape[1]
+        L =len(model.linears)
+        for l, linear in enumerate(model.linears):
+            dl_plus, dl = linear.weight.shape
+            d_scale = dl_plus # dl_plus * dl
+            # if l < L-1:
+            #     d_scale /= 2 ** 0.5
+            # if l > 0:
+            #     d_scale *= 2
+            # else:
+            #     d_scale /= 2 ** 0.5
+            # grads = linear.weight.grad[0, 1:]
+            # var = torch.sum(grads ** 2) / n
+            # print(var ** 0.5)
+            # import matplotlib.pyplot as plt
+            #
+            # plt.hist(grads, bins=50, edgecolor='black')
+            # plt.title('Histogram of grads array')
+            # plt.xlabel('Value')
+            # plt.ylabel('Frequency')
+            # plt.grid(True)
+            # plt.show()
+            # break
+            linear.weight.grad += self.post_constant / (n * d_scale) ** 0.5 * torch.sign(linear.weight.data)
+
 
 
 class BoxScaled(DirectReg):
@@ -138,9 +165,6 @@ class BoundsAsParam(DirectReg):
         print(posterior_grad)
         model.weight.grad += posterior_grad.astype(np.float32)
         print(model.weight.grad)
-
-
-
 
 
 
