@@ -52,7 +52,7 @@ def cifar10(data_dir, examples_per_class):
 
 class DistinctInputsForFeatures:
 
-    def __init__(self, num_class: int, patterns_per_class: int, bits_per_pattern: int, noisy_d=0):
+    def __init__(self, num_class: int, patterns_per_class: int, bits_per_pattern: int, noisy_d=0, scale_by_root_d=False):
         self.num_class = num_class
         self.patterns_per_class = patterns_per_class
         self.num_patterns = num_class * patterns_per_class
@@ -65,6 +65,7 @@ class DistinctInputsForFeatures:
                 pattern, anti_patterns = _random_row(all_patterns, anti_too=True)
                 self.patterns.append(pattern)
                 self.all_anti_patterns.append(anti_patterns)
+        self.scale_by_root_d = scale_by_root_d
 
     def generate_dataset(self, n_per_pattern, correct_per_pattern, shuffle=True):
         assert isinstance(n_per_pattern, int)
@@ -86,12 +87,12 @@ class DistinctInputsForFeatures:
                 c = p % self.num_class
                 x.append(full_pattern)
                 y.append(c)
-        return _return_xy(x, y, shuffle)
+        return _return_xy(x, y, shuffle, self.scale_by_root_d)
 
 
 class BinaryRandomAssigned:
 
-    def __init__(self, num_class: int, num_input_bits: int, noisy_d=0):
+    def __init__(self, num_class: int, num_input_bits: int, noisy_d=0, scale_by_root_d=False):
         self.num_class = num_class
         all_possible_patterns = get_perms(num_input_bits)
         self.num_patterns = all_possible_patterns.shape[0]
@@ -103,6 +104,7 @@ class BinaryRandomAssigned:
         self.classes = [p % num_class for p in range(self.num_patterns)]
         self.noisy_d = noisy_d
         self.num_input = num_input_bits + noisy_d
+        self.scale_by_root_d = scale_by_root_d
 
     def generate_dataset(self, n, percent_correct=1.0, shuffle=True):
         all_inputs = []
@@ -135,12 +137,36 @@ class BinaryRandomAssigned:
                 all_inputs.append(pattern)
                 all_labels.append(c)
                 i += 1
-        return _return_xy(all_inputs, all_labels, shuffle)
+        return _return_xy(all_inputs, all_labels, shuffle, self.scale_by_root_d)
 
 
-def _return_xy(x_list, y_list, shuffle):
+class AllNoise:
+
+    def __init__(self, num_class, d):
+        self.num_class = num_class
+        self.d = d
+
+    def generate_dataset(self, n, shuffle=True):
+        xs = []
+        ys = []
+        for i in range(n):
+            xs.append(_random_bits((self.d,)))
+            c = i % self.num_class
+            ys.append(c)
+        return _return_xy(x_list=xs, y_list=ys, shuffle=shuffle, scale_by_root_d=False)
+
+
+
+
+
+def _return_xy(x_list, y_list, shuffle, scale_by_root_d):
     n = len(x_list)
     x = torch.stack(x_list)
+    if scale_by_root_d:
+        d = x.shape[1]
+        # Scaling by the standard deviation of a binomial
+        x /= d ** 0.5
+    # x *= 2
     y = torch.tensor(y_list)
     if shuffle:
         all_indices = torch.randperm(n)

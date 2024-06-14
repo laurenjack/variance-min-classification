@@ -11,6 +11,9 @@ class HyperParameters:
     momentum: float
     weight_decay: float
     post_constant: float
+    gamma: float = 1.0
+    is_adam: bool = False
+    all_linear: bool = False
     is_bias = False
     print_epoch: bool = False
     print_batch: bool = False
