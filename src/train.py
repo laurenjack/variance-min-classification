@@ -10,10 +10,10 @@ from src.posterior_minimizer import numeric_integrals, weight_tracker as wt
 
 class Trainer(object):
 
-    def run(self, model: nn.Module, train_loader: DataLoader, validation_loader: DataLoader, hp: HyperParameters, direct_reg_constructor=None, weight_tracker=None):
-        if direct_reg_constructor is None:
-            direct_reg_constructor = DirectReg
-        direct_reg = direct_reg_constructor(hp.post_constant)
+    def run(self, model: nn.Module, train_loader: DataLoader, validation_loader: DataLoader, hp: HyperParameters,
+            direct_reg=None, weight_tracker=None):
+        if direct_reg is None:
+            direct_reg = DirectReg(hp.post_constant)
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model = model.to(device)
         if hp.is_adam:
@@ -115,32 +115,21 @@ class DirectReg:
 
 class L1(DirectReg):
 
+    def __init__(self, post_constant, single_moving=None):
+        super().__init__(post_constant)
+        self.single_moving = single_moving
+
     def apply(self, model, x, y):
         n = x.shape[0]
-        d0 = x.shape[1]
-        L =len(model.linears)
         for l, linear in enumerate(model.linears):
             dl_plus, dl = linear.weight.shape
             d_scale = dl_plus # dl_plus * dl
-            # if l < L-1:
-            #     d_scale /= 2 ** 0.5
-            # if l > 0:
-            #     d_scale *= 2
-            # else:
-            #     d_scale /= 2 ** 0.5
-            # grads = linear.weight.grad[0, 1:]
-            # var = torch.sum(grads ** 2) / n
-            # print(var ** 0.5)
-            # import matplotlib.pyplot as plt
-            #
-            # plt.hist(grads, bins=50, edgecolor='black')
-            # plt.title('Histogram of grads array')
-            # plt.xlabel('Value')
-            # plt.ylabel('Frequency')
-            # plt.grid(True)
-            # plt.show()
-            # break
-            linear.weight.grad += self.post_constant / (n * d_scale) ** 0.5 * torch.sign(linear.weight.data)
+            # If single moving is set, zero out all other gradients
+            if self.single_moving is not None and self.single_moving != l:
+                linear.weight.grad *= 0.0
+            else:
+                linear.weight.grad += self.post_constant * torch.sign(linear.weight.data)  # * torch.abs(model.linears[(l + 1) % 2].weight[0,0])
+            # linear.weight.grad += self.post_constant / (n * d_scale) ** 0.5 * torch.sign(linear.weight.data)
 
 
 
