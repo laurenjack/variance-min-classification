@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 import copy
 from dataclasses import dataclass
 
@@ -12,6 +12,7 @@ class HyperParameters:
     weight_decay: float
     post_constant: float
     gamma: float = 1.0
+    single_moving: Optional[int] = None
     is_adam: bool = False
     all_linear: bool = False
     is_bias = False

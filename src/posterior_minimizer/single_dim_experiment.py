@@ -36,5 +36,5 @@ hp = hyper_parameters.HyperParameters(batch_size=n,
                                       print_batch=False)
 
 problem = dataset_creator.AllNoise(num_class=2, d=d)
-runner.run(problem, runs, n, n_test, hp, 0, shuffle=True)
+runner.run(problem, runs, n, n_test, hp, 0, deviation, shuffle=True)
 
