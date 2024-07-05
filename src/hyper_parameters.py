@@ -10,9 +10,8 @@ class HyperParameters:
     learning_rate: float
     momentum: float
     weight_decay: float
-    post_constant: float
+    post_constants: List[float]
     gamma: float = 1.0
-    single_moving: Optional[int] = None
     is_adam: bool = False
     all_linear: bool = False
     is_bias = False

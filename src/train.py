@@ -13,7 +13,7 @@ class Trainer(object):
     def run(self, model: nn.Module, train_loader: DataLoader, validation_loader: DataLoader, hp: HyperParameters,
             direct_reg=None, weight_tracker=None):
         if direct_reg is None:
-            direct_reg = DirectReg(hp.post_constant)
+            direct_reg = DirectReg(hp.post_constants)
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model = model.to(device)
         if hp.is_adam:
@@ -24,6 +24,7 @@ class Trainer(object):
                                         weight_decay=hp.weight_decay,
                                         momentum=hp.momentum)
 
+        sigmoid = nn.Sigmoid()
         scheduler = StepLR(optimizer, step_size=10, gamma=hp.gamma)
         if weight_tracker is None:
             weight_tracker = wt.WeightTracker()
@@ -51,6 +52,9 @@ class Trainer(object):
                     weight_tracker.post_reg(model)
                 optimizer.step()
                 if hp.print_batch:
+                    logits_sub = logits[0:10]
+                    a_sub = sigmoid(logits_sub)
+                    print(f'Probs: {a_sub}')
                     print(f'Batch train loss: {loss.item()}')
             weight_tracker.update(model)
             scheduler.step()
@@ -105,8 +109,8 @@ class DirectReg:
     Modify the gradients of a model directly, to apply a regularizer.
     """
 
-    def __init__(self, post_constant):
-        self.post_constant = post_constant
+    def __init__(self, post_constants):
+        self.post_constants = post_constants
 
     def apply(cls, model, x, y):
         pass
@@ -115,20 +119,12 @@ class DirectReg:
 
 class L1(DirectReg):
 
-    def __init__(self, post_constant, single_moving=None):
-        super().__init__(post_constant)
-        self.single_moving = single_moving
+    def __init__(self, post_constants):
+        super().__init__(post_constants)
 
     def apply(self, model, x, y):
-        n = x.shape[0]
         for l, linear in enumerate(model.linears):
-            dl_plus, dl = linear.weight.shape
-            d_scale = dl_plus # dl_plus * dl
-            # If single moving is set, zero out all other gradients
-            if self.single_moving is not None and self.single_moving != l:
-                linear.weight.grad *= 0.0
-            else:
-                linear.weight.grad += self.post_constant * torch.sign(linear.weight.data)  # * torch.abs(model.linears[(l + 1) % 2].weight[0,0])
+            linear.weight.grad += self.post_constants[l] * torch.sign(linear.weight.data)  # * torch.abs(model.linears[(l + 1) % 2].weight[0,0])
             # linear.weight.grad += self.post_constant / (n * d_scale) ** 0.5 * torch.sign(linear.weight.data)
 
 

@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 from torch.utils.data import TensorDataset, DataLoader
-from scipy.stats import binom
+from scipy.stats import binom, norm
 
 from src import hyper_parameters
 from src import custom_modules as cm
@@ -10,24 +10,25 @@ from src.train import SigmoidBxeTrainer, BoundsAsParam, DirectReg, L1
 from src import dataset_creator
 from src.posterior_minimizer import weight_tracker as wt
 
-torch.manual_seed(769)  # 392841 769
+# torch.manual_seed(769)  # 392841 769
 
 n = 100
 n_test = 100
 noisy_d = 1
 d = noisy_d + 1
-desired_success_rate = 0.728
+desired_success_rate = 0.727
 bp = (1 - desired_success_rate ** (1/noisy_d)) / 2
 print(bp)
 threshold_success = binom.ppf(1 - bp, n, 0.5) # - 1
 small_n = n // 5
 smaller_thresh = binom.ppf(1 - bp, small_n, 0.5)
 smaller_constant = smaller_thresh / small_n - 0.5
-post_constant = threshold_success / n - 0.5
+# post_constant = threshold_success / n - 0.5
+post_constant = norm.ppf(1 - bp, scale=0.4/n**0.5)
 print(f"Regularization Constant: {post_constant}")
 print(f"Smaller Constant: {smaller_thresh}")
 
-# all_noise = dataset_creator.AllNoise(num_class=2, d=d)
+all_noise = dataset_creator.AllNoise(num_class=2, d=d)
 bra = dataset_creator.BinaryRandomAssigned(2, 1, noisy_d=noisy_d, scale_by_root_d=False)
 x, y = bra.generate_dataset(n, percent_correct=0.8, shuffle=True)
 # x[1,0] = 1.0
@@ -41,24 +42,23 @@ hp = hyper_parameters.HyperParameters(batch_size=n,
                                       weight_decay=0.0,
                                       post_constant=post_constant,
                                       gamma=0.9,
-                                      single_moving=None,
                                       is_adam=True,
                                       all_linear=True,
-                                      print_epoch=False,
-                                      print_batch=False)
+                                      print_epoch=True,
+                                      print_batch=True)
 
 train_set = TensorDataset(x, y)
 train_loader = DataLoader(train_set, hp.batch_size)
 test_set = TensorDataset(x_test, y_test)
 test_loader = DataLoader(test_set, n_test)
 
-model = cm.Mlp([d, 1], is_bias=False, all_linear=hp.all_linear)
+model = cm.Mlp([d, 1, 1], is_bias=False, all_linear=hp.all_linear)
 # with torch.no_grad():
 #     model.linears[0].weight.copy_(1.0 * torch.ones([1, 1], dtype=torch.float32))
 
 trainer = SigmoidBxeTrainer()
 weight_tracker = wt.AllWeightsLinear()
-l1 = L1(hp.post_constant, hp.single_moving)
+l1 = L1(hp.post_constant)
 trainer.run(model, train_loader, test_loader, hp, direct_reg=l1, weight_tracker=weight_tracker)
 y_shift = y * 2 - 1
 is_same0 = (y_shift * x[:, 0]) == 1
