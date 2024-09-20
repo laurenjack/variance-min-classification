@@ -4,17 +4,28 @@ from dataclasses import dataclass
 
 
 @dataclass
+class DataParameters:
+    percent_correct: float
+    n: int
+    n_test: int
+    d: int
+
+
+@dataclass
 class HyperParameters:
     batch_size: int
     epochs: int
     learning_rate: float
     momentum: float
     weight_decay: float
-    post_constants: List[float]
+    sizes: List[int]
+    desired_success_rate: float
     gamma: float = 1.0
     is_adam: bool = False
     all_linear: bool = False
-    is_bias = False
+    is_bias: bool = False
+    reg_type: Optional[str] = None
+    reg_epsilon: float = 0.0
     print_epoch: bool = False
     print_batch: bool = False
 

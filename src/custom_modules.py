@@ -137,7 +137,6 @@ class Mlp(nn.Module):
                 if o == 0 or all_linear:
                     non_linearity = 'linear'
                 nn.init.kaiming_uniform_(layer.weight, nonlinearity=non_linearity)
-        #self.apply(self.he_init_uniform)
 
 
     def _append_to_layer(self, num_input, num_output, ops, is_bias: bool):
@@ -148,10 +147,18 @@ class Mlp(nn.Module):
     def forward(self, x):
         return self.layers(x)
 
-    @staticmethod
-    def he_init_uniform(layer):
-        if isinstance(layer, nn.Linear):
-            nn.init.kaiming_uniform_(layer.weight, nonlinearity='relu')
+
+class DirectMeanMLP(Mlp):
+
+    def forward(self, eye):
+        # TODO(Jack) this will be incorrect if using Relus, will need both ones and x at that point
+        return self.layers(eye)
+
+    def predict(self, x):
+        """For running the network in production / evaluation"""
+        return self.layers(x)
+
+
 
 
 class HiddenLayersFixed(nn.Module):

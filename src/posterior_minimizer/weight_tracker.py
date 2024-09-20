@@ -17,7 +17,28 @@ class WeightTracker:
         pass
 
 
-class AllWeightsLinear(WeightTracker):
+class AllWeights(WeightTracker):
+
+    def __init__(self, num_layers, node_limit=None):
+        self.layers = []
+        for l in range(num_layers):
+            self.layers.append([])
+        self.node_limit = node_limit
+
+    def update(self, model):
+        for l, linear in enumerate(model.linears):
+            W = linear.weight.detach().clone()
+            nodes = W.shape[0]
+            # Reduce nodes visualized so graph is not crazy big
+            node_limit = self.node_limit if self.node_limit and self.node_limit < nodes else nodes
+            W = W[0:node_limit]
+            self.layers[l].append(W)
+
+    def show(self):
+        plot_all_weights(self.layers)
+
+
+class WeightsAndGradsLinear(WeightTracker):
 
     def __init__(self):
         self.all_weights = []
@@ -68,6 +89,24 @@ def plot_individual_weights(weight_list, title):
     plt.title(title)
     plt.legend()
     plt.show()
+
+
+def plot_all_weights(layers):
+    for l, layer in enumerate(layers):
+        out_nodes, in_nodes = layer[0].shape
+        for i in range(out_nodes):
+            for j in range(in_nodes):
+                weights = []
+                for weight in layer:
+                    weights.append(weight[i, j].item())
+                plt.plot(weights, label=f'w {i}{j}')
+        # plt.axhline(y=0, color='k', linestyle='--', label='Reference Line')
+        plt.xlabel('Time')
+        plt.ylabel('Weight Value')
+        plt.title(f'Layer {l}')
+        plt.legend()
+        plt.show()
+
 
 
 def plot_weights_with_gradients(weight_list, pre_grad_weight_list, post_grad_weight_list, title):
