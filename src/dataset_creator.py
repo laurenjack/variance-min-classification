@@ -156,6 +156,65 @@ class AllNoise:
         return _return_xy(x_list=xs, y_list=ys, shuffle=shuffle, scale_by_root_d=False)
 
 
+class SingleDirectionGaussian:
+
+    NUM_CLASS = 2
+    STANDARD_DEV = 1.0
+
+    def __init__(self, d, scale_of_mean=0.0):
+        self.d = d
+        self.scale_of_mean = scale_of_mean
+        # self.direction = torch.randn(d)
+        self.direction = torch.ones(d) # / 10 # / d ** 0.5
+        # self.direction = self.direction / torch.norm(self.direction)
+
+    def generate_dataset(self, n, shuffle=True):
+        class_n = n // 2
+        x0, y0 = self._gen_single_class(class_n, -self.scale_of_mean, 0)
+        x1, y1 = self._gen_single_class(class_n, self.scale_of_mean, 1)
+        x = torch.cat((x0, x1), dim=0)
+        y = torch.cat((y0, y1))
+        if shuffle:
+            all_indices = torch.randperm(n)
+            x = x[all_indices]
+            y = y[all_indices]
+        return x, y
+
+    def _gen_single_class(self, class_n, mean, target):
+        x = torch.normal(mean=mean, std=SingleDirectionGaussian.STANDARD_DEV, size=(class_n, self.d))
+        x = self.direction.view(1, self.d) * x # / self.d ** 0.5
+        y = target * torch.ones(class_n, dtype=torch.int64)
+        return x, y
+
+
+
+
+# class SingleFeature:
+#
+#     def __init__(self, d, percent_correct, scale = 2.0):
+#         self.num_class = 2
+#         self.d = d
+#         self.percent_corrrect = percent_correct
+#         self.feature_vector = scale * (torch.rand(d) - 0.5) * _random_bits((d))
+#
+#     def generate_dataset(self, n, shuffle=True):
+#         # In this case, we can either have the positive of the feature, or the negative of the feature
+#         x = _random_bits((n, 1)) * self.feature_vector.view(1, self.d)
+#         num_correct = percent_correct * n
+#         for i in range(n):
+#             c = i % self.num_class
+#
+#         y = torch.tensor([i % self.num_class for i in range(n)])
+#         if shuffle:
+#             all_indices = torch.randperm(n)
+#             x = x[all_indices]
+#             y = y[all_indices]
+#         return x, y
+
+
+
+
+
 
 
 

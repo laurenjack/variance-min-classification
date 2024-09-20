@@ -4,7 +4,8 @@ from torch.utils.data import TensorDataset, DataLoader
 
 from src import hyper_parameters
 from src import custom_modules as cm
-from src.train import SigmoidBxeTrainer, BoundsAsParam, DirectReg
+from src.train import SigmoidBxeTrainer, BoundsAsParam
+from src.posterior_minimizer.regularizer import DirectReg
 from src import gradient_grapher
 from src.posterior_minimizer import data_generator
 from src import dataset_creator

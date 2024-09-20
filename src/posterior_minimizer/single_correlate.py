@@ -6,7 +6,8 @@ from torch.utils.data import TensorDataset, DataLoader
 
 from src import hyper_parameters
 from src import custom_modules as cm
-from src.train import SigmoidBxeTrainer, BoundsAsParam, DirectReg, L1
+from src.train import SigmoidBxeTrainer, BoundsAsParam
+from src.posterior_minimizer.regularizer import DirectReg, L1
 from src.posterior_minimizer import weight_tracker as wt
 
 from src import dataset_creator
@@ -30,7 +31,7 @@ hp = hyper_parameters.HyperParameters(batch_size=n,
                                       learning_rate= 0.03,
                                       momentum=0.0,
                                       weight_decay=0.0,
-                                      post_constant=0.25,
+                                      post_constants=0.25,
                                       gamma=0.95,
                                       all_linear=True,
                                       print_epoch=True,
@@ -48,7 +49,7 @@ test_loader = DataLoader(test_set, n_test)
 # fixed_w = -inv_root + 2 * inv_root * torch.rand((1, 8))
 # print(fixed_w)
 # model = cm.Mlp([d, 32, 32, 32, 1], is_bias=False)
-model = cm.Mlp([d, 10, 10, 1], is_bias=False)
+model = cm.Mlp([d, 1, 1], is_bias=False)
 # model = cm.HiddenLayersFixed([d, 8, 1])
 
 trainer = SigmoidBxeTrainer()

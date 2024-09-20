@@ -5,7 +5,8 @@ from scipy.stats import binom, norm
 
 from src import hyper_parameters
 from src import custom_modules as cm
-from src.train import SigmoidBxeTrainer, BoundsAsParam, DirectReg, L1
+from src.train import SigmoidBxeTrainer, BoundsAsParam
+from src.posterior_minimizer.regularizer import DirectReg, L1
 
 from src import dataset_creator
 from src.posterior_minimizer import weight_tracker as wt
