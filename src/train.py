@@ -124,7 +124,7 @@ class DirectMeanTrainer(IdentityMseTrainer):
         n, d = x.shape
         mean = model(torch.eye(d))
         target = y_shift.view(n, 1) @ mean.t()
-        return torch.mean((2 * x - target) ** 2)
+        return torch.sum(torch.mean((2 * x - target) ** 2, axis=0)) / 2
 
 
 

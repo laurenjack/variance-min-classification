@@ -14,21 +14,21 @@ from src.posterior_minimizer import weight_tracker as wt, runner
 n = 100
 n_test = 10
 percent_correct = 0.5
-d = 10
+d = 2
 
 dp = hyper_parameters.DataParameters(percent_correct, n, n_test, d)
 
 hp = hyper_parameters.HyperParameters(batch_size=n,
-                                      epochs=300,
-                                      learning_rate= 0.1 / d ** 0.5,
+                                      epochs=400,
+                                      learning_rate= 1.0 / d ** 0.5,
                                       momentum=0.0,
                                       weight_decay=0.0,
                                       desired_success_rate=0.5,
-                                      sizes=[d, 10, 10, 1],
-                                      gamma=1.0,
+                                      sizes=[d, 1],
+                                      gamma=0.85,
                                       is_adam=True,
                                       all_linear=True,
-                                      reg_type="DirectReg",
+                                      reg_type="InverseMagnitudeL2",
                                       print_epoch=False,
                                       print_batch=False)
 
