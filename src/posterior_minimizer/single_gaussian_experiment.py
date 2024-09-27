@@ -20,22 +20,23 @@ d = 100
 dp = hyper_parameters.DataParameters(percent_correct, n, n_test, d)
 
 hp = hyper_parameters.HyperParameters(batch_size=n,
-                                      epochs=300,
-                                      learning_rate= 0.1 / d ** 0.5,
+                                      epochs=400,
+                                      learning_rate= 1.0 / d ** 0.5,
                                       momentum=0.0,
                                       weight_decay=0.0,
                                       desired_success_rate=0.5,
-                                      sizes=[d, 10, 10, 1],
-                                      gamma=1.0,
+                                      sizes=[d, 1],
+                                      gamma=0.8,
                                       is_adam=True,
                                       all_linear=True,
-                                      reg_type="DirectReg",
+                                      reg_type="InverseMagnitudeL2",
                                       print_epoch=False,
                                       print_batch=False)
 
 
 problem = dataset_creator.SingleDirectionGaussian(d=d)
 trainer = train.DirectMeanTrainer()
+# trainer = train.SigmoidBxeTrainer()
 
 runner.run(problem, runs, dp, hp, 0, trainer, shuffle=True)
 

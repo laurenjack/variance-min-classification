@@ -16,9 +16,14 @@ def create(dp: DataParameters, hp: HyperParameters):
         var_scaler = 1
         reg_constructor = L1
     elif hp.reg_type == "InverseMagnitudeL2":
-        num_nodes = 1
-        var_scaler = dp.d
-        reg_constructor = InverseMagnitudeL2
+        # num_nodes = 1
+        # var_scaler = dp.d
+        # reg_constructor = InverseMagnitudeL2
+        bp = (1 - hp.desired_success_rate)
+        post_constant = chi2.ppf(1 - bp, dp.d) - hp.reg_epsilon
+        post_constant *= 4 / dp.n
+        post_constant = post_constant ** 0.5
+        return InverseMagnitudeL2(post_constant)
     elif hp.reg_type == "L2":
         num_nodes = 1
         var_scaler = dp.d # / 3  # Divide by 3 as this is mean magnitude of the initial weights
@@ -30,6 +35,7 @@ def create(dp: DataParameters, hp: HyperParameters):
         bp = (1 - hp.desired_success_rate)
         post_constant = chi2.ppf(1 - bp, dp.d) - hp.reg_epsilon
         post_constant *= 4 / dp.n
+        post_constant = post_constant ** 0.5
         return DirectReg(post_constant)
     else:
         raise ValueError(f"Unsupported Regualrizer: {hp.reg_type}")
@@ -57,13 +63,13 @@ class DirectReg:
         n = x.shape[0]
         y_shift = y * 2 - 1
         means = torch.mean(x * y_shift.view(n, 1), dim=0)
-        squared_mag = torch.sum((2 * means) ** 2)
+        squared_mag = torch.sum((2 * means) ** 2) ** 0.5
         return RegularizationState(squared_mag, self.post_constant, "Actual Squared Mean Magnitude")
 
     def get_zero_state(self, model, x, y):
         d = x.shape[1]
         means = model(torch.eye(d))
-        squared_mag = torch.sum(means ** 2)
+        squared_mag = torch.sum(means ** 2) ** 0.5
         return RegularizationState(squared_mag, self.post_constant, "Squared Weight Magnitude")
 
 
@@ -95,12 +101,18 @@ class InverseMagnitudeL2(DirectReg):
     def weight_scaling(self, W):
         return W / torch.norm(W)
 
-    def get_max_gradient(self, model, x, y):
-        return get_whole_node_grad(model, x, y, self)
+    # def get_max_gradient(self, model, x, y):
+    #     return get_whole_node_grad(model, x, y, self)
+    #
+    # def get_zero_state(self, model, x, y):
+    #     logit_sum = get_scaled_logit_sum(model, x, y)
+    #     return RegularizationState(logit_sum, InverseMagnitudeL2.ZERO_THRESHOLD, "Mean Logit Sum")
 
     def get_zero_state(self, model, x, y):
-        logit_sum = get_scaled_logit_sum(model, x, y)
-        return RegularizationState(logit_sum, InverseMagnitudeL2.ZERO_THRESHOLD, "Mean Logit Sum")
+        d = x.shape[1]
+        means = model(torch.eye(d))
+        squared_mag = torch.sum(means ** 2) ** 0.5
+        return RegularizationState(squared_mag, InverseMagnitudeL2.ZERO_THRESHOLD, "Squared Weight Magnitude")
 
 
 

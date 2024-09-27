@@ -6,13 +6,13 @@ from src import hyper_parameters, train
 from src import dataset_creator
 from src.posterior_minimizer import runner, regularizer as reg
 
-torch.manual_seed(56433)
+# torch.manual_seed(56433)
 
 runs = 100
 n = 100
 n_test = 100
 d = 40
-sizes = [d, 30, 20, 10, 1]
+sizes = [d, 1]#[d, 30, 20, 10, 1]
 
 percent_correct = 0.5
 desired_success_rate = 0.72
@@ -42,7 +42,7 @@ hp = hyper_parameters.HyperParameters(batch_size=n,
                                       desired_success_rate=desired_success_rate,
                                       is_adam=True,
                                       all_linear=True,
-                                      reg_type="L1",
+                                      reg_type="InverseMagnitudeL2",
                                       gamma=0.85,
                                       reg_epsilon=0.001,
                                       print_epoch=False,
