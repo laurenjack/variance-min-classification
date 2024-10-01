@@ -15,7 +15,7 @@ runs = 100
 n = 100
 n_test = 10
 percent_correct = 0.5
-d = 100
+d = 10
 
 dp = hyper_parameters.DataParameters(percent_correct, n, n_test, d)
 
@@ -26,10 +26,11 @@ hp = hyper_parameters.HyperParameters(batch_size=n,
                                       weight_decay=0.0,
                                       desired_success_rate=0.5,
                                       sizes=[d, 1],
-                                      gamma=0.8,
+                                      gamma=0.85,
                                       is_adam=True,
                                       all_linear=True,
-                                      reg_type="InverseMagnitudeL2",
+                                      reg_type="GradientWeightedNormed",
+                                      reg_epsilon=0.0,
                                       print_epoch=False,
                                       print_batch=False)
 

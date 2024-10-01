@@ -42,9 +42,9 @@ hp = hyper_parameters.HyperParameters(batch_size=n,
                                       desired_success_rate=desired_success_rate,
                                       is_adam=True,
                                       all_linear=True,
-                                      reg_type="InverseMagnitudeL2",
+                                      reg_type="L1",
                                       gamma=0.85,
-                                      reg_epsilon=0.001,
+                                      reg_epsilon=0.0,
                                       print_epoch=False,
                                       print_batch=False)
 
