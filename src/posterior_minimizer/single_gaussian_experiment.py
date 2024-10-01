@@ -29,7 +29,7 @@ hp = hyper_parameters.HyperParameters(batch_size=n,
                                       gamma=0.85,
                                       is_adam=True,
                                       all_linear=True,
-                                      reg_type="GradientWeightedNormed",
+                                      reg_type="L1",
                                       reg_epsilon=0.0,
                                       print_epoch=False,
                                       print_batch=False)

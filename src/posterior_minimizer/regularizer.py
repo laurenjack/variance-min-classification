@@ -14,67 +14,44 @@ def create(dp: DataParameters, hp: HyperParameters):
     if hp.reg_type == "L1":
         num_nodes = sum(hp.sizes[:-1])
         var_scaler = 4
-        reg_constructor = L1
+        bp = (1 - hp.desired_success_rate ** (1 / num_nodes)) / 2
+        # prop_product = dp.percent_correct * (1 - dp.percent_correct)
+        var = var_scaler / dp.n  # * prop_product
+        sd = var ** 0.5
+        post_constant = norm.ppf(1 - bp, scale=sd) - hp.reg_epsilon
+        return L1(post_constant)
     elif hp.reg_type == "InverseMagnitudeL2":
-        # num_nodes = 1
-        # var_scaler = dp.d
-        # reg_constructor = InverseMagnitudeL2
-        bp = (1 - hp.desired_success_rate)
-        post_constant = chi2.ppf(1 - bp, dp.d) - hp.reg_epsilon
-        post_constant *= 4 / dp.n
-        post_constant = post_constant ** 0.5
-        return InverseMagnitudeL2(post_constant)
+        reg_constructor = InverseMagnitudeL2
     elif hp.reg_type == "L2":
-        bp = (1 - hp.desired_success_rate)
-        post_constant = chi2.ppf(1 - bp, dp.d) - hp.reg_epsilon
-        post_constant *= 4 / dp.n
-        post_constant = post_constant ** 0.5
-        return L2(post_constant)
-    elif hp.reg_type == "DirectReg":
-        # num_nodes = 1
-        # var_scaler = 2 * dp.d
-        # reg_contructor = DirectReg
-        bp = (1 - hp.desired_success_rate)
-        post_constant = chi2.ppf(1 - bp, dp.d) - hp.reg_epsilon
-        post_constant *= 4 / dp.n
-        post_constant = post_constant ** 0.5
-        return DirectReg(post_constant)
+        reg_constructor = L2
+    elif hp.reg_type == "NoReg":
+        reg_constructor = NoReg
     elif hp.reg_type == "GradientWeighted":
-        bp = (1 - hp.desired_success_rate)
-        post_constant = chi2.ppf(1 - bp, dp.d) - hp.reg_epsilon
-        post_constant *= 4 / dp.n
-        post_constant = post_constant ** 0.5
-        return GradientWeighted(post_constant)
+        reg_constructor = GradientWeighted
     elif hp.reg_type == "GradientWeightedNormed":
-        bp = (1 - hp.desired_success_rate)
-        post_constant = chi2.ppf(1 - bp, dp.d) - hp.reg_epsilon
-        post_constant *= 4 / dp.n
-        post_constant = post_constant ** 0.5
-        return GradientWeightedNormed(post_constant)
+        reg_constructor = GradientWeightedNormed
     else:
         raise ValueError(f"Unsupported Regualrizer: {hp.reg_type}")
-    bp = (1 - hp.desired_success_rate ** (1 / num_nodes)) / 2
-    # prop_product = dp.percent_correct * (1 - dp.percent_correct)
-    var = var_scaler / dp.n  # * prop_product
-    sd = var ** 0.5
-    post_constant = norm.ppf(1 - bp, scale=sd) - hp.reg_epsilon
+    # This is the calculation of the posterior constant for all regularizers which regularize over the whole node
+    bp = (1 - hp.desired_success_rate)
+    post_constant = chi2.ppf(1 - bp, dp.d) - hp.reg_epsilon
+    post_constant *= 4 / dp.n
+    post_constant = post_constant ** 0.5
     return reg_constructor(post_constant)
 
 
 class DirectReg:
     """
-    Modify the gradients of a model directly, to apply a regularizer.
+    Modifies the gradients of a model directly, to apply a regularizer.
     """
 
-    def __init__(self, post_constant, threshold=None):
+    def __init__(self, post_constant, zero_threshold):
         self.post_constant = post_constant
-        self.threshold = threshold
-        if threshold is None:
-            self.threshold = post_constant
+        self.zero_threshold = zero_threshold
         self.sigmoid = torch.nn.Sigmoid()
 
     def weight_scaling(self, W):
-        return 0.0 * W.detach()
+        raise NotImplementedError("This is an abstract regularizer, please use a subclass")
 
     def get_max_gradient(self, model, x, y):
         n = x.shape[0]
@@ -87,55 +64,23 @@ class DirectReg:
         d = x.shape[1]
         means = model(torch.eye(d))
         squared_mag = torch.sum(means ** 2) ** 0.5
-        return RegularizationState(squared_mag, self.threshold, "Squared Weight Magnitude")
+        return RegularizationState(squared_mag, self.zero_threshold, "Squared Weight Magnitude")
 
 
-class L1(DirectReg):
-
-    ZERO_THRESHOLD = 0.0005
+class NoReg(DirectReg):
 
     def __init__(self, post_constant):
-        super().__init__(post_constant)
+        super().__init__(post_constant, post_constant)
 
     def weight_scaling(self, W):
-        W = W.detach()
-        return torch.sign(W)
-
-    def get_max_gradient(self, model, x, y):
-        return get_greatest_manual_grad(model, x, y, self)
-
-    def get_zero_state(self, model, x, y):
-        logit_sum = get_scaled_logit_sum(model, x, y)
-        return RegularizationState(logit_sum, L1.ZERO_THRESHOLD, "Mean Logit Sum")
-
-
-class InverseMagnitudeL2(DirectReg):
-
-    ZERO_THRESHOLD = 0.005
-
-    # def weight_scaling(self, W):
-    #     W = W.detach()
-    #     return W / torch.norm(W)
-
-    def weight_scaling(self, W):
-        wtf = W.detach() / torch.norm( W.detach())
-        optimal_weight = W.detach() - W.grad.detach()
-        scaling = optimal_weight / torch.norm(optimal_weight)
-        return wtf
-
-    def get_zero_state(self, model, x, y):
-        d = x.shape[1]
-        means = model(torch.eye(d))
-        squared_mag = torch.sum(means ** 2) ** 0.5
-        return RegularizationState(squared_mag, InverseMagnitudeL2.ZERO_THRESHOLD, "Squared Weight Magnitude")
-
+        return 0.0 * W.detach()
 
 
 class L2(DirectReg):
 
     def __init__(self, post_constant):
-        threshold = post_constant / (1 + post_constant)
-        super().__init__(post_constant, threshold)
+        zero_threshold = post_constant / (1 + post_constant)
+        super().__init__(post_constant, zero_threshold)
 
     def weight_scaling(self, W):
         return W.detach()
@@ -144,10 +89,10 @@ class L2(DirectReg):
 class GradientWeighted(DirectReg):
 
     def __init__(self, post_constant):
-        threshold = (1 - post_constant) * post_constant
-        if threshold < 0:
-            print("WARNING - threshold lower than zero, expect zero weights everytime")
-        super().__init__(post_constant, threshold)
+        zero_threshold = (1 - post_constant) * post_constant
+        if zero_threshold < 0:
+            print("WARNING - zero_threshold lower than zero, expect zero weights everytime")
+        super().__init__(post_constant, zero_threshold)
 
     def weight_scaling(self, W):
         w = W.detach()
@@ -155,20 +100,48 @@ class GradientWeighted(DirectReg):
         return torch.sign(w) * torch.abs(scales)
 
 
-class GradientWeightedNormed(DirectReg):
+class L1(DirectReg):
+
+    ZERO_THRESHOLD = 0.0005
+
+    def __init__(self, post_constant):
+        super().__init__(post_constant, L1.ZERO_THRESHOLD)
+
+    def weight_scaling(self, W):
+        W = W.detach()
+        return torch.sign(W)
+
+    def get_max_gradient(self, model, x, y):
+        return get_greatest_manual_grad(model, x, y, self)
+
+    # def get_zero_state(self, model, x, y):
+    #     logit_sum = get_scaled_logit_sum(model, x, y)
+    #     return RegularizationState(logit_sum, L1.ZERO_THRESHOLD, "Mean Logit Sum")
+
+
+class InverseMagnitudeL2(DirectReg):
+
     ZERO_THRESHOLD = 0.005
+
+    def __init__(self, post_constant):
+        super().__init__(post_constant, InverseMagnitudeL2.ZERO_THRESHOLD)
 
     def weight_scaling(self, W):
         w = W.detach()
-        scales = w  - W.grad
+        return w / torch.norm(w)
+
+
+class GradientWeightedNormed(DirectReg):
+    ZERO_THRESHOLD = 0.005
+
+    def __init__(self, post_constant):
+        super().__init__(post_constant, InverseMagnitudeL2.ZERO_THRESHOLD)
+
+    def weight_scaling(self, W):
+        w = W.detach()
+        scales = w - W.grad
         scales = torch.sign(w) * torch.abs(scales)
         return scales / torch.norm(scales)
-
-    def get_zero_state(self, model, x, y):
-        d = x.shape[1]
-        means = model(torch.eye(d))
-        squared_mag = torch.sum(means ** 2) ** 0.5
-        return RegularizationState(squared_mag, GradientWeightedNormed.ZERO_THRESHOLD, "Squared Weight Magnitude")
 
 
 class RegularizationState:
@@ -275,12 +248,12 @@ def get_greatest_manual_grad(model, x, y, regularizer):
     return RegularizationState(greatest_deltas_grad, greatest_deltas_reg, "Greatest Gradient")
 
 
-def get_scaled_logit_sum(model, x, y):
-    n = x.shape[0]
-    y_shift = y * 2 - 1
-    z = x.t()
-    for linear in model.linears:
-        W = linear.weight
-        z = W @ z
-    logit_sum = torch.sum(y_shift.view(1, n) * z)
-    return logit_sum / n
+# def get_scaled_logit_sum(model, x, y):
+#     n = x.shape[0]
+#     y_shift = y * 2 - 1
+#     z = x.t()
+#     for linear in model.linears:
+#         W = linear.weight
+#         z = W @ z
+#     logit_sum = torch.sum(y_shift.view(1, n) * z)
+#     return logit_sum / n
