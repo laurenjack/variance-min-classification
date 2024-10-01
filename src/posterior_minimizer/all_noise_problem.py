@@ -11,13 +11,13 @@ from src.posterior_minimizer import weight_tracker as wt, runner
 
 # torch.manual_seed(769)  # 392841 769
 
-n = 6
+n = 100
 n_test = 100
 percent_correct = 0.5
 # noisy_d = 1
 # real_d = 1
 # d = real_d + noisy_d
-d = 100
+d = 10
 sizes = [d, 1]
 
 dp = hyper_parameters.DataParameters(percent_correct, n, n_test, d)
@@ -27,9 +27,9 @@ hp = hyper_parameters.HyperParameters(batch_size=n,
                                       learning_rate= 1.0 / d ** 0.5,
                                       momentum=0.0,
                                       weight_decay=0.0,
-                                      desired_success_rate=0.72,
+                                      desired_success_rate=0.5,
                                       sizes=sizes,
-                                      gamma=0.9,
+                                      gamma=0.85,
                                       is_adam=True,
                                       all_linear=True,
                                       reg_type="L1",
