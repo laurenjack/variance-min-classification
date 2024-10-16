@@ -9,13 +9,14 @@ from src.posterior_minimizer import regularizer as reg
 from src import dataset_creator, train
 from src.posterior_minimizer import weight_tracker as wt, runner
 
-torch.manual_seed(521943)  # 392841 769
+# torch.manual_seed(6915377)  # 392841 769
+torch.manual_seed(7612984)
 
 runs = 100
 n = 100
 n_test = 10
 percent_correct = 0.5
-d = 10
+d = 20
 
 dp = hyper_parameters.DataParameters(percent_correct, n, n_test, d)
 
@@ -25,7 +26,7 @@ hp = hyper_parameters.HyperParameters(batch_size=n,
                                       momentum=0.0,
                                       weight_decay=0.0,
                                       desired_success_rate=0.5,
-                                      sizes=[d, 1],
+                                      sizes=[d, 10, 5, 1],
                                       gamma=0.85,
                                       is_adam=True,
                                       all_linear=True,

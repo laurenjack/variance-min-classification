@@ -11,11 +11,11 @@ from src.posterior_minimizer import runner, regularizer as reg
 runs = 100
 n = 100
 n_test = 100
-d = 40
+d = 10
 sizes = [d, 1]#[d, 30, 20, 10, 1]
 
 percent_correct = 0.5
-desired_success_rate = 0.72
+desired_success_rate = 0.5
 num_nodes = sum(sizes[:-1])
 
 bp_single = (1 - desired_success_rate ** (1 / num_nodes)) / 2
@@ -49,6 +49,7 @@ hp = hyper_parameters.HyperParameters(batch_size=n,
                                       print_batch=False)
 
 problem = dataset_creator.AllNoise(num_class=2, d=d)
+# trainer = train.DirectMeanTrainer()
 trainer = train.SigmoidBxeTrainer()
 runner.run(problem, runs, dp, hp, 0, trainer, deviation=deviation, shuffle=True)
 

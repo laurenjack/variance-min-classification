@@ -106,7 +106,6 @@ def iterate_problem(x, y):
         print(f'    Max correct: {max_correct} MLE: {mle} Posteriors: {max_posterior, post1, post2}, t zero: {t_zero}')
 
 
-
 def analytic_segmentations(n, d):
     mid = (n + 1) // 2
     count = 0
