@@ -120,11 +120,11 @@ class IdentityMseTrainer(Trainer):
 class DirectMeanTrainer(IdentityMseTrainer):
 
     def loss(self, model, x, y):
-        y_shift = y * 2.0 - 1
         n, d = x.shape
-        mean = model(torch.eye(d))
-        target = y_shift.view(n, 1) @ mean.t()
-        return torch.sum(torch.mean((2 * x - target) ** 2, axis=0)) / 2
+        y_shift = y.view(n, 1) * 2.0 - 1
+        mean = model(torch.eye(d)).t()
+        # target = y_shift.view(n, 1) @ mean.t()
+        return torch.sum(torch.mean((2 * x * y_shift - mean) ** 2, axis=0)) / 2
 
 
 
