@@ -4,7 +4,8 @@ from torch import nn
 from src import dataset_creator
 from src import custom_modules as cm
 from src.train import SigmoidBxeTrainer, BoundsAsParam
-from src.posterior_minimizer.regularizer import DirectReg, L1, reg_grad, grad_at_zero, variance_grad, manual_grad_calc
+from src.posterior_minimizer.regularizer import DirectReg, L1, reg_grad, variance_grad
+from src.posterior_minimizer.variance import manual_grad_calc, grad_at_zero
 
 runs = 100
 n = 1000
