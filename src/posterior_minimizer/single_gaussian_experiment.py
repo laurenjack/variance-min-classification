@@ -9,7 +9,7 @@ from src.posterior_minimizer import regularizer as reg
 from src import dataset_creator, train
 from src.posterior_minimizer import weight_tracker as wt, runner
 
-torch.manual_seed(55521)
+torch.manual_seed(6197543)
 # torch.manual_seed(5491)  # 392841 769
 # torch.manual_seed(7612984)
 
@@ -27,7 +27,7 @@ hp = hyper_parameters.HyperParameters(batch_size=n,
                                       momentum=0.0,
                                       weight_decay=0.0,
                                       desired_success_rate=0.5,
-                                      sizes=[d, 1],  # 40, 30,
+                                      sizes=[d, 20, 1],  # 40, 30,
                                       gamma=0.85,
                                       is_adam=True,
                                       all_linear=True,
@@ -39,8 +39,8 @@ hp = hyper_parameters.HyperParameters(batch_size=n,
 
 
 problem = dataset_creator.SingleDirectionGaussian(d=d)
-trainer = train.DirectMeanTrainer()
-# trainer = train.SigmoidBxeTrainer()
+# trainer = train.DirectMeanTrainer()
+trainer = train.SigmoidBxeTrainer()
 
 runner.run(problem, runs, dp, hp, 0, trainer, shuffle=True)
 

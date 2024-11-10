@@ -121,16 +121,16 @@ class Mlp(nn.Module):
 
     def __init__(self, sizes, is_bias: bool, all_linear=False):
         super().__init__()
+        self.all_linear = all_linear
         self.num_input = sizes[0]
+        self.layers = nn.ModuleList()
         self.linears = []
-        ops = []
+        # To hold the latest activation values
+        self.activations = []
         num_output = sizes[0] # For the case where there are no hidden layers
         for num_input, num_output in zip(sizes[:-2], sizes[1:-1]):
-            self._append_to_layer(num_input, num_output, ops, is_bias)
-            if not all_linear:
-                ops.append(nn.ReLU())
-        self._append_to_layer(num_output, sizes[-1], ops, is_bias)
-        self.layers = nn.Sequential(*ops)
+            self._append_to_layer(num_input, num_output, is_bias, is_relu=not all_linear)
+        self._append_to_layer(num_output, sizes[-1], is_bias, is_relu=False)
         for o, layer in enumerate(self.layers):
             if isinstance(layer, nn.Linear):
                 non_linearity = 'relu'
@@ -139,13 +139,21 @@ class Mlp(nn.Module):
                 nn.init.kaiming_uniform_(layer.weight, nonlinearity=non_linearity)
 
 
-    def _append_to_layer(self, num_input, num_output, ops, is_bias: bool):
+    def _append_to_layer(self, num_input, num_output, is_bias: bool, is_relu):
         linear = nn.Linear(num_input, num_output, bias=is_bias)
         self.linears.append(linear)
-        ops.append(linear)
+        if is_relu:
+            self.layers.append(nn.Sequential(linear, nn.ReLU()))
+        else:
+            self.layers.append(linear)
 
     def forward(self, x):
-        return self.layers(x)
+        a = x
+        self.activations = []
+        for layer in self.layers:
+            a = layer(a)
+            self.activations.append(a)
+        return a
 
 
 class DirectMeanMLP(Mlp):
