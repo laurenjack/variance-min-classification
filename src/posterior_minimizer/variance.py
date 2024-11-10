@@ -3,8 +3,9 @@ import torch
 from src.hyper_parameters import HyperParameters
 
 
-def manual_grad_calc(weights, forward_product, backward_product, is_variance=False, point_level=False):
+def manual_grad_calc(model, forward_product, backward_product, is_variance=False, point_level=False):
     assert not (is_variance and point_level)
+    weights = [linear.weight for linear in model.linears]
     forward_products = []
     for W in weights:
         W = W.detach()
@@ -39,17 +40,15 @@ def manual_grad_calc(weights, forward_product, backward_product, is_variance=Fal
 
 
 def grad_at_zero(model, x, y, point_level=False):
-    weights = [linear.weight for linear in model.linears]
-    # y_shift = y * -2.0 + 1
     n, d = x.shape
-    # The three commented out lines below apply to the SigmoidBxeTrainer
-    # forward_product = x.t()
-    # backward_product = 0.5 * y_shift / n
-    # backward_product = backward_product.view(n, 1)
     y_shift = y.view(n, 1) * 2.0 - 1
-    forward_product = -(2 * x * y_shift).t() / n  # (d, n)
-    backward_product = torch.ones(n, 1)
-    return manual_grad_calc(weights, forward_product, backward_product, point_level=point_level)
+    forward_product = x.t()
+    backward_product = - 0.5 * y_shift / n
+    backward_product = backward_product.view(n, 1)
+    # The two commented out lines below apply to the DirectMeanTrainer
+    # forward_product = -(2 * x * y_shift).t() / n  # (d, n)
+    # backward_product = torch.ones(n, 1)
+    return manual_grad_calc(model, forward_product, backward_product, point_level=point_level)
 
 
 class Variance:
@@ -87,11 +86,10 @@ class Analytical(Variance):
 
     def calculate(self, model, x, y):
         n, d = x.shape
-        weights = [linear.weight for linear in model.linears]
         forward_product = torch.eye(d)
         # prop_product = dp.percent_correct * (1 - dp.percent_correct)
-        backward_product = 2 / n ** 0.5 * torch.ones(1, 1)
-        return manual_grad_calc(weights, forward_product, backward_product, is_variance=True)
+        backward_product = 0.5 / n ** 0.5 * torch.ones(1, 1)  # 2
+        return manual_grad_calc(model, forward_product, backward_product, is_variance=True)
 
 
 def create_variance(hp: HyperParameters):
