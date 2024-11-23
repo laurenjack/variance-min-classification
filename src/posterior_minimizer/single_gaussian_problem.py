@@ -6,35 +6,39 @@ from scipy.stats import binom, norm
 from src import hyper_parameters
 from src.posterior_minimizer import regularizer as reg
 
+torch.manual_seed(3917)
+
 from src import dataset_creator, train
 from src.posterior_minimizer import weight_tracker as wt, runner
-
-torch.manual_seed(779)  # 392841 769
 
 n = 100
 n_test = 10
 percent_correct = 0.5
-d = 1
+d = 20
 
 dp = hyper_parameters.DataParameters(percent_correct, n, n_test, d)
 
 hp = hyper_parameters.HyperParameters(batch_size=n,
-                                      epochs=400,
-                                      learning_rate= 1.0 / d ** 0.5,
+                                      epochs=900,
+                                      learning_rate= 0.1 / d ** 0.5,
                                       momentum=0.0,
-                                      weight_decay=0.0,
-                                      desired_success_rate=0.8,
-                                      sizes=[d, 1],
-                                      gamma=0.85,
+                                      weight_decay=0.01,
+                                      desired_success_rate=0.5,
+                                      sizes=[d, 10, 1],  # 40, 30,
+                                      do_train=True,
+                                      gamma=1.0,
                                       is_adam=True,
                                       all_linear=True,
-                                      reg_type="GradientWeightedNormed",  # GradientWeightedNormed InverseMagnitudeL2
+                                      reg_type="L1",  # InverseMagnitudeL2
+                                      var_type="Analytical",
+                                      reg_epsilon=0.0,
                                       print_epoch=False,
                                       print_batch=False)
 
 
 problem = dataset_creator.SingleDirectionGaussian(d=d)
-trainer = train.DirectMeanTrainer()
+# trainer = train.DirectMeanTrainer()
+trainer = train.SigmoidBxeTrainer()
 
 weight_tracker = wt.AllWeights(len(hp.sizes) - 1, node_limit=10)
 _, max_grad_before, max_grad_after, zero_state, preds = runner.single_run(problem, dp, hp, 0, trainer, weight_tracker=weight_tracker, print_details=False, shuffle=True)

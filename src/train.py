@@ -16,7 +16,8 @@ class Trainer(object):
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model = model.to(device)
         if hp.is_adam:
-            optimizer = torch.optim.Adam(model.parameters(), lr=hp.learning_rate, weight_decay=hp.weight_decay)
+            optimizer = torch.optim.AdamW(model.parameters(), lr=hp.learning_rate, weight_decay=hp.weight_decay)
+            #optimizer = torch.optim.Adam(model.parameters(), lr=hp.learning_rate, weight_decay=hp.weight_decay)
         else:
             optimizer = torch.optim.SGD(model.parameters(),
                                         lr=hp.learning_rate,
@@ -27,6 +28,7 @@ class Trainer(object):
         scheduler = StepLR(optimizer, step_size=7, gamma=hp.gamma)
         if weight_tracker is None:
             weight_tracker = wt.WeightTracker()
+        weight_tracker.update(model)
 
         for epoch in range(hp.epochs):
             if hp.print_epoch:
