@@ -20,6 +20,7 @@ class HyperParameters:
     weight_decay: float
     sizes: List[int]
     desired_success_rate: float
+    do_train: bool = True
     gamma: float = 1.0
     is_adam: bool = False
     all_linear: bool = False
