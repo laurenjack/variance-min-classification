@@ -55,7 +55,7 @@ def compute_weight_statistics(num_runs, n, d, num_epochs, learning_rate, step_si
         if verbose:
             print(f"\nStarting run {run + 1}/{num_runs}")
 
-        problem = dataset_creator.SingleDirectionGaussian(d=d)
+        problem = dataset_creator.Gaussian(d=d)
         x, y = problem.generate_dataset(n, d)
         model = SingleLayerClassifier(d)
         trained_model = train_model(x, y, model, num_epochs, learning_rate, step_size, gamma, verbose)

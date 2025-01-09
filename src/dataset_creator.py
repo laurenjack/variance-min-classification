@@ -156,35 +156,43 @@ class AllNoise:
         return _return_xy(x_list=xs, y_list=ys, shuffle=shuffle, scale_by_root_d=False)
 
 
-class SingleDirectionGaussian:
+class Gaussian:
 
     NUM_CLASS = 2
     STANDARD_DEV = 1.0
 
-    def __init__(self, d, scale_of_mean=0.0):
+    def __init__(self, d, perfect_class_balance=True):
         self.d = d
-        self.scale_of_mean = scale_of_mean
-        # self.direction = torch.randn(d)
-        self.direction = torch.ones(d) # / 10 # / d ** 0.5
-        # self.direction = self.direction / torch.norm(self.direction)
+        self.perfect_class_balance = perfect_class_balance
 
     def generate_dataset(self, n, shuffle=True):
-        class_n = n // 2
-        x0, y0 = self._gen_single_class(class_n, -self.scale_of_mean, 0)
-        x1, y1 = self._gen_single_class(class_n, self.scale_of_mean, 1)
-        x = torch.cat((x0, x1), dim=0)
-        y = torch.cat((y0, y1))
+        if self.perfect_class_balance:
+            x, y = self._gen_class_balanced(n)
+        else:
+            x = self._rand_normal(n)
+            y = torch.randint(0, 2, (n,), dtype=torch.int64)
         if shuffle:
             all_indices = torch.randperm(n)
             x = x[all_indices]
             y = y[all_indices]
         return x, y
 
-    def _gen_single_class(self, class_n, mean, target):
-        x = torch.normal(mean=mean, std=SingleDirectionGaussian.STANDARD_DEV, size=(class_n, self.d))
-        x = self.direction.view(1, self.d) * x # / self.d ** 0.5
+    def _gen_class_balanced(self, n):
+        class_n = n // 2
+        x0, y0 = self._gen_single_class(class_n, 0)
+        x1, y1 = self._gen_single_class(class_n, 1)
+        x = torch.cat((x0, x1), dim=0)
+        y = torch.cat((y0, y1))
+        return x, y
+
+    def _gen_single_class(self, class_n, target):
+        x = self._rand_normal(class_n)
         y = target * torch.ones(class_n, dtype=torch.int64)
         return x, y
+
+    def _rand_normal(self, n):
+        return torch.normal(mean=0.0, std=Gaussian.STANDARD_DEV, size=(n, self.d))
+
 
 
 

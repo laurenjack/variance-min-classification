@@ -49,7 +49,7 @@ class Trainer(object):
                 # print(reg_term)
                 with torch.no_grad():
                     weight_tracker.pre_reg(model)
-                    direct_reg.apply(model, image, label)
+                    direct_reg.apply(model, image, label, epoch)
                     weight_tracker.post_reg(model)
                 optimizer.step()
                 if hp.print_batch:

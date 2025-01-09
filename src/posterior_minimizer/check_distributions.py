@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from src import dataset_creator as dc
 
 n = 1000000
-problem = dc.SingleDirectionGaussian(1, scale_of_mean=0.1)
+problem = dc.Gaussian(1, scale_of_mean=0.1)
 x, _ = problem.generate_dataset(n, shuffle=False)
 class_n = n // 2
 x0 = x[0:class_n].numpy()
