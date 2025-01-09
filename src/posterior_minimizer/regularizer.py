@@ -1,3 +1,4 @@
+import math
 import torch
 from scipy.stats import norm, chi2
 
@@ -6,7 +7,7 @@ from src.posterior_minimizer import variance as v
 from src.posterior_minimizer.variance import Variance
 
 
-ZERO_THRESHOLD = 0.0005
+ZERO_THRESHOLD = 0.0001
 
 
 def create(dp: DataParameters, hp: HyperParameters):
@@ -33,15 +34,42 @@ class DirectReg:
         self.desired_success_rate = hp.desired_success_rate
         self.n = dp.n
 
-    def apply(self, model, x, y):
-        regs = self.reg_grad(model, x, y)
-        for l, reg in enumerate(regs):
-            # o_weight = model.linears[l].weight.data
-            # q_grad = model.linears[l].weight.grad
-            model.linears[l].weight.grad += reg
+    def apply(self, model, x, y, epoch):
+        z, sds = self.reg_grad(model, x, y)
+        for l, sd in enumerate(sds):
+            W = model.linears[l].weight
+            w = W.detach()
+            grad = W.grad
+            # If the regularizer overpowers the gradient, set it to zero
+            # if epoch >= 50:
+            #     # if epoch == 50:
+            #     #     print(self.get_max_gradient(model, x, y))
+            #     #     print('Yeow')
+            reg = z * sd
+            reg *= torch.sign(w)
+            updated_grad = torch.abs(w) * ((grad + reg) / (sd + 1e-8) + 0.03 * w)
+            # updated_grad = grad / (sd + 1e-8) + 0.01 * w
+            W.grad = updated_grad
+
+            #_, d1 = w.shape
+            #index_max_W = torch.argmax(torch.abs(w)).item()
+            # row = index_max_W // d1
+            # col = index_max_W % d1
+            # max_W = W[row, col]
+            # sd_of_max = sd[row, col]
+            # grad_of_max = updated_grad[row, col]
+            # reg = reg * torch.sign(grad)
+
+            # updated_grad = torch.where(torch.abs(grad) > torch.abs(reg), (grad - reg) / sd, 0.0)
+            # else:
+            #     updated_grad = grad / sd
+            # updated_grad += 0.1 * W.detach()
+
+            # model.linears[l].weight.grad += reg
 
     def get_max_gradient(self, model, x, y):
-        regs = self.reg_grad(model, x, y)
+        z, sds = self.reg_grad(model, x, y)
+        regs = [z * sd for sd in sds]
         manual_grads = v.grad_at_zero(model, x, y)
         # if isinstance(self, InverseMagnitudeL2):
         #     reg_grads = [torch.sum(reg_grad ** 2.0, dim=1) ** 0.5 for reg_grad in reg_grads]
@@ -50,7 +78,7 @@ class DirectReg:
         greatest_delta = -10000000
         greatest_deltas_grad = None
         greatest_deltas_reg = None
-        for manual_grad, reg in zip(manual_grads, regs):
+        for manual_grad, reg in zip(manual_grads[:1], regs[:1]):
             abs_manual_grad = torch.abs(manual_grad)
             abs_reg = torch.abs(reg)
             delta = abs_manual_grad - abs_reg
@@ -94,7 +122,8 @@ class NoReg(DirectReg):
         super().__init__(variance, dp, hp)
 
     def reg_grad(self, model, x, y):
-        return [torch.zeros(linear.weight.shape) for linear in model.linears]
+        variances = self.variance.calculate(model, x, y)
+        return 0.0, [var ** 0.5 for var in variances]
 
 
 class L2(DirectReg):
@@ -122,6 +151,7 @@ class L2(DirectReg):
         return RegularizationState(squared_mag, self.zero_threshold, "Squared Weight Magnitude")
 
 
+first = True
 
 class L1(DirectReg):
 
@@ -129,20 +159,36 @@ class L1(DirectReg):
         super().__init__(variance, dp, hp)
 
     def reg_grad(self, model, x, y):
-        weights = [linear.weight for linear in model.linears]
+        # weights = [linear.weight for linear in model.linears]
         variances = self.variance.calculate(model, x, y)
-        if self.sizes[0] == 1:
+        d = self.sizes[0]
+        if d == 1:
             num_in = 1
         elif model.all_linear:
-            num_in = sum(self.sizes[:-1])
+            num_in = d  # sum(self.sizes[:-1])
         else:
-            num_in = 0
-            for sl, sl1 in zip(self.sizes[:-1], self.sizes[1:]):
-                num_in += sl * sl1
+            num_in = self.sizes[0] * self.sizes[1]
+            # num_in = 0
+            # for sl, sl1 in zip(self.sizes[:-1], self.sizes[1:]):
+            #     num_in += sl * sl1
         bp = (1 - self.desired_success_rate ** (1 / num_in)) / 2
         # prop_product = dp.percent_correct * (1 - dp.percent_correct)
         z = norm.ppf(1 - bp)
-        return [torch.sign(W) * z * var ** 0.5 for W, var in zip(weights, variances)]
+
+        # prop_product = dp.percent_correct * (1 - dp.percent_correct)
+        sd_scale = 0.5 / self.n ** 0.5
+        if not model.all_linear:
+            sd_scale *=(2 / 8) ** 0.5 # (0.5 - 0.5 / (d * math.pi)) ** 0.5
+        z *= sd_scale
+
+        # z = norm.ppf(1 - bp ** 0.5)
+        global first
+        if first:
+            print('ZZZZs')
+            print(norm.ppf(1 - bp))
+            print(norm.ppf(1 - bp ** 0.5))
+            first = False
+        return z, [var ** 0.5 for var in variances]
 
 
 

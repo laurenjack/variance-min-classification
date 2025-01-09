@@ -49,7 +49,10 @@ def single_run(problem, dp, hp, first_noisy_index, trainer, weight_tracker=None,
     test_set = TensorDataset(x_test, y_test)
     test_loader = DataLoader(test_set, dp.n_test)
     model = cm.Mlp(hp.sizes, is_bias=False, all_linear=hp.all_linear)
-
+    # linear = model.linears[0]
+    # b = (2 * 3 / 1) ** 0.5
+    # new_weights = torch.empty_like(linear.weight).uniform_(-b, b)
+    # linear.weight.data = new_weights
     regularizer = reg.create(dp, hp)
     max_grad_before = regularizer.get_max_gradient(model, x, y)
     max_grad_after = None

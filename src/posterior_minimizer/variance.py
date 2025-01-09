@@ -123,14 +123,20 @@ class EmpiricalAtFlat(Variance):
 
 class Analytical(Variance):
 
+    # def calculate(self, model, x, y):
+    #     n, d = x.shape
+    #     forward_product = torch.eye(d)
+    #     # prop_product = dp.percent_correct * (1 - dp.percent_correct)
+    #     sd_scale = 0.5
+    #     if not model.all_linear:
+    #         sd_scale *= (0.5 - 0.5 / (d * math.pi)) ** 0.5
+    #     backward_product = sd_scale / n ** 0.5 * torch.ones(1, 1)  # 2
+    #     return variance_grad_calc(model, forward_product, backward_product)
+
     def calculate(self, model, x, y):
         n, d = x.shape
         forward_product = torch.eye(d)
-        # prop_product = dp.percent_correct * (1 - dp.percent_correct)
-        sd_scale = 0.5
-        if not model.all_linear:
-            sd_scale *= (0.5 - 0.5 /(d * math.pi)) ** 0.5
-        backward_product = sd_scale / n ** 0.5 * torch.ones(1, 1)  # 2
+        backward_product = torch.ones(1, 1)  # 2
         return variance_grad_calc(model, forward_product, backward_product)
 
 
