@@ -33,6 +33,8 @@ class DirectReg:
         self.sizes = hp.sizes
         self.desired_success_rate = hp.desired_success_rate
         self.n = dp.n
+        self.percent_correct = dp.percent_correct
+        self.sigmoid = torch.nn.Sigmoid()
 
     def apply(self, model, x, y, epoch):
         z, sds = self.reg_grad(model, x, y)
@@ -67,10 +69,10 @@ class DirectReg:
 
             # model.linears[l].weight.grad += reg
 
-    def get_max_gradient(self, model, x, y):
+    def get_max_gradient(self, model, x, y, true_d=0):
         z, sds = self.reg_grad(model, x, y)
         regs = [z * sd for sd in sds]
-        manual_grads = v.grad_at_zero(model, x, y)
+        manual_grads = v.grad_at_zero(model, x, y, self.percent_correct)
         # if isinstance(self, InverseMagnitudeL2):
         #     reg_grads = [torch.sum(reg_grad ** 2.0, dim=1) ** 0.5 for reg_grad in reg_grads]
         #     manual_grads = [torch.sum(manual_grad ** 2.0, dim=1) ** 0.5 for manual_grad in manual_grads]
@@ -79,8 +81,8 @@ class DirectReg:
         greatest_deltas_grad = None
         greatest_deltas_reg = None
         for manual_grad, reg in zip(manual_grads[:1], regs[:1]):
-            abs_manual_grad = torch.abs(manual_grad)
-            abs_reg = torch.abs(reg)
+            abs_manual_grad = torch.abs(manual_grad[:, true_d:])
+            abs_reg = torch.abs(reg[:, true_d:])
             delta = abs_manual_grad - abs_reg
             positive_index = delta > 0
             has_gradient_greater_reg = has_gradient_greater_reg or torch.any(positive_index)
@@ -93,7 +95,10 @@ class DirectReg:
                 greatest_deltas_reg = abs_reg.view(-1)[max_index].item()
         return RegularizationState(greatest_deltas_grad, greatest_deltas_reg, "Greatest Gradient")
 
-    def get_zero_state(self, model, x, y):
+    def get_zero_state(self, model, x, y, true_d=0):
+        # Zero out the true dimensions, so we can see the regularizer had the intended effect
+        x = x.clone()
+        x[:, :true_d] = 0.0
         d = x.shape[1]
         # means = model(torch.eye(d))
         # squared_mag = torch.sum(means ** 2) ** 0.5
@@ -172,11 +177,10 @@ class L1(DirectReg):
             # for sl, sl1 in zip(self.sizes[:-1], self.sizes[1:]):
             #     num_in += sl * sl1
         bp = (1 - self.desired_success_rate ** (1 / num_in)) / 2
-        # prop_product = dp.percent_correct * (1 - dp.percent_correct)
         z = norm.ppf(1 - bp)
 
-        # prop_product = dp.percent_correct * (1 - dp.percent_correct)
-        sd_scale = 0.5 / self.n ** 0.5
+        prop_product = self.percent_correct * (1 - self.percent_correct)
+        sd_scale = (prop_product / self.n) ** 0.5
         if not model.all_linear:
             sd_scale *=(2 / 8) ** 0.5 # (0.5 - 0.5 / (d * math.pi)) ** 0.5
         z *= sd_scale

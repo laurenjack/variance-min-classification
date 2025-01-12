@@ -117,6 +117,8 @@ class BatchNorm2d(SharedMagnitude):
         return y
 
 
+
+
 class Mlp(nn.Module):
 
     def __init__(self, sizes, is_bias: bool, all_linear=False):

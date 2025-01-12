@@ -74,11 +74,11 @@ def variance_grad_calc(model, forward_product, backward_product):
     return grads
 
 
-def grad_at_zero(model, x, y, point_level=False):
+def grad_at_zero(model, x, y, percent_correct, point_level=False):
     n, d = x.shape
     y_shift = y.view(n, 1) * 2.0 - 1
     forward_product = x.t()
-    backward_product = - 0.5 * y_shift / n
+    backward_product = - (percent_correct * (1 - percent_correct)) ** 0.5 * y_shift / n  #
     backward_product = backward_product.view(n, 1)
     # The two commented out lines below apply to the DirectMeanTrainer
     # forward_product = -(2 * x * y_shift).t() / n  # (d, n)

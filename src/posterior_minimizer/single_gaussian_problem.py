@@ -42,7 +42,7 @@ problem = dataset_creator.Gaussian(d=d, perfect_class_balance=False)
 trainer = train.SigmoidBxeTrainer()
 
 weight_tracker = wt.AllWeights(len(hp.sizes) - 1, node_limit=10)
-_, max_grad_before, max_grad_after, zero_state, preds = runner.single_run(problem, dp, hp, 0, trainer, weight_tracker=weight_tracker, print_details=False, shuffle=True)
+max_grad_before, max_grad_after, zero_state, preds = runner.single_run(problem, dp, hp, trainer, weight_tracker=weight_tracker, print_details=False, shuffle=True)
 print(max_grad_before)
 print(max_grad_after)
 print(zero_state)

@@ -4,6 +4,7 @@ import torch
 from torchvision import datasets
 from torchvision import transforms
 from torch.utils.data import TensorDataset, Subset
+from scipy.stats import norm
 
 
 CIFAR_NUM_CLASSES = 10
@@ -154,6 +155,25 @@ class AllNoise:
             c = i % self.num_class
             ys.append(c)
         return _return_xy(x_list=xs, y_list=ys, shuffle=shuffle, scale_by_root_d=False)
+
+
+class MultivariateNormal:
+
+    def __init__(self, true_d, percent_correct, noisy_d=0):
+        v = torch.randn(true_d)
+        if noisy_d > 0:
+            v = torch.cat([v, torch.zeros(noisy_d)])
+        u = v / v.norm(p=2)
+        c = norm.ppf(percent_correct)
+        self.mew = c * u
+
+    def generate_dataset(self, n, shuffle=True):
+        d = self.mew.shape[0]
+        y = torch.randint(low=0, high=2, size=(n,))
+        ep = torch.randn(n, d)
+        y_shift = (2 * y.float() - 1).view(n, 1)
+        x = self.mew * y_shift + ep
+        return x, y
 
 
 class Gaussian:

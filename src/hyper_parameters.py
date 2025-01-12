@@ -9,6 +9,7 @@ class DataParameters:
     n: int
     n_test: int
     d: int
+    true_d: int = 0
 
 
 @dataclass
@@ -20,6 +21,7 @@ class HyperParameters:
     weight_decay: float
     sizes: List[int]
     desired_success_rate: float
+    relu_bound: float = 0.25
     do_train: bool = True
     gamma: float = 1.0
     is_adam: bool = False
