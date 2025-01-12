@@ -7,7 +7,7 @@ from src.posterior_minimizer import regularizer as reg
 from src.train import SigmoidBxeTrainer
 
 
-def run(problem, runs, dp, hp, first_noisy_index, trainer, deviation=None, **kwargs):
+def run(problem, runs, dp, hp, trainer, deviation=None, **kwargs):
     non_zero_count = 0
     ggtr_before = 0
     ggtr_after = 0
@@ -15,8 +15,8 @@ def run(problem, runs, dp, hp, first_noisy_index, trainer, deviation=None, **kwa
         weight_tracker = None
         # if r == 1:
         #     weight_tracker = wt.AllWeights(len(sizes) - 1)
-        max_effective_success, max_grad_before, max_grad_after, zero_state, preds = single_run(problem, dp, hp,
-                                                                                  first_noisy_index, trainer,
+        max_grad_before, max_grad_after, zero_state, preds = single_run(problem, dp, hp,
+                                                                                  trainer,
                                                                                   weight_tracker=weight_tracker, **kwargs)
         # if r == 1:
         #     weight_tracker.show()
@@ -40,7 +40,7 @@ def run(problem, runs, dp, hp, first_noisy_index, trainer, deviation=None, **kwa
         print(run_report)
 
 
-def single_run(problem, dp, hp, first_noisy_index, trainer, weight_tracker=None,
+def single_run(problem, dp, hp, trainer, weight_tracker=None,
                print_details=False, **kwargs):
     x, y = problem.generate_dataset(dp.n, **kwargs)
     x_test, y_test = problem.generate_dataset(dp.n_test, shuffle=True)
@@ -53,30 +53,27 @@ def single_run(problem, dp, hp, first_noisy_index, trainer, weight_tracker=None,
     # b = (2 * 3 / 1) ** 0.5
     # new_weights = torch.empty_like(linear.weight).uniform_(-b, b)
     # linear.weight.data = new_weights
-    regularizer = reg.create(dp, hp)
-    max_grad_before = regularizer.get_max_gradient(model, x, y)
+    max_grad_before = None
     max_grad_after = None
+    zero_state = None
+    has_noisy_d = dp.d - dp.true_d > 0
+    regularizer = reg.create(dp, hp)
+    if has_noisy_d:
+        max_grad_before = regularizer.get_max_gradient(model, x, y, true_d=dp.true_d)
+
     if hp.do_train:
         trainer.run(model, train_loader, test_loader, hp, direct_reg=regularizer,
                                                     weight_tracker=weight_tracker)
-        max_grad_after = regularizer.get_max_gradient(model, x, y)
-        zero_state = regularizer.get_zero_state(model, x, y)
+        if has_noisy_d:
+            max_grad_after = regularizer.get_max_gradient(model, x, y, true_d=dp.true_d)
+            zero_state = regularizer.get_zero_state(model, x, y, true_d=dp.true_d)
     else:
         zero_state = reg.NullRegularizationState()
 
-    y_shift = y * 2 - 1
-    max_effective_success = 0
-    for j in range(first_noisy_index, dp.d):
-        xj = x[:, j]
-        prod = y_shift * xj
-        is_same = prod == 1
-        same_count = is_same.sum().item()
-        effective_success = abs(same_count - dp.n // 2)
-        if effective_success > max_effective_success:
-            max_effective_success = effective_success
-
     sigmoid = nn.Sigmoid()
     a = sigmoid(model(x))
+    mean_confidence = torch.mean(torch.max(a, 1 - a)).item()
+    print(f"Mean confidence: {mean_confidence}")
     max_pred = torch.max(a).item()
     min_pred = torch.min(a).item()
     preds = {"max_a": max_pred, "min_a": min_pred}
@@ -85,6 +82,15 @@ def single_run(problem, dp, hp, first_noisy_index, trainer, weight_tracker=None,
         print(model.linears[0].weight)
         print(a[0])
 
-    return max_effective_success, max_grad_before, max_grad_after, zero_state, preds
+    return max_grad_before, max_grad_after, zero_state, preds
+
+
+def just_give_w(x, y, dp, hp, trainer):
+    train_set = TensorDataset(x, y)
+    train_loader = DataLoader(train_set, hp.batch_size)
+    model = cm.Mlp(hp.sizes, is_bias=False, all_linear=hp.all_linear)
+    regularizer = reg.create(dp, hp)
+    trainer.run(model, train_loader, train_loader, hp, direct_reg=regularizer)
+    return model.linears[0].weight[0, 0]
 
 
