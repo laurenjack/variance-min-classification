@@ -123,6 +123,7 @@ class Mlp(nn.Module):
 
     def __init__(self, sizes, is_bias: bool, all_linear=False):
         super().__init__()
+        self.is_bias = is_bias
         self.all_linear = all_linear
         self.num_input = sizes[0]
         self.layers = nn.ModuleList()

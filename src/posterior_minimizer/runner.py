@@ -7,19 +7,15 @@ from src.posterior_minimizer import regularizer as reg
 from src.train import SigmoidBxeTrainer
 
 
-def run(problem, runs, dp, hp, trainer, deviation=None, **kwargs):
+def run(problem, runs, dp, hp, trainer, **kwargs):
     non_zero_count = 0
     ggtr_before = 0
     ggtr_after = 0
     for r in range(runs):
         weight_tracker = None
-        # if r == 1:
-        #     weight_tracker = wt.AllWeights(len(sizes) - 1)
         max_grad_before, max_grad_after, zero_state, preds = single_run(problem, dp, hp,
                                                                                   trainer,
                                                                                   weight_tracker=weight_tracker, **kwargs)
-        # if r == 1:
-        #     weight_tracker.show()
         print(max_grad_before)
         print(max_grad_after)
         print(zero_state)
@@ -28,7 +24,7 @@ def run(problem, runs, dp, hp, trainer, deviation=None, **kwargs):
             ggtr_before += 1
             if not zero_state.exceeds_threshold():
                 print("Gradient greater than reg but zero")
-        if max_grad_after.exceeds_threshold():
+        if hp.do_train and max_grad_after.exceeds_threshold():
             ggtr_after += 1
         if zero_state.exceeds_threshold():
             non_zero_count += 1
@@ -48,7 +44,7 @@ def single_run(problem, dp, hp, trainer, weight_tracker=None,
     train_loader = DataLoader(train_set, hp.batch_size)
     test_set = TensorDataset(x_test, y_test)
     test_loader = DataLoader(test_set, dp.n_test)
-    model = cm.Mlp(hp.sizes, is_bias=False, all_linear=hp.all_linear)
+    model = cm.Mlp(hp.sizes, is_bias=hp.is_bias, all_linear=hp.all_linear)
     # linear = model.linears[0]
     # b = (2 * 3 / 1) ** 0.5
     # new_weights = torch.empty_like(linear.weight).uniform_(-b, b)

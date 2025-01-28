@@ -176,6 +176,110 @@ class MultivariateNormal:
         return x, y
 
 
+class HyperXorNormal:
+    """
+    This class creates 2^d corners of a d-dimensional hypercube as mean vectors
+    (each of magnitude c). The label is determined by the parity of the corner's bits.
+
+    The parameter 'percent_correct' indicates the probability that a point from
+    one corner (N(mu_i, I)) is classified (by nearest-mean rule) as belonging to
+    that same corner, rather than to one of its d neighbors.
+
+    Summarily: from each corner, sum of misclassification probabilities to
+    its d neighbors = (1 - percent_correct).
+    Hence each corner has p = (1 - percent_correct)/d chance to go to a
+    specific neighbor, leading to c = sqrt(d) * Phi^{-1}(1 - p).
+    """
+
+    def __init__(self, true_d: int, percent_correct: float, noisy_d: int = 0):
+        """
+        d : Dimension of the hypercube
+        percent_correct : Probability of correct classification under nearest-mean
+                          for each corner. (For example, 0.8 => 80% correct.)
+        """
+        misclassification = 1.0 - percent_correct  # e.g., 0.2 if percent_correct=0.8
+        if misclassification < 0 or misclassification > 1:
+            raise ValueError("percent_correct must be between 0 and 1.")
+
+        # Probability of misclassifying to a specific (single) neighbor
+        # = total misclass / number of neighbors = misclassification / d
+        p = misclassification / true_d
+
+        # We want 1 - Φ(c/√d) = p  =>  Φ(c/√d) = 1 - p  =>  c/√d = Φ⁻¹(1 - p)
+        alpha = 1.0 - p
+        self.z = norm.ppf(alpha)  # inverse CDF
+        c = math.sqrt(true_d) * self.z
+
+        # Build all sign patterns in {+1, -1}^d
+        # We'll have 2^d corners, each of shape (d,).
+        num_corners = 1 << true_d  # 2^d
+        corners = []
+        for i in range(num_corners):
+            sign_vec = []
+            for bit in range(true_d):
+                # If the bit-th bit of i is 1 => +1, else => -1
+                if (i >> bit) & 1 == 1:
+                    sign_vec.append(1.0)
+                else:
+                    sign_vec.append(-1.0)
+            corners.append(sign_vec)
+        corners = torch.tensor(corners, dtype=torch.float32)  # shape (2^d, d)
+
+        # Each sign vector has length sqrt(d). Scale to length c.
+        corners = corners * (c / math.sqrt(true_d))
+
+        # Store the means
+        self.means = corners  # (2^d, d)
+
+        # Compute parity labels: +1 => bit=1, -1 => bit=0
+        # Class label = sum of bits mod 2
+        bits = (corners > 0).int()  # shape (2^d, d), 1 where >0 else 0
+        parity = bits.sum(dim=1) % 2  # shape (2^d,), 0 or 1
+        self.labels = parity
+
+        # Store c for reference (not strictly needed, but nice to have):
+        self.c = c
+        # Add the noisy dimensions
+        if noisy_d:
+            self.means = torch.cat([self.means, torch.zeros(num_corners, noisy_d)], dim=1)
+        self.d = true_d + noisy_d
+
+    def generate_dataset(self, n: int, shuffle: bool = True):
+        """
+        Sample 'n' data points. Each point comes from one of the 2^d corners
+        (chosen uniformly at random), plus standard normal noise.
+
+        Returns:
+          x: shape (n, d)
+          y: shape (n,)  (0 or 1, the parity)
+        """
+        num_corners = self.means.size(0)  # = 2^d
+        d = self.means.size(1)
+
+        # 1) Pick random corner indices
+        idx = torch.randint(low=0, high=num_corners, size=(n,))
+
+        # 2) Gather the chosen means
+        chosen_means = self.means[idx]  # shape (n, d)
+
+        # 3) Add standard normal noise
+        noise = torch.randn(n, d)
+        x = chosen_means + noise
+        # Downscale
+        x /= (2 * self.z)
+
+        # 4) Find the labels
+        y = self.labels[idx]  # shape (n,)
+
+        # 5) Optionally shuffle
+        if shuffle:
+            perm = torch.randperm(n)
+            x = x[perm]
+            y = y[perm]
+
+        return x, y
+
+
 class Gaussian:
 
     NUM_CLASS = 2

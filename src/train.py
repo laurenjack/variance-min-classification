@@ -16,7 +16,7 @@ class Trainer(object):
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model = model.to(device)
         if hp.is_adam:
-            optimizer = torch.optim.AdamW(model.parameters(), lr=hp.learning_rate, weight_decay=hp.weight_decay)
+            optimizer = torch.optim.AdamW(model.parameters(), lr=hp.learning_rate, betas=(0.9, 0.999), eps=1e-8, weight_decay=hp.weight_decay)
             #optimizer = torch.optim.Adam(model.parameters(), lr=hp.learning_rate, weight_decay=hp.weight_decay)
         else:
             optimizer = torch.optim.SGD(model.parameters(),
