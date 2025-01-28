@@ -1,4 +1,5 @@
 import math
+from scipy.stats import norm, chi, chi2
 
 import torch
 from torch import nn
@@ -8,14 +9,18 @@ from src.hyper_parameters import HyperParameters
 
 def manual_grad_calc(model, forward_product, backward_product, point_level=False):
     relu = nn.ReLU()
-    weights = [linear.weight for linear in model.linears]
+    weights = [(linear.weight, linear.bias) for linear in model.linears]
     num_layers = len(weights)
     is_actives = []
     forward_products = []
-    for l, W in enumerate(weights):
+    for l, (W, b) in enumerate(weights):
         W = W.detach()
+        if b is None:
+            b = 0.0
+        else:
+            b = b.detach()
         forward_products.append(forward_product)
-        forward_product = W @ forward_product
+        forward_product = W @ forward_product + b
         if not model.all_linear and l < num_layers - 1:
             forward_product = relu(forward_product)
         is_active = (forward_product != 0)
@@ -23,7 +28,7 @@ def manual_grad_calc(model, forward_product, backward_product, point_level=False
         is_actives.append(is_active)
 
     backward_products = []
-    for W, is_active in zip(reversed(weights), reversed(is_actives)):
+    for (W, b), is_active in zip(reversed(weights), reversed(is_actives)):
         W = W.detach()
         backward_product = is_active * backward_product
         backward_products.append(backward_product)
@@ -31,6 +36,7 @@ def manual_grad_calc(model, forward_product, backward_product, point_level=False
 
     # Now for each weight, combine the forward and backward product at that point to form the regularizer.
     grads = []
+    bias_grads = []
     num_layers = len(weights)
     for l in range(num_layers):
         fp = forward_products[l]
@@ -42,27 +48,37 @@ def manual_grad_calc(model, forward_product, backward_product, point_level=False
             grad = grad.permute(1, 2, 0)  # Put the data dim first
         else:
             grad = bp.t() @ fp.t()
+        bias_grads.append(torch.sum(bp, dim=0))
         grads.append(grad)
-    return grads
+    return grads, bias_grads
 
 
-def variance_grad_calc(model, forward_product, backward_product):
-    weights = [linear.weight for linear in model.linears]
+def _propagate_variance(model, forward_product, backward_product):
+    weights = [(linear.weight, linear.bias) for linear in model.linears]
     forward_products = []
-    for W in weights:
+    for W, b in weights:
         W = W.detach()
         forward_products.append(forward_product)
-        forward_product = W @ forward_product
+        if b is None:
+            b = 0.0
+        else:
+            b = b.detach()
+        forward_product = W @ forward_product + b
 
     backward_products = []
-    for W in reversed(weights):
+    for W, b in reversed(weights):
         W = W.detach()
         backward_products.append(backward_product)
         backward_product = backward_product @ W
+    return forward_products, backward_products
 
+
+def variance_grad_calc(model, forward_product, backward_product):
+    forward_products, backward_products = _propagate_variance(model, forward_product, backward_product)
     # Now for each weight, combine the forward and backward product at that point to form the regularizer.
     grads = []
-    num_layers = len(weights)
+    bias_grads = []
+    num_layers = len(model.linears)
     for l in range(num_layers):
         fp = forward_products[l]
         bp = backward_products[-(l + 1)]
@@ -71,7 +87,44 @@ def variance_grad_calc(model, forward_product, backward_product):
         fp = torch.sum(fp, dim=1, keepdim=True)
         grad = bp.t() @ fp.t()
         grads.append(grad)
-    return grads
+        bias_grads.append(bp[0])  # TODO(Jack) check this index
+    return grads, bias_grads
+
+
+def layer_variance_calc(model, forward_product, backward_product, desired_success_rate, n):
+    forward_products, backward_products = _propagate_variance(model, forward_product, backward_product)
+    grads = []
+    bias_grads = []
+    num_layers = len(model.linears)
+    for l in range(num_layers):
+        fp = forward_products[l]
+        dl, _ = fp.shape
+        bp = backward_products[-(l + 1)]
+        bp = bp ** 2
+        fp = fp ** 2
+        # Sum across dim=1 to get variance scaler for each input
+        fp = torch.sum(fp, dim=1)
+        # TODO(Jack) check this maths
+        if model.is_bias:
+            fp += 1
+        mean = torch.sum(fp)
+        variance = torch.sum(fp ** 2)
+        # Satterthwaite Approximation of generalized chi-square as chi-squared
+        f = mean ** 2 / variance
+        scale = variance / mean
+        # percentile = (1 - desired_success_rate ** (1 / num_layers))
+        # post_constant = chi2.ppf(1 - percentile, f)
+        post_constant = chi2.ppf(desired_success_rate, f)
+        post_constant *= 2 / n * scale
+
+        # The inner dimension is always just 1 here
+        grad = post_constant * bp.t()
+        bias_grads.append(grad[0])  # TODO(Jack) check this index
+        grad = grad.repeat(1, dl)
+        grads.append(grad)
+        
+        return grads, bias_grads
+
 
 
 def grad_at_zero(model, x, y, percent_correct, point_level=False):
