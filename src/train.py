@@ -54,7 +54,8 @@ class Trainer(object):
                 optimizer.step()
                 if hp.print_batch:
                     print(f'Batch train loss: {loss.item()}')
-            weight_tracker.update(model)
+                weight_tracker.update(model)
+                weight_tracker.update_for_gradient(model, image, label)
             scheduler.step()
         return self._eval_accuracy(model, train_loader, device), self._eval_accuracy(model, validation_loader, device)
 
