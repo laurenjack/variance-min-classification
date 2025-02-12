@@ -1,10 +1,15 @@
 import torch
 import matplotlib.pyplot as plt
 
+from src.posterior_minimizer import variance as v
+
 
 class WeightTracker:
 
     def update(self, model):
+        pass
+
+    def update_for_gradient(self, model, x, y):
         pass
 
     def show(self):
@@ -15,6 +20,18 @@ class WeightTracker:
 
     def post_reg(self, model):
         pass
+
+    def track_grad_at_zero(self, weight_grads, bias_grads):
+        pass
+
+
+def update_list(layer_lists, current_tensors, node_limit):
+    for l, W in enumerate(current_tensors):
+        nodes = W.shape[0]
+        # Reduce nodes visualized so graph is not crazy big
+        node_limit = node_limit if node_limit and node_limit < nodes else nodes
+        W = W[0:node_limit]
+        layer_lists[l].append(W)
 
 
 class AllWeights(WeightTracker):
@@ -26,38 +43,58 @@ class AllWeights(WeightTracker):
         self.node_limit = node_limit
 
     def update(self, model):
-        for l, linear in enumerate(model.linears):
-            W = linear.weight.detach().clone()
-            nodes = W.shape[0]
-            # Reduce nodes visualized so graph is not crazy big
-            node_limit = self.node_limit if self.node_limit and self.node_limit < nodes else nodes
-            W = W[0:node_limit]
-            self.layers[l].append(W)
+        current_weights = [linear.weight.detach().clone() for linear in model.linears]
+        update_list(self.layers, current_weights, self.node_limit)
 
     def show(self):
-        plot_all_weights(self.layers)
+        plot_all_weights(self.layers, 'Weight')
 
 
-class WeightsAndGradsLinear(WeightTracker):
+class GradAtZeroTracker(WeightTracker):
 
-    def __init__(self):
-        self.all_weights = []
-        self.pre_reg_gradients = []
-        self.post_reg_gradients = []
+    def __init__(self, num_layers, percent_correct, variance : v.Variance, node_limit=None):
+        self.node_limit = node_limit
+        self.percent_correct = percent_correct
+        self.variance = variance
+        self.grads_at_zero = []
+        for l in range(num_layers):
+            self.grads_at_zero.append([])
+        # Global properties for tracking the maximum normalized gradient
+        self.global_max = None  # will hold the single largest normalized value (a torch.Tensor scalar)
+        self.global_max_grad = None  # will hold the corresponding element from weight_grads
+        self.global_max_sd = None  # will hold the corresponding element from weight_sds
 
-    def update(self, model):
-        self.all_weights.append(model.linears[0].weight[0].detach().clone())
+    def update_for_gradient(self, model, x, y):
+        # Compute gradients and standard deviations
+        weight_grads, _ = v.grad_at_zero(model, x, y, self.percent_correct)
+        weight_sds, _ = self.variance.calculate(model, x, y)
+
+        # Compute normalized absolute gradients
+        normed_grads_at_zero = [
+            torch.abs(grad / (sd + 1e-8))
+            for grad, sd in zip(weight_grads, weight_sds)
+        ]
+
+        # Iterate over each tensor in the list to find the maximum element
+        for norm_tensor, grad_tensor, sd_tensor in zip(normed_grads_at_zero, weight_grads, weight_sds):
+            # Flatten the tensor for easy maximum search
+            flat_norm = norm_tensor.view(-1)
+            max_val, max_idx = torch.max(flat_norm, dim=0)
+
+            # If no global max yet, or this max is larger, update global properties
+            if (self.global_max is None) or (max_val > self.global_max):
+                self.global_max = max_val
+                # Get corresponding values from the grad and sd tensors.
+                self.global_max_grad = grad_tensor.view(-1)[max_idx]
+                self.global_max_sd = sd_tensor.view(-1)[max_idx]
+
+        update_list(self.grads_at_zero, normed_grads_at_zero, self.node_limit)
 
     def show(self):
-        assert len(self.all_weights) == len(self.pre_reg_gradients) == len(self.post_reg_gradients)
-        plot_weights_with_gradients(self.all_weights,self.pre_reg_gradients, self.post_reg_gradients, "All Linear")
-        # plot_individual_weights(self.all_weights, "Linear Weights")
-
-    def pre_reg(self, model):
-        self.pre_reg_gradients.append(model.linears[0].weight.grad[0].clone())
-
-    def post_reg(self, model):
-        self.post_reg_gradients.append(model.linears[0].weight.grad[0].clone())
+        print(f"Global Max abs normed grad: {self.global_max}")
+        print(f"Grad: {self.global_max_grad}")
+        print(f"SD: {self.global_max_sd}")
+        plot_all_weights(self.grads_at_zero, 'Gradient')
 
 
 class SingleDimWeightTracker(WeightTracker):
@@ -67,7 +104,7 @@ class SingleDimWeightTracker(WeightTracker):
         self.single_dim_weights = []
         self.random_weights = []
 
-    def update(self, model):
+    def update(self, model, x, y):
         self.hidden_weights.append(model.linears[1].weight[0].detach().clone())
         self.single_dim_weights.append(model.linears[0].weight[:, 0].detach().clone())
         self.random_weights.append(model.linears[0].weight[:, 1:].detach().clone())
@@ -91,7 +128,7 @@ def plot_individual_weights(weight_list, title):
     plt.show()
 
 
-def plot_all_weights(layers):
+def plot_all_weights(layers, title):
     for l, layer in enumerate(layers):
         out_nodes, in_nodes = layer[0].shape
         for i in range(out_nodes):
@@ -102,7 +139,7 @@ def plot_all_weights(layers):
                 plt.plot(weights, label=f'w {i}{j}')
         # plt.axhline(y=0, color='k', linestyle='--', label='Reference Line')
         plt.xlabel('Time')
-        plt.ylabel('Weight Value')
+        plt.ylabel(f'{title} Value')
         plt.title(f'Layer {l}')
         plt.legend()
         plt.show()

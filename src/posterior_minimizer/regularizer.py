@@ -10,8 +10,7 @@ from src.posterior_minimizer.variance import Variance
 ZERO_THRESHOLD = 0.0001
 
 
-def create(dp: DataParameters, hp: HyperParameters):
-    variance = v.create_variance(hp)
+def create(variance: v.Variance, dp: DataParameters, hp: HyperParameters):
     if hp.reg_type == "L1":
         reg_constructor = L1
     elif hp.reg_type == "L2":
@@ -28,7 +27,8 @@ class DirectReg:
     Modifies the gradients of a model directly, to apply a regularizer.
     """
 
-    def __init__(self, variance: Variance, dp: DataParameters, hp: HyperParameters):
+    def __init__(self, zero_threshold, variance: Variance, dp: DataParameters, hp: HyperParameters):
+        self.zero_threshold = zero_threshold
         self.variance = variance
         self.sizes = hp.sizes
         self.desired_success_rate = hp.desired_success_rate
@@ -37,54 +37,30 @@ class DirectReg:
         self.percent_correct = dp.percent_correct
         self.sigmoid = torch.nn.Sigmoid()
 
-    def _regularize_param(self, W, z, sd):
-        w = W.detach()
-        grad = W.grad
-        reg = z * sd
-        reg *= torch.sign(w)
-        updated_grad =  torch.abs(w) * (grad + reg) # * #/ (sd + 1e-8) + 0.01 * w) # self.n ** 0.5 *
-        # max_grad = torch.max(torch.abs(updated_grad)).item()
-        # max_w =  torch.max(torch.abs(w)).item()
-        # min_sd = torch.min(torch.abs(sd)).item()
-        W.grad = updated_grad
+    def regularize_param(self, W, reg):
+        pass
 
     def apply(self, model, x, y, epoch):
-        z, sds, bias_sds = self.reg_grad(model, x, y)
-        for l, (sd, bias_sd) in enumerate(zip(sds, bias_sds)):
+        regs, bias_regs = self.variance.calculate(model, x, y)
+        for l, (reg, bias_reg) in enumerate(zip(regs, bias_regs)):
             W = model.linears[l].weight
             b = model.linears[l].bias
-            self._regularize_param(W, z, sd)
+            self.regularize_param(W, reg)
             if b is not None:
-                self._regularize_param(b, z, bias_sd)
-            #_, d1 = w.shape
-            #index_max_W = torch.argmax(torch.abs(w)).item()
-            # row = index_max_W // d1
-            # col = index_max_W % d1
-            # max_W = W[row, col]
-            # sd_of_max = sd[row, col]
-            # grad_of_max = updated_grad[row, col]
-            # reg = reg * torch.sign(grad)
-
-            # updated_grad = torch.where(torch.abs(grad) > torch.abs(reg), (grad - reg) / sd, 0.0)
-            # else:
-            #     updated_grad = grad / sd
-            # updated_grad += 0.1 * W.detach()
-
-            # model.linears[l].weight.grad += reg
+                self.regularize_param(b, bias_reg)
 
     def get_max_gradient(self, model, x, y, true_d=0):
-        z, sds, bias_sds = self.reg_grad(model, x, y)
-        w_regs = [z * sd for sd in sds]
-        bias_regs = [z * sd for sd in bias_sds]
+        w_regs, bias_regs = self.variance.calculate(model, x, y)
         w_grads, bias_grads = v.grad_at_zero(model, x, y, self.percent_correct)
         grads = [w_grads[0][:, true_d:]]
         regs = [w_regs[0][:, true_d:]]
         if model.is_bias:
             grads += bias_grads[:1]
             regs += bias_regs[:1]
-        # if isinstance(self, InverseMagnitudeL2):
-        #     reg_grads = [torch.sum(reg_grad ** 2.0, dim=1) ** 0.5 for reg_grad in reg_grads]
-        #     manual_grads = [torch.sum(manual_grad ** 2.0, dim=1) ** 0.5 for manual_grad in manual_grads]
+        if isinstance(self, L2):
+            # TODO(Jack) handle biases
+            grads = [torch.sum(reg_grad ** 2.0, dim=1) ** 0.5 for reg_grad in grads]
+            regs = [torch.sum(manual_grad ** 2.0, dim=1) ** 0.5 for manual_grad in regs]
         has_gradient_greater_reg = False
         greatest_delta = -10000000
         greatest_deltas_grad = None
@@ -113,7 +89,7 @@ class DirectReg:
         # squared_mag = torch.sum(means ** 2) ** 0.5
         z = model(x)
         squared_mag = (torch.sum(z ** 2) / d) ** 0.5
-        return RegularizationState(squared_mag, ZERO_THRESHOLD, "Squared Weight Magnitude")
+        return RegularizationState(squared_mag, self.zero_threshold, "Squared Weight Magnitude")
 
 
     # def get_max_gradient(self, model, x, y):
@@ -133,121 +109,43 @@ class DirectReg:
 class NoReg(DirectReg):
 
     def __init__(self, variance: Variance, dp: DataParameters, hp: HyperParameters):
-        super().__init__(variance, dp, hp)
+        super().__init__(variance.scale_calc(), variance, dp, hp)
 
-    def reg_grad(self, model, x, y):
-        variances, bias_variances = self.variance.calculate(model, x, y)
-        return 0.0, [var ** 0.5 for var in variances], [var ** 0.5 for var in bias_variances]
+
+class L1(DirectReg):
+
+    def __init__(self, variance: Variance, dp: DataParameters, hp: HyperParameters):
+        super().__init__(0.0001, variance, dp, hp)
+
+    def regularize_param(self, W, reg):
+        w = W.detach()
+        grad = W.grad
+        reg *= torch.sign(w)
+        updated_grad = torch.abs(w) * (grad + reg) # * #/ (sd + 1e-8) + 0.01 * w) # self.n ** 0.5 *
+        W.grad = updated_grad
 
 
 class L2(DirectReg):
 
     def __init__(self, variance: Variance, dp: DataParameters, hp: HyperParameters):
-        # zero_threshold = post_constant / (1 + post_constant)
-        super().__init__(variance, dp, hp)
+        post_constant = variance.scale_calc()
+        zero_threshold = post_constant / (1 + post_constant)
+        super().__init__(zero_threshold, variance, dp, hp)
 
-    def reg_grad(self, model, x, y):
-        n, d = x.shape
-        num_out = len(self.sizes) - 1  # sum(hp.sizes[:-1]) # sum(hp.sizes[1:])
-        bp = (1 - self.desired_success_rate ** (1 / num_out))
-        post_constant = chi2.ppf(1 - bp, d)
-        post_constant *= 4 / n
-        post_constant = post_constant ** 0.5
-        return [post_constant * linear.weight.detach() for linear in model.linears]
+    def regularize_param(self, W, reg):
+        w = W.detach()
+        grad = W.grad
+        updated_grad = grad + reg * w
+        W.grad = updated_grad
 
-    # def get_max_gradient(self, model, x, y):
-    #     return self.get_greatest_manual_grad(model, x, y)
-
-    def get_zero_state(self, model, x, y):
+    def get_zero_state(self, model, x, y, true_d=0):
+        # Zero out the true dimensions, so we can see the regularizer had the intended effect
+        x = x.clone()
+        x[:, :true_d] = 0.0
         d = x.shape[1]
         means = model(torch.eye(d))
         squared_mag = torch.sum(means ** 2) ** 0.5
         return RegularizationState(squared_mag, self.zero_threshold, "Squared Weight Magnitude")
-
-
-first = True
-
-class L1(DirectReg):
-
-    def __init__(self, variance: Variance, dp: DataParameters, hp: HyperParameters):
-        super().__init__(variance, dp, hp)
-
-    def reg_grad(self, model, x, y):
-        # weights = [linear.weight for linear in model.linears]
-        variances, bias_variances = self.variance.calculate(model, x, y)
-        d = self.sizes[0]
-        if model.all_linear:
-            num_in = d # - 1 # sum(self.sizes[:-1])
-            if model.is_bias:
-                num_in += 1
-        else:
-            num_in = self.sizes[0] * self.sizes[1]
-            # num_in = 0
-            # for sl, sl1 in zip(self.sizes[:-1], self.sizes[1:]):
-            #     num_in += sl * sl1
-        bp = (1 - self.desired_success_rate ** (1 / num_in)) / 2
-        z = norm.ppf(1 - bp)
-
-        prop_product = self.percent_correct * (1 - self.percent_correct)
-        sd_scale = (prop_product / self.n) ** 0.5
-        if not model.all_linear:
-            sd_scale *= self.relu_bound ** 0.5 # (0.5 - 0.5 / (d * math.pi)) ** 0.5
-        z *= sd_scale
-
-        # z = norm.ppf(1 - bp ** 0.5)
-        global first
-        if first:
-            print('ZZZZs')
-            print(norm.ppf(1 - bp))
-            first = False
-        return z, [var ** 0.5 for var in variances], [var ** 0.5 for var in bias_variances]
-
-
-class InverseMagnitudeL2(DirectReg):
-
-    ZERO_THRESHOLD = 0.005
-
-    def __init__(self, variance: Variance, dp: DataParameters, hp: HyperParameters):
-        super().__init__(variance, dp, hp)
-
-    def reg_grad(self, model, x, y):
-        variances, bias_variances = self.variance.calculate(model, x, y)
-        d = self.sizes[0]
-        if model.all_linear:
-            num_in = d # - 1 # sum(self.sizes[:-1])
-            if model.is_bias:
-                num_in += 1
-        else:
-            num_in = self.sizes[0] * self.sizes[1]
-            # num_in = 0
-            # for sl, sl1 in zip(self.sizes[:-1], self.sizes[1:]):
-            #     num_in += sl * sl1
-        bp = (1 - self.desired_success_rate ** (1 / num_in)) / 2
-        z = norm.ppf(1 - bp)
-
-        prop_product = self.percent_correct * (1 - self.percent_correct)
-        sd_scale = (prop_product / self.n) ** 0.5
-        if not model.all_linear:
-            sd_scale *=hp.relu ** 0.5 # (0.5 - 0.5 / (d * math.pi)) ** 0.5
-        z *= sd_scale
-
-        # z = norm.ppf(1 - bp ** 0.5)
-        global first
-        if first:
-            print('ZZZZs')
-            print(norm.ppf(1 - bp))
-            first = False
-        return z, [var ** 0.5 for var in variances], [var ** 0.5 for var in bias_variances]
-
-    def weight_scaling(self, W):
-        w = W.detach()
-        return w / torch.norm(w)
-
-    def get_max_gradient(self, model, x, y):
-        return self.get_greatest_manual_grad(model, x, y)
-
-
-
 
 
 class NullRegularizationState:

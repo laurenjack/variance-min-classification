@@ -28,7 +28,7 @@ class HyperParameters:
     all_linear: bool = False
     is_bias: bool = False
     reg_type: Optional[str] = None
-    var_type: Optional[str] = None
+    weight_tracker_type: Optional[str] = None
     reg_epsilon: float = 0.0
     print_epoch: bool = False
     print_batch: bool = False

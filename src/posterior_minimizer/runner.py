@@ -3,8 +3,19 @@ from torch import nn
 from torch.utils.data import TensorDataset, DataLoader
 
 from src import custom_modules as cm
-from src.posterior_minimizer import regularizer as reg
+from src.hyper_parameters import DataParameters, HyperParameters
+from src.posterior_minimizer import regularizer as reg, weight_tracker as wt, variance as v
 from src.train import SigmoidBxeTrainer
+
+def create_weight_tracker(variance: v.Variance, dp: DataParameters, hp: HyperParameters):
+    if hp.weight_tracker_type:
+        num_layers = len(hp.sizes) - 1
+        if hp.weight_tracker_type == 'Weight':
+            return wt.AllWeights(num_layers, node_limit=10)
+        if hp.weight_tracker_type == 'Gradient':
+            return wt.GradAtZeroTracker(num_layers, dp.percent_correct, variance, node_limit=10)
+        raise ValueError(f'Unknown Weight Tracker Type {hp.weight_tracker_type}')
+    return wt.WeightTracker()
 
 
 def run(problem, runs, dp, hp, trainer, **kwargs):
@@ -12,10 +23,9 @@ def run(problem, runs, dp, hp, trainer, **kwargs):
     ggtr_before = 0
     ggtr_after = 0
     for r in range(runs):
-        weight_tracker = None
         max_grad_before, max_grad_after, zero_state, preds = single_run(problem, dp, hp,
                                                                                   trainer,
-                                                                                  weight_tracker=weight_tracker, **kwargs)
+                                                                                  **kwargs)
         print(max_grad_before)
         print(max_grad_after)
         print(zero_state)
@@ -36,7 +46,7 @@ def run(problem, runs, dp, hp, trainer, **kwargs):
         print(run_report)
 
 
-def single_run(problem, dp, hp, trainer, weight_tracker=None,
+def single_run(problem, dp, hp, trainer,
                print_details=False, **kwargs):
     x, y = problem.generate_dataset(dp.n, **kwargs)
     x_test, y_test = problem.generate_dataset(dp.n_test, shuffle=True)
@@ -53,7 +63,9 @@ def single_run(problem, dp, hp, trainer, weight_tracker=None,
     max_grad_after = None
     zero_state = None
     has_noisy_d = dp.d - dp.true_d > 0
-    regularizer = reg.create(dp, hp)
+    variance = v.create_variance(dp, hp)
+    regularizer = reg.create(variance, dp, hp)
+    weight_tracker = create_weight_tracker(variance, dp, hp)
     if has_noisy_d:
         max_grad_before = regularizer.get_max_gradient(model, x, y, true_d=dp.true_d)
 
@@ -77,6 +89,9 @@ def single_run(problem, dp, hp, trainer, weight_tracker=None,
     if print_details:
         print(model.linears[0].weight)
         print(a[0])
+
+    if weight_tracker:
+        weight_tracker.show()
 
     return max_grad_before, max_grad_after, zero_state, preds
 
