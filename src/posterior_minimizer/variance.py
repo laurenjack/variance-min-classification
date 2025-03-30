@@ -119,7 +119,7 @@ class L1Style(Variance):
     def scale_calc(self):
         d = self.sizes[0]
         if self.all_linear:
-            num_in = d # - 1 # sum(self.sizes[:-1])
+            num_in = d - 1 # sum(self.sizes[:-1])
             if self.is_bias:
                 num_in += 1
         else:
@@ -135,15 +135,7 @@ class L1Style(Variance):
         return z
 
     def variance_grad_calc(self, model, forward_product, backward_product, z_scaled=True):
-        all_linear = False
-        if all_linear:
-            forward_products, backward_products = _propagate_variance(model, forward_product, backward_product)
-        else:
-            # Make the forward prop shape [n, d, d] so we have variance scaler per sample, because each sample could
-            # be on a different part of the piecewise function that is the relu
-            forward_product = forward_product.unsqueeze(0).repeat(self.n, 1, 1)
-            backward_product = backward_product.repeat(self.n, 1)
-            _propagate_gradients(model, forward_product, backward_product)
+        forward_products, backward_products = _propagate_variance(model, forward_product, backward_product)
         # Now for each weight, combine the forward and backward product at that point to form the regularizer.
         grads = []
         bias_grads = []
@@ -157,13 +149,8 @@ class L1Style(Variance):
             bp = backward_products[-(l + 1)]
             bp = bp ** 2
             fp = fp ** 2
-            if all_linear:
-                fp = torch.sum(fp, dim=1, keepdim=True)
-                fp = fp.t()
-            else:
-                n = fp.shape[0]
-                fp = torch.sum(fp, dim=2) / n
-            grad = bp.t() @ fp
+            fp = torch.sum(fp, dim=1, keepdim=True)
+            grad = bp.t() @ fp.t()
             # To standard deviation
             grad = z * grad ** 0.5
             grads.append(grad)
