@@ -6,7 +6,7 @@ from scipy.stats import binom, norm
 from src import hyper_parameters
 from src.posterior_minimizer import regularizer as reg
 
-# torch.manual_seed(3965) # 3917
+# torch.manual_seed(3967) # 3917
 
 from src import dataset_creator, train
 from src.posterior_minimizer import weight_tracker as wt, runner
@@ -16,24 +16,26 @@ from src.posterior_minimizer import weight_tracker as wt, runner
 n = 100
 n_test = 10
 percent_correct = 0.5
-d = 10
+d = 50
 
 dp = hyper_parameters.DataParameters(percent_correct, n, n_test, d)
 
 hp = hyper_parameters.HyperParameters(batch_size=n,
-                                      epochs=300,
-                                      learning_rate=0.01,  # 1.0 / d ** 0.5,
-                                      momentum=0.0,
-                                      weight_decay=0.001,
+                                      epochs=600,
+                                      learning_rate=0.03,  # 1.0 / d ** 0.5,
+                                      momentum=0.9,
+                                      weight_decay=0.0,
                                       desired_success_rate=0.5,
-                                      sizes=[d, 6, 1],  # 40, 30,
+                                      relu_bound=0.5,
+                                      sizes=[d, 30, 1],  # 40, 30,
                                       do_train=True,
                                       gamma=1.0,
-                                      is_adam=True,
-                                      all_linear=False,
+                                      is_adam=False,
+                                      all_linear=True,
                                       is_bias=False,
-                                      reg_type="NoReg",
-                                      weight_tracker_type="Gradient",
+                                      reg_type="L1",
+                                      implementation='new',
+                                      weight_tracker_type='Weight',
                                       reg_epsilon=0.0,
                                       print_epoch=False,
                                       print_batch=False)

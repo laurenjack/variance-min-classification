@@ -1,30 +1,35 @@
-import numpy as np
+from typing import Optional
 import torch
+from torch import Tensor
 from torch import nn
-from torch.utils.data import DataLoader
+from torch.utils.data import TensorDataset, DataLoader
 from torch.optim.lr_scheduler import StepLR
 
-from src.hyper_parameters import HyperParameters
-from src.posterior_minimizer import numeric_integrals, weight_tracker as wt
-from src.posterior_minimizer import regularizer as reg
+from src.empirical.reporter import assign_expected_delta
+from src.hyper_parameters import DataParameters, HyperParameters
+from src.posterior_minimizer import weight_tracker as wt, regularizer as reg
 
 
 class Trainer(object):
 
-    def run(self, model: nn.Module, train_loader: DataLoader, validation_loader: DataLoader, hp: HyperParameters,
-            direct_reg, weight_tracker=None):
+    def run(self, model: nn.Module, x:Tensor, y: Tensor, x_val: Tensor, y_val: Tensor,
+            dp: DataParameters, hp: HyperParameters,
+            direct_reg: Optional[reg.DirectReg] = None, weight_tracker: Optional[wt.WeightTracker] = None):
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model = model.to(device)
+        train_set = TensorDataset(x, y)
+        train_loader = DataLoader(train_set, hp.batch_size)
+        val_set = TensorDataset(x_val, y_val)
+        val_loader = DataLoader(val_set, x_val.shape[0])
         if hp.is_adam:
-            optimizer = torch.optim.AdamW(model.parameters(), lr=hp.learning_rate, betas=(0.9, 0.999), eps=1e-8, weight_decay=hp.weight_decay)
-            #optimizer = torch.optim.Adam(model.parameters(), lr=hp.learning_rate, weight_decay=hp.weight_decay)
+            optimizer = torch.optim.AdamW(model.parameters(), lr=hp.learning_rate, betas=(0.9, 0.999), eps=1e-8,
+                                          weight_decay=hp.weight_decay)
         else:
             optimizer = torch.optim.SGD(model.parameters(),
                                         lr=hp.learning_rate,
                                         weight_decay=hp.weight_decay,
                                         momentum=hp.momentum)
 
-        sigmoid = nn.Sigmoid()
         scheduler = StepLR(optimizer, step_size=7, gamma=hp.gamma)
         if weight_tracker is None:
             weight_tracker = wt.WeightTracker()
@@ -33,7 +38,7 @@ class Trainer(object):
         for epoch in range(hp.epochs):
             if hp.print_epoch:
                 print('Before epoch {}'.format(epoch))
-                r = self._eval_accuracy(model, train_loader, device), self._eval_accuracy(model, validation_loader,
+                r = self._eval_accuracy(model, train_loader, device), self._eval_accuracy(model, val_loader,
                                                                                           device)
                 print('Accuracy: {}\n'.format(r))
                 # print(model.linears[0].weight[:, 0])
@@ -41,23 +46,24 @@ class Trainer(object):
             for image, label in train_loader:
                 image = image.to(device)
                 label = label.to(device)
-                loss = self.loss(model, image, label) # + hp.post_constant * model.weight_mag
+                # For the new model architectures, which perform regularization inside the model
+                if hp.implementation == 'new':
+                    assign_expected_delta(model, image, label, dp, hp, epoch=epoch)
+                loss = self.loss(model, image, label)
 
                 optimizer.zero_grad()
                 loss.backward()
-                # reg_term = hp.post_constant * model.weight / torch.sum(model.weight ** 2)
-                # print(reg_term)
-                with torch.no_grad():
-                    weight_tracker.pre_reg(model)
-                    direct_reg.apply(model, image, label, epoch)
-                    weight_tracker.post_reg(model)
+                # For the old model architectures, which use a separate object to perform regularization
+                if hp.implementation == 'old':
+                    with torch.no_grad():
+                        direct_reg.apply(model, image, label, epoch)
                 optimizer.step()
                 if hp.print_batch:
                     print(f'Batch train loss: {loss.item()}')
                 weight_tracker.update(model)
                 weight_tracker.update_for_gradient(model, image, label)
             scheduler.step()
-        return self._eval_accuracy(model, train_loader, device), self._eval_accuracy(model, validation_loader, device)
+        return self._eval_accuracy(model, train_loader, device), self._eval_accuracy(model, val_loader, device)
 
     def _eval_accuracy(self, model: nn.Module, data_loader: DataLoader, device):
         model.eval()

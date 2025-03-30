@@ -1,7 +1,6 @@
-import math
 import torch
-from scipy.stats import norm, chi2
 
+from src.empirical.reporter import greatest_grad_calc, RegularizationState
 from src.hyper_parameters import DataParameters, HyperParameters
 from src.posterior_minimizer import variance as v
 from src.posterior_minimizer.variance import Variance
@@ -20,6 +19,19 @@ def create(variance: v.Variance, dp: DataParameters, hp: HyperParameters):
     else:
         raise ValueError(f"Unsupported Regualrizer: {hp.reg_type}")
     return reg_constructor(variance, dp, hp)
+
+
+def get_zero_state(model, x, y, zero_threshold, true_d=0):
+    # Zero out the true dimensions, so we can see the regularizer had the intended effect
+    x = x.clone()
+    x[:, :true_d] = 0.0
+    d = x.shape[1]
+    # means = model(torch.eye(d))
+    # squared_mag = torch.sum(means ** 2) ** 0.5
+    z = model(x)
+    squared_mag = (torch.sum(z ** 2) / d) ** 0.5
+    return RegularizationState(squared_mag, zero_threshold, "Squared Weight Magnitude")
+
 
 
 class DirectReg:
@@ -52,44 +64,19 @@ class DirectReg:
     def get_max_gradient(self, model, x, y, true_d=0):
         w_regs, bias_regs = self.variance.calculate(model, x, y)
         w_grads, bias_grads = v.grad_at_zero(model, x, y, self.percent_correct)
-        grads = [w_grads[0][:, true_d:]]
-        regs = [w_regs[0][:, true_d:]]
-        if model.is_bias:
-            grads += bias_grads[:1]
-            regs += bias_regs[:1]
-        if isinstance(self, L2):
-            # TODO(Jack) handle biases
-            grads = [torch.sum(reg_grad ** 2.0, dim=1) ** 0.5 for reg_grad in grads]
-            regs = [torch.sum(manual_grad ** 2.0, dim=1) ** 0.5 for manual_grad in regs]
-        has_gradient_greater_reg = False
-        greatest_delta = -10000000
-        greatest_deltas_grad = None
-        greatest_deltas_reg = None
-        for manual_grad, reg in zip(grads, regs):
-            abs_manual_grad = torch.abs(manual_grad)
-            abs_reg = torch.abs(reg)
-            delta = abs_manual_grad - abs_reg
-            positive_index = delta > 0
-            has_gradient_greater_reg = has_gradient_greater_reg or torch.any(positive_index)
-            flattened_delta = delta.view(-1)
-            max_index = torch.argmax(flattened_delta)
-            next_max_delta = flattened_delta[max_index].item()
-            if next_max_delta > greatest_delta:
-                greatest_delta = next_max_delta
-                greatest_deltas_grad = abs_manual_grad.view(-1)[max_index].item()
-                greatest_deltas_reg = abs_reg.view(-1)[max_index].item()
-        return RegularizationState(greatest_deltas_grad, greatest_deltas_reg, "Greatest Gradient")
+        # grads = [w_grads[0][:, true_d:]]
+        # regs = [w_regs[0][:, true_d:]]
+        # if model.is_bias:
+        #     grads += bias_grads[:1]
+        #     regs += bias_regs[:1]
+        # if isinstance(self, L2):
+        #     # TODO(Jack) handle biases
+        #     grads = [torch.sum(reg_grad ** 2.0, dim=1) ** 0.5 for reg_grad in grads]
+        #     regs = [torch.sum(manual_grad ** 2.0, dim=1) ** 0.5 for manual_grad in regs]
+        return greatest_grad_calc(w_grads, w_regs, true_d = true_d)
 
     def get_zero_state(self, model, x, y, true_d=0):
-        # Zero out the true dimensions, so we can see the regularizer had the intended effect
-        x = x.clone()
-        x[:, :true_d] = 0.0
-        d = x.shape[1]
-        # means = model(torch.eye(d))
-        # squared_mag = torch.sum(means ** 2) ** 0.5
-        z = model(x)
-        squared_mag = (torch.sum(z ** 2) / d) ** 0.5
-        return RegularizationState(squared_mag, self.zero_threshold, "Squared Weight Magnitude")
+        return get_zero_state(model, x, y, self.zero_threshold, true_d)
 
 
     # def get_max_gradient(self, model, x, y):
@@ -148,28 +135,3 @@ class L2(DirectReg):
         return RegularizationState(squared_mag, self.zero_threshold, "Squared Weight Magnitude")
 
 
-class NullRegularizationState:
-
-    def exceeds_threshold(self):
-        return False
-
-    def __str__(self):
-        return "N/A"
-
-
-class RegularizationState:
-    """
-    A number (value) in relation to a threshold, that represents whether a network was 'fully regularized', in the
-    sense that random signals were sufficiently suppressed.
-    """
-
-    def __init__(self, value, threshold, description):
-        self.value = value
-        self.threshold = threshold
-        self.description = description
-
-    def exceeds_threshold(self):
-        return self.value > self.threshold
-
-    def __str__(self):
-        return f"{self.description}: ({self.value}, {self.threshold})"

@@ -1,7 +1,9 @@
 import torch
 import matplotlib.pyplot as plt
 
+from src.hyper_parameters import DataParameters, HyperParameters
 from src.posterior_minimizer import variance as v
+from src.empirical import reporter
 
 
 class WeightTracker:
@@ -13,12 +15,6 @@ class WeightTracker:
         pass
 
     def show(self):
-        pass
-
-    def pre_reg(self, model):
-        pass
-
-    def post_reg(self, model):
         pass
 
     def track_grad_at_zero(self, weight_grads, bias_grads):
@@ -52,9 +48,10 @@ class AllWeights(WeightTracker):
 
 class GradAtZeroTracker(WeightTracker):
 
-    def __init__(self, num_layers, percent_correct, variance : v.Variance, node_limit=None):
+    def __init__(self, num_layers, dp: DataParameters, hp: HyperParameters, variance : v.Variance, node_limit=None):
         self.node_limit = node_limit
-        self.percent_correct = percent_correct
+        self.dp = dp
+        self.hp = hp
         self.variance = variance
         self.grads_at_zero = []
         for l in range(num_layers):
@@ -66,27 +63,31 @@ class GradAtZeroTracker(WeightTracker):
 
     def update_for_gradient(self, model, x, y):
         # Compute gradients and standard deviations
-        weight_grads, _ = v.grad_at_zero(model, x, y, self.percent_correct)
-        weight_sds, _ = self.variance.calculate(model, x, y)
+        if self.hp.implementation == 'old':
+            weight_grads, _ = v.grad_at_zero(model, x, y, self.dp.percent_correct)
+            weight_sds, _ = self.variance.calculate(model, x, y)
+        else:
+            weight_grads, weight_sds = reporter.grads_at_zero_and_regs(model, x, y, self.dp, self.hp)
 
         # Compute normalized absolute gradients
         normed_grads_at_zero = [
             torch.abs(grad / (sd + 1e-8))
             for grad, sd in zip(weight_grads, weight_sds)
         ]
+        normed_grads_at_zero[0] = normed_grads_at_zero[0][:, 2:]
 
-        # Iterate over each tensor in the list to find the maximum element
-        for norm_tensor, grad_tensor, sd_tensor in zip(normed_grads_at_zero, weight_grads, weight_sds):
-            # Flatten the tensor for easy maximum search
-            flat_norm = norm_tensor.view(-1)
-            max_val, max_idx = torch.max(flat_norm, dim=0)
-
-            # If no global max yet, or this max is larger, update global properties
-            if (self.global_max is None) or (max_val > self.global_max):
-                self.global_max = max_val
-                # Get corresponding values from the grad and sd tensors.
-                self.global_max_grad = grad_tensor.view(-1)[max_idx]
-                self.global_max_sd = sd_tensor.view(-1)[max_idx]
+        # # Iterate over each tensor in the list to find the maximum element
+        # for norm_tensor, grad_tensor, sd_tensor in zip(normed_grads_at_zero, weight_grads, weight_sds):
+        #     # Flatten the tensor for easy maximum search
+        #     flat_norm = norm_tensor.view(-1)
+        #     max_val, max_idx = torch.max(flat_norm, dim=0)
+        #
+        #     # If no global max yet, or this max is larger, update global properties
+        #     if (self.global_max is None) or (max_val > self.global_max):
+        #         self.global_max = max_val
+        #         # Get corresponding values from the grad and sd tensors.
+        #         self.global_max_grad = grad_tensor.view(-1)[max_idx]
+        #         self.global_max_sd = sd_tensor.view(-1)[max_idx]
 
         update_list(self.grads_at_zero, normed_grads_at_zero, self.node_limit)
 
@@ -94,6 +95,10 @@ class GradAtZeroTracker(WeightTracker):
         print(f"Global Max abs normed grad: {self.global_max}")
         print(f"Grad: {self.global_max_grad}")
         print(f"SD: {self.global_max_sd}")
+        first_weight = self.grads_at_zero[0][0]
+        last_weight = self.grads_at_zero[0][-1]
+        print(f"mean_grad_at_zero_first: {torch.mean(first_weight, dim=0)}")
+        print(f"mean_grad_at_zero_last: {torch.mean(last_weight, dim=0)}")
         plot_all_weights(self.grads_at_zero, 'Gradient')
 
 
@@ -142,6 +147,7 @@ def plot_all_weights(layers, title):
         plt.ylabel(f'{title} Value')
         plt.title(f'Layer {l}')
         plt.legend()
+        # plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
         plt.show()
 
 
