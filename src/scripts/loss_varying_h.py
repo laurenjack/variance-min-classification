@@ -11,24 +11,26 @@ def run_experiment(n, d, hidden_sizes, num_runs, learning_rate, num_epochs):
     Runs experiments for a given input dimension d.
     Returns the list of average v values (one per hidden layer size).
     """
-    # Generate the problem data for current d
-    problem = dataset_creator.Gaussian(d=d, perfect_class_balance=False)
-    x, y = problem.generate_dataset(n, shuffle=True)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    x, y = x.to(device), y.to(device)
+
 
     avg_v_values = []  # List to store average v for each hidden size
-    input_dim = x.size(1)
 
     for h in hidden_sizes:
         run_v_values = []
         for run in range(num_runs):
             # Define the MLP model with one hidden layer of size h, no biases.
             model = nn.Sequential(
-                nn.Linear(input_dim, h, bias=False),
+                nn.Linear(d, h, bias=False),
                 nn.ReLU(),
                 nn.Linear(h, 1, bias=False)  # Single output for binary classification
             ).to(device)
+
+            # Generate the problem data for current d
+            problem = dataset_creator.Gaussian(d=d, perfect_class_balance=False)
+            x, y = problem.generate_dataset(n, shuffle=True)
+            x, y = x.to(device), y.to(device)
 
             # Define loss and optimizer
             criterion = nn.BCEWithLogitsLoss()
@@ -45,7 +47,7 @@ def run_experiment(n, d, hidden_sizes, num_runs, learning_rate, num_epochs):
 
             # --- Compute v for the current run ---
             # 1. Create v_init: n copies of the d-dimensional identity matrix: shape [n, d, d]
-            v_init = torch.eye(input_dim, device=device).unsqueeze(0).repeat(n, 1, 1)
+            v_init = torch.eye(d, device=device).unsqueeze(0).repeat(n, 1, 1)
             # 2. Feed v_init through the first layer to get v_hidden: shape [n, d, h]
             v_hidden = model[0](v_init)
             # 3. Compute z = x @ W.t() using the weight matrix of the first layer; shape [n, h]
@@ -92,4 +94,4 @@ def main(n, d_list):
 
 
 if __name__ == "__main__":
-    main(100, [5, 10])
+    main(10, [5, 10])
