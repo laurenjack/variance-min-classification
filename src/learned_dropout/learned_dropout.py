@@ -10,7 +10,7 @@ from src.learned_dropout.model_tracker import ModelTracker
 def train_model(n, n_test, true_d, noisy_d, batch_size, h_list, epochs, k, lr_weights, lr_dropout, weight_decay, relus):
     # d is the total number of features.
     d = true_d + noisy_d
-    r = 0.5
+    r = 0.0
 
     class MLP(nn.Module):
         def __init__(self, d, h_list):
@@ -32,9 +32,6 @@ def train_model(n, n_test, true_d, noisy_d, batch_size, h_list, epochs, k, lr_we
             for i in range(L):
                 self.c_list.append(nn.Parameter(torch.zeros(h_list[i])))
 
-            # Add batch normalization layers for each hidden layer (i.e., for each layer except the final output layer).
-            self.batch_norms = nn.ModuleList([nn.BatchNorm1d(h) for h in h_list])
-
         def forward_network1(self, x, r):
             """
             Forward pass for Network 1.
@@ -49,9 +46,8 @@ def train_model(n, n_test, true_d, noisy_d, batch_size, h_list, epochs, k, lr_we
                 mask = torch.bernoulli(p.expand(n_samples, -1))
                 current = current * mask
                 current = layer(current)
-                # If not the final layer, apply batch norm then activation.
+                # If not the final layer, apply activation.
                 if i < len(self.layers) - 1:
-                    current = self.batch_norms[i](current)
                     if relus:
                         current = F.relu(current)
             logits = current.squeeze(1)
@@ -61,16 +57,14 @@ def train_model(n, n_test, true_d, noisy_d, batch_size, h_list, epochs, k, lr_we
             """
             Forward pass for Network 2.
             Scales the inputs and hidden activations by differentiable keep probabilities (from c_list) and uses detached weights.
-            Batch normalization is applied before the activation.
             """
-            r2 = 0
+            r2 = r
             current = x
             for i, layer in enumerate(self.layers):
                 p = torch.sigmoid(self.c_list[i])
                 current = current * ((1 - r2) * p + r2 * 0.5)
                 current = F.linear(current, layer.weight.detach())
                 if i < len(self.layers) - 1:
-                    current = self.batch_norms[i](current)
                     if relus:
                         current = F.relu(current)
             logits = current.squeeze(1)
@@ -80,10 +74,12 @@ def train_model(n, n_test, true_d, noisy_d, batch_size, h_list, epochs, k, lr_we
             """
             Defines a variance term as k multiplied by the product of the sums of the differentiable keep probabilities.
             """
-            var = k
-            for c in self.c_list:
-                var = var * torch.sum(torch.sigmoid(c))
-            return var
+            sum_cs = [torch.sum(torch.sigmoid(c)) for c in self.c_list]
+            sizes = sum_cs + [1]
+            param_count = 0.0
+            for s0, s1 in zip(sizes[:-1], sizes[1:]):
+                param_count += s0 * s1
+            return k * param_count / n
 
     # Instantiate the model.
     model = MLP(d, h_list)
@@ -91,13 +87,10 @@ def train_model(n, n_test, true_d, noisy_d, batch_size, h_list, epochs, k, lr_we
     # Define the loss function.
     criterion = nn.BCEWithLogitsLoss()
 
-    # Separate parameters: weights (including linear layers and batch norms) and dropout parameters.
+    # Separate parameters: weights and dropout parameters.
     weights_params = []
     for layer in model.layers:
         weights_params += list(layer.parameters())
-    # Include batch norm parameters with the weights.
-    for bn in model.batch_norms:
-        weights_params += list(bn.parameters())
     dropout_params = list(model.c_list)
 
     # Create two Adam optimizers.
@@ -126,7 +119,7 @@ def train_model(n, n_test, true_d, noisy_d, batch_size, h_list, epochs, k, lr_we
             x_batch = x[batch_indices]
             y_batch = y[batch_indices]
 
-            ## Network 1: update weights (and batch norm parameters) only.
+            ## Network 1: update weights only.
             logits1 = model.forward_network1(x_batch, r=r)
             loss1 = criterion(logits1, y_batch)
             optimizer_weights.zero_grad()
@@ -170,18 +163,18 @@ def train_model(n, n_test, true_d, noisy_d, batch_size, h_list, epochs, k, lr_we
 
 
 if __name__ == '__main__':
-    torch.manual_seed(3991)
+    # torch.manual_seed(3994)
     n = 100
     n_test = 100  # Validation set size
     true_d = 2
-    noisy_d = 10
-    weight_decay = 0.001
+    noisy_d = 20
+    weight_decay = 0.0003
     batch_size = 25
     # Instead of a single integer h, we now set h_list. For a single hidden layer
-    h_list = [12]
-    epochs = 500
-    k = 0.001
-    lr_weights = 0.01
-    lr_dropout = 0.01
+    h_list = [12, 12]
+    epochs = 3000
+    k = 0.2
+    lr_weights = 0.003
+    lr_dropout = 0.003
     weight_decay = 0.001
     train_model(n, n_test, true_d, noisy_d, batch_size, h_list, epochs, k, lr_weights, lr_dropout, weight_decay, True)

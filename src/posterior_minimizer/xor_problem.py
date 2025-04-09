@@ -10,7 +10,7 @@ n = 100
 n_test = 100
 percent_correct = 0.8
 true_d = 2
-noisy_d = 1
+noisy_d = 20
 d = true_d + noisy_d
 
 dp = hyper_parameters.DataParameters(percent_correct, n, n_test, d, true_d=true_d)
@@ -21,7 +21,7 @@ hp = hyper_parameters.HyperParameters(batch_size=n,
                                       momentum=0.9,
                                       weight_decay=0.001,
                                       desired_success_rate=0.5,
-                                      sizes=[d, 6, 6, 1],
+                                      sizes=[d, 12, 12, 1],
                                       do_train=True,
                                       gamma=1.0,
                                       is_adam=True,
