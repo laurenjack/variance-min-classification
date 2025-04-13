@@ -16,10 +16,10 @@ class ModelTracker:
         self.keep_history.append(
             [torch.sigmoid(c.detach()).cpu().numpy() for c in model.c_list]
         )
-        # Record current weight matrices for each linear layer.
-        self.weight_history.append(
-            [layer.weight.detach().cpu().numpy().copy() for layer in model.layers]
-        )
+        # # Record current weight matrices for each linear layer.
+        # self.weight_history.append(
+        #     [layer.weight.detach().cpu().numpy().copy() for layer in model.layers]
+        # )
         # # Record current batch norm parameters (affine parameters) for each BN layer.
         # self.bn_history.append([
         #     {'weight': bn.weight.detach().cpu().numpy().copy(),
@@ -46,25 +46,25 @@ class ModelTracker:
             plt.legend()
             plt.show()
 
-        # Plot weights for each linear layer.
-        for i in range(len(self.weight_history[0])):
-            plt.figure()
-            # For each epoch, extract the weight matrix for layer i.
-            weight_array = np.array([epoch_weights[i] for epoch_weights in self.weight_history])
-            out_dim, in_dim = weight_array.shape[1], weight_array.shape[2]
-            for row in range(out_dim):
-                for col in range(in_dim):
-                    plt.plot(epochs, weight_array[:, row, col], label=f"w[{i}][{row},{col}]")
-            plt.xlabel("Epoch")
-            plt.ylabel("Weight Value")
-            if i == 0:
-                plt.title("Weights for Linear Layer 0 (Input → Hidden 1)")
-            elif i == len(self.weight_history[0]) - 1:
-                plt.title(f"Weights for Linear Layer {i} (Hidden {i} → Output)")
-            else:
-                plt.title(f"Weights for Linear Layer {i} (Hidden {i} → Hidden {i+1})")
-            plt.legend()
-            plt.show()
+        # # Plot weights for each linear layer.
+        # for i in range(len(self.weight_history[0])):
+        #     plt.figure()
+        #     # For each epoch, extract the weight matrix for layer i.
+        #     weight_array = np.array([epoch_weights[i] for epoch_weights in self.weight_history])
+        #     out_dim, in_dim = weight_array.shape[1], weight_array.shape[2]
+        #     for row in range(out_dim):
+        #         for col in range(in_dim):
+        #             plt.plot(epochs, weight_array[:, row, col], label=f"w[{i}][{row},{col}]")
+        #     plt.xlabel("Epoch")
+        #     plt.ylabel("Weight Value")
+        #     if i == 0:
+        #         plt.title("Weights for Linear Layer 0 (Input → Hidden 1)")
+        #     elif i == len(self.weight_history[0]) - 1:
+        #         plt.title(f"Weights for Linear Layer {i} (Hidden {i} → Output)")
+        #     else:
+        #         plt.title(f"Weights for Linear Layer {i} (Hidden {i} → Hidden {i+1})")
+        #     plt.legend()
+        #     plt.show()
 
         # # Plot batch norm weight parameters for each BN layer.
         # for i in range(len(self.bn_history[0])):
