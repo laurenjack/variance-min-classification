@@ -17,6 +17,10 @@ def run_experiment(n, d, hidden_sizes, num_runs, learning_rate, num_epochs):
 
     avg_v_values = []  # List to store average v for each hidden size
 
+    # Generate the problem data for current d (this problem just generates samples
+    # from a standard normal so it doesn't need to be created each run)
+    problem = dataset_creator.Gaussian(d=d, perfect_class_balance=False)
+
     for h in hidden_sizes:
         run_v_values = []
         for run in range(num_runs):
@@ -27,8 +31,6 @@ def run_experiment(n, d, hidden_sizes, num_runs, learning_rate, num_epochs):
                 nn.Linear(h, 1, bias=False)  # Single output for binary classification
             ).to(device)
 
-            # Generate the problem data for current d
-            problem = dataset_creator.Gaussian(d=d, perfect_class_balance=False)
             x, y = problem.generate_dataset(n, shuffle=True)
             x, y = x.to(device), y.to(device)
 
@@ -94,4 +96,4 @@ def main(n, d_list):
 
 
 if __name__ == "__main__":
-    main(10, [5, 10])
+    main(100, [5, 10])

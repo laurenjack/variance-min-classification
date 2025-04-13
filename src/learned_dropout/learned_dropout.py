@@ -168,13 +168,12 @@ if __name__ == '__main__':
     n_test = 100  # Validation set size
     true_d = 2
     noisy_d = 20
-    weight_decay = 0.0003
     batch_size = 25
     # Instead of a single integer h, we now set h_list. For a single hidden layer
     h_list = [12, 12]
-    epochs = 3000
-    k = 0.2
+    epochs = 10000
+    k = 0.5
     lr_weights = 0.003
-    lr_dropout = 0.003
+    lr_dropout = 0.0003
     weight_decay = 0.001
     train_model(n, n_test, true_d, noisy_d, batch_size, h_list, epochs, k, lr_weights, lr_dropout, weight_decay, True)
