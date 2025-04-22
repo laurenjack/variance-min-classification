@@ -4,131 +4,120 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 
 from src import dataset_creator
+from src.learned_dropout.models_standard import ResNetStandard
+from src.learned_dropout.trainer import train_standard
 
 
-class ResNetBlock(nn.Module):
-    def __init__(self, d, h):
-        """
-        Constructs the ResNet block.
-        - d: input dimension
-        - h: hidden dimension for the inner block
-        """
-        super(ResNetBlock, self).__init__()
-        self.layer_in = nn.Linear(d, h, bias=False)
-        self.layer_out = nn.Linear(h, d, bias=False)
-        self.relu = nn.ReLU()
-
-    def forward(self, x):
-        # Compute the residual: x -> Linear (d->h) -> ReLU -> Linear (h->d)
-        residual = self.layer_out(self.relu(self.layer_in(x)))
-        # Add the skip connection: output has shape [n, d]
-        return x + residual
-
-
-class ResNetModel(nn.Module):
-    def __init__(self, d, h):
-        """
-        Constructs the full model:
-        - d: input and output dimension for the residual block and final layer
-        - h: hidden dimension for the residual block
-        """
-        super(ResNetModel, self).__init__()
-        self.res_block = ResNetBlock(d, h)
-        self.final_layer = nn.Linear(d, 1, bias=False)
-
-    def forward(self, x):
-        out = self.res_block(x)
-        out = self.final_layer(out)
-        return out
-
-
-def run_experiment(n, d, hidden_sizes, num_runs, learning_rate, num_epochs):
+def run_experiment(n, d, num_layers_list, hidden_size, num_runs, learning_rate, num_epochs, batch_size, weight_decay):
     """
-    Runs experiments for a given input dimension d.
-    For each hidden layer size in hidden_sizes, trains num_runs ResNet models,
-    computes the model's output on a fixed validation set, and calculates
-    mean_var: the mean over the validation set of the variance (across runs)
-    of the model outputs.
-    Returns the list of mean_var values (one per hidden layer size).
+    Runs experiments for input dim d.
+    For each number of blocks L in num_layers_list, trains num_runs pairs of ResNets
+    (no-LN vs with-LN) with L hidden layers of size hidden_size,
+    then computes mean zero-centered variance (i.e. E[z^2]) of their validation outputs.
+    Returns two lists: mean_var_no_ln, mean_var_with_ln.
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Generate a validation set using the dataset creator
+    # Fixed validation set
     n_val = 1000
-    problem_val = dataset_creator.Gaussian(d=d, perfect_class_balance=False)
-    x_val, y_val = problem_val.generate_dataset(n_val, shuffle=True)
-    x_val, y_val = x_val.to(device), y_val.to(device)
+    problem = dataset_creator.Gaussian(d=d, perfect_class_balance=False)
+    x_val, y_val = problem.generate_dataset(n_val, shuffle=True)
+    x_val, y_val = x_val.to(device), y_val.float().to(device)
 
-    mean_var_values = []  # To store mean_var for each hidden layer size
+    mean_var_no_ln = []
+    mean_var_with_ln = []
 
-    for h in hidden_sizes:
-        run_predictions = []  # To store validation predictions for each run
+    for L in num_layers_list:
+        preds_no_ln = []
+        preds_with_ln = []
 
         for run in range(num_runs):
-            # Instantiate the ResNet model
-            model = ResNetModel(d, h).to(device)
+            # Shared training data for both models
+            x_train, y_train = problem.generate_dataset(n, shuffle=True)
+            x_train, y_train = x_train.to(device), y_train.float().to(device)
+            dataset = (x_train, y_train, x_val, y_val)
 
-            # Generate training data for current d
-            problem = dataset_creator.Gaussian(d=d, perfect_class_balance=False)
-            x, y = problem.generate_dataset(n, shuffle=True)
-            x, y = x.to(device), y.to(device)
+            # define hidden sizes list: L layers of fixed size
+            hidden_sizes = [hidden_size] * L
 
-            # Define loss and optimizer
-            criterion = nn.BCEWithLogitsLoss()
-            optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.0003)
-
-            # Training loop
-            model.train()
-            for epoch in range(num_epochs):
-                optimizer.zero_grad()
-                outputs = model(x).squeeze()  # Should be shape [n]
-                loss = criterion(outputs, y.float())
-                loss.backward()
-                optimizer.step()
-
-            # Evaluate on the validation set
-            model.eval()
+            # Model without LayerNorm
+            model_no_ln = ResNetStandard(d, hidden_sizes, True, False).to(device)
+            model_no_ln = train_standard(dataset, model_no_ln,
+                                         batch_size, num_epochs,
+                                         learning_rate, weight_decay,
+                                         do_track=False, track_weights=False)
+            model_no_ln.eval()
             with torch.no_grad():
-                z_val = model(x_val)  # Shape: [n_val, 1]
-                # Ensure shape consistency if needed
-                if len(z_val.shape) == 1:
-                    z_val = z_val.unsqueeze(1)
-            run_predictions.append(z_val.detach())
-            print(f"d: {d}, Hidden units: {h}, Run: {run + 1}, Validation output sample: {z_val[:3].view(-1)}")
+                z_no = model_no_ln(x_val)
+                if z_no.dim() == 1:
+                    z_no = z_no.unsqueeze(1)
+            preds_no_ln.append(z_no.cpu())
 
-        # Stack predictions to a tensor of shape [num_runs, n_val, 1]
-        predictions_tensor = torch.stack(run_predictions, dim=0)
-        # Compute variance of the predictions for each validation observation (across runs)
-        var_z = predictions_tensor.var(dim=0, unbiased=False)  # Shape: [n_val, 1]
-        # mean_var is the average variance across the validation set
-        mean_var = var_z.mean().item()
-        mean_var_values.append(mean_var)
-        print(f"d: {d}, Hidden units: {h}, Mean variance over validation set: {mean_var}")
+            # Model with LayerNorm
+            model_ln = ResNetStandard(d, hidden_sizes, True, True).to(device)
+            model_ln = train_standard(dataset, model_ln,
+                                       batch_size, num_epochs,
+                                       learning_rate, weight_decay,
+                                       do_track=False, track_weights=False)
+            model_ln.eval()
+            with torch.no_grad():
+                z_ln = model_ln(x_val)
+                if z_ln.dim() == 1:
+                    z_ln = z_ln.unsqueeze(1)
+            preds_with_ln.append(z_ln.cpu())
 
-    return mean_var_values
+            print(f"d={d}, L={L}, run={run+1}/{num_runs} — "
+                  f"no-LN sample: {z_no[:3].view(-1).tolist()}, "
+                  f"with-LN sample: {z_ln[:3].view(-1).tolist()}")
 
+        # Stack into [num_runs, n_val, 1]
+        t_no = torch.stack(preds_no_ln, dim=0)
+        t_ln = torch.stack(preds_with_ln, dim=0)
 
-def main(n, d_list):
-    # Configuration
-    hidden_sizes = list(range(1, 11))  # h from 1 to 10
-    num_runs = 30
-    learning_rate = 0.001
-    num_epochs = 300
+        # Compute mean E[z^2] across runs (zero-centered variance)
+        sec_mom_no = (t_no ** 2).mean(dim=0)     # [n_val,1]
+        sec_mom_ln = (t_ln ** 2).mean(dim=0)
 
-    plt.figure(figsize=(10, 7))
+        mean_var_no = sec_mom_no.mean().item()
+        mean_var_ln = sec_mom_ln.mean().item()
 
-    # Run experiments for each d in d_list and plot on the same graph
-    for d in d_list:
-        mean_var_values = run_experiment(n, d, hidden_sizes, num_runs, learning_rate, num_epochs)
-        plt.plot(hidden_sizes, mean_var_values, marker='o', label=f'd={d}')
+        mean_var_no_ln.append(mean_var_no)
+        mean_var_with_ln.append(mean_var_ln)
 
-    plt.xlabel("Hidden Layer Size (h)")
-    plt.ylabel("Mean Variance of Validation Outputs")
-    plt.title("Mean Variance vs Hidden Layer Size for different d values (ResNet Model)")
-    plt.legend()
-    plt.grid(True)
-    plt.show()
+        print(f"L={L}: mean zero‑var → no‑LN: {mean_var_no:.4f}, with‑LN: {mean_var_ln:.4f}")
+
+    return mean_var_no_ln, mean_var_with_ln
 
 
 if __name__ == "__main__":
-    main(100, [5, 10, 20])
+    # Experiment settings
+    n = 2000
+    d_list = [10]  # input dimensions to test
+    num_layers_list = list(range(1, 9))  # vary number of hidden layers from 1 to 4
+    hidden_size = 10                      # fixed hidden layer size
+    num_runs = 10
+    lr = 0.003
+    epochs = 750
+    bs = 100
+    wd = 0.0003
+
+    plt.figure(figsize=(10, 7))
+
+    for d in d_list:
+        mv_no_ln, mv_ln = run_experiment(
+            n, d, num_layers_list, hidden_size,
+            num_runs, lr, epochs, bs, wd
+        )
+
+        plt.plot(num_layers_list, mv_no_ln, marker='o', linestyle='-',
+                 label=f'd={d}, no LN (E[z²])')
+        plt.plot(num_layers_list, mv_ln, marker='s', linestyle='--',
+                 label=f'd={d}, with LN (E[z²])')
+
+    plt.xlabel("Number of Hidden Layers (L)")
+    plt.ylabel("Mean Zero‑Centered Variance (E[z²])")
+    plt.title("Zero‑Centered Output Variance vs. Number of Layers: LayerNorm vs No LayerNorm")
+    plt.xticks(num_layers_list)
+    plt.legend()
+    plt.grid(True)
+    plt.show()

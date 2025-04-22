@@ -1,103 +1,244 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from abc import ABC, abstractmethod
 
 
-class ModelTracker:
-    def __init__(self):
-        # Each element in these lists is a list (one per layer) of numpy arrays recorded at that epoch.
-        self.keep_history = []    # List of lists; each inner list holds the keep probabilities for all layers (input and hidden).
-        self.weight_history = []  # List of lists; each inner list holds the weight matrices for all linear layers.
-        self.bn_history = []      # List of lists; each inner list holds a dict with batch norm parameters (weight and bias) for each BN layer.
-        self.val_acc_history = [] # Validation accuracy for network2 over epochs.
+class NullTracker:
 
-    def update(self, model):
-        # Record current keep probabilities for each layer.
-        self.keep_history.append(
-            [torch.sigmoid(c.detach()).cpu().numpy() for c in model.c_list]
-        )
-        # # Record current weight matrices for each linear layer.
-        # self.weight_history.append(
-        #     [layer.weight.detach().cpu().numpy().copy() for layer in model.layers]
-        # )
-        # # Record current batch norm parameters (affine parameters) for each BN layer.
-        # self.bn_history.append([
-        #     {'weight': bn.weight.detach().cpu().numpy().copy(),
-        #      'bias': bn.bias.detach().cpu().numpy().copy()}
-        #     for bn in model.batch_norms
-        # ])
+    def update(self, model, val_acc):
+        pass
 
     def plot(self):
-        epochs = range(len(self.keep_history))
+        pass
 
-        # Plot keep probabilities for each dropout parameter (layer).
+
+
+
+class ModelTracker(ABC):
+    def __init__(self, track_weights=True):
+        """
+        Parameters:
+            track_weights (bool): If True the weight matrices are tracked; if False only the
+                                  dropout keep probabilities (p values) and validation accuracy
+                                  are tracked.
+        """
+        self.track_weights = track_weights
+        # Each element is a list (one per epoch) of numpy arrays for the keep probabilities.
+        self.keep_history = []
+        # Each element is a list (one per epoch) of numpy arrays for the weight matrices.
+        self.weight_history = []
+        # Validation accuracy recorded at each epoch.
+        self.val_acc_history = []
+
+    @abstractmethod
+    def update(self, model, val_acc):
+        """
+        Update the tracker with the current state of the model and validation accuracy.
+        Should record all dropout parameters (after applying sigmoid) and, if enabled, all weight matrices.
+
+        Parameters:
+            model: The model instance (MLP or ResNet) to extract parameters from.
+            val_acc: The validation accuracy (a float) for the current epoch.
+        """
+        pass
+
+    @abstractmethod
+    def _get_keep_titles(self):
+        """
+        Return a list of titles (one per dropout layer) to use when plotting keep probability histories.
+        """
+        pass
+
+    @abstractmethod
+    def _get_weight_titles(self):
+        """
+        Return a list of titles (one per weight matrix) to use when plotting weight histories.
+        """
+        pass
+
+    def plot(self):
+        """Generate plots for dropout keep probabilities, weight evolution (if tracked), and validation accuracy."""
+        epochs = range(len(self.keep_history))
+        # Plot keep probabilities for each dropout (c parameter) layer.
+        keep_titles = self._get_keep_titles()
         for i in range(len(self.keep_history[0])):
             plt.figure()
-            # For each epoch, extract the keep probabilities for layer i.
+            # Extract, for each epoch, the keep probabilities for layer i.
             keep_array = np.array([epoch_keep[i] for epoch_keep in self.keep_history])
             for j in range(keep_array.shape[1]):
                 plt.plot(epochs, keep_array[:, j], label=f"keep[{i}][{j}]")
             plt.xlabel("Epoch")
             plt.ylabel("Keep Probability")
-            if i == 0:
-                plt.title("Keep Probabilities for Input Layer")
-            else:
-                plt.title(f"Keep Probabilities for Hidden Layer {i}")
+            plt.title(keep_titles[i])
             plt.legend()
             plt.show()
 
-        # # Plot weights for each linear layer.
-        # for i in range(len(self.weight_history[0])):
-        #     plt.figure()
-        #     # For each epoch, extract the weight matrix for layer i.
-        #     weight_array = np.array([epoch_weights[i] for epoch_weights in self.weight_history])
-        #     out_dim, in_dim = weight_array.shape[1], weight_array.shape[2]
-        #     for row in range(out_dim):
-        #         for col in range(in_dim):
-        #             plt.plot(epochs, weight_array[:, row, col], label=f"w[{i}][{row},{col}]")
-        #     plt.xlabel("Epoch")
-        #     plt.ylabel("Weight Value")
-        #     if i == 0:
-        #         plt.title("Weights for Linear Layer 0 (Input → Hidden 1)")
-        #     elif i == len(self.weight_history[0]) - 1:
-        #         plt.title(f"Weights for Linear Layer {i} (Hidden {i} → Output)")
-        #     else:
-        #         plt.title(f"Weights for Linear Layer {i} (Hidden {i} → Hidden {i+1})")
-        #     plt.legend()
-        #     plt.show()
+        # If weight tracking is enabled, plot each weight matrix.
+        if self.track_weights and self.weight_history and self.weight_history[0]:
+            weight_titles = self._get_weight_titles()
+            for i in range(len(self.weight_history[0])):
+                plt.figure()
+                # Extract the weight matrix history for the i-th layer.
+                weight_array = np.array([epoch_weights[i] for epoch_weights in self.weight_history])
+                out_dim, in_dim = weight_array.shape[1], weight_array.shape[2]
+                for row in range(out_dim):
+                    for col in range(in_dim):
+                        plt.plot(epochs, weight_array[:, row, col], label=f"w[{i}][{row},{col}]")
+                plt.xlabel("Epoch")
+                plt.ylabel("Weight Value")
+                plt.title(weight_titles[i])
+                plt.legend()
+                plt.show()
 
-        # # Plot batch norm weight parameters for each BN layer.
-        # for i in range(len(self.bn_history[0])):
-        #     plt.figure()
-        #     # For each epoch, extract the BN weight for layer i.
-        #     bn_weight_array = np.array([epoch_bn[i]['weight'] for epoch_bn in self.bn_history])
-        #     for j in range(bn_weight_array.shape[0] if bn_weight_array.ndim == 1 else bn_weight_array.shape[1]):
-        #         plt.plot(epochs, bn_weight_array[:, j], label=f"BN Layer {i} weight[{j}]")
-        #     plt.xlabel("Epoch")
-        #     plt.ylabel("BN Weight Value")
-        #     plt.title(f"Batch Norm Weight Parameters for Layer {i}")
-        #     plt.legend()
-        #     plt.show()
-        #
-        # # Plot batch norm bias parameters for each BN layer.
-        # for i in range(len(self.bn_history[0])):
-        #     plt.figure()
-        #     # For each epoch, extract the BN bias for layer i.
-        #     bn_bias_array = np.array([epoch_bn[i]['bias'] for epoch_bn in self.bn_history])
-        #     for j in range(bn_bias_array.shape[0] if bn_bias_array.ndim == 1 else bn_bias_array.shape[1]):
-        #         plt.plot(epochs, bn_bias_array[:, j], label=f"BN Layer {i} bias[{j}]")
-        #     plt.xlabel("Epoch")
-        #     plt.ylabel("BN Bias Value")
-        #     plt.title(f"Batch Norm Bias Parameters for Layer {i}")
-        #     plt.legend()
-        #     plt.show()
-
-        # Plot validation accuracy for Network 2.
+        # Plot the validation accuracy (we start at epoch 1 as the first tracker update is before training).
         plt.figure()
-        # Note: We start plotting at epoch 1 since the first tracker update was before any training.
-        plt.plot(list(epochs)[1:], np.array(self.val_acc_history), label="Validation Accuracy")
+        plt.plot(list(epochs), np.array(self.val_acc_history), label="Validation Accuracy")
         plt.xlabel("Epoch")
         plt.ylabel("Accuracy")
         plt.title("Validation Accuracy for Network 2")
         plt.legend()
         plt.show()
+
+
+###############################################################################
+# MLPTracker: Implements tracking for the MLP model.
+###############################################################################
+
+class MLPTracker(ModelTracker):
+    def update(self, model, val_acc):
+        """
+        For an MLP model, record:
+          - The keep probabilities for all dropout parameters contained in model.c_list.
+          - The weight matrices for all linear layers (model.layers) if weight tracking is enabled.
+          - The validation accuracy.
+        """
+        # Record p values computed from c parameters.
+        self.keep_history.append(
+            [torch.sigmoid(c.detach()).cpu().numpy() for c in model.c_list]
+        )
+        # Record weight matrices if weight tracking is turned on.
+        if self.track_weights:
+            self.weight_history.append(
+                [layer.weight.detach().cpu().numpy().copy() for layer in model.layers]
+            )
+        else:
+            self.weight_history.append([])
+        self.val_acc_history.append(val_acc)
+
+    def _get_keep_titles(self):
+        """
+        Return titles for the dropout layers of the MLP.
+          - Index 0 is the Input Layer.
+          - Subsequent indices are Hidden Layers.
+        """
+        titles = []
+        n_layers = len(self.keep_history[0])
+        for i in range(n_layers):
+            if i == 0:
+                titles.append("Keep Probabilities for Input Layer")
+            else:
+                titles.append(f"Keep Probabilities for Hidden Layer {i}")
+        return titles
+
+    def _get_weight_titles(self):
+        """
+        Return titles for the weight matrices of the MLP.
+          - Assumes:
+              • Layer 0: Input → Hidden 1,
+              • Middle layers: Hidden i → Hidden i+1,
+              • Final layer: Hidden → Output.
+        """
+        titles = []
+        if self.weight_history and self.weight_history[0]:
+            num_layers = len(self.weight_history[0])
+            for i in range(num_layers):
+                if i == 0:
+                    titles.append("Weights for Linear Layer 0 (Input → Hidden 1)")
+                elif i == num_layers - 1:
+                    titles.append(f"Weights for Linear Layer {i} (Hidden {i} → Output)")
+                else:
+                    titles.append(f"Weights for Linear Layer {i} (Hidden {i} → Hidden {i + 1})")
+        return titles
+
+
+###############################################################################
+# ResNetTracker: Implements tracking for the ResNet model.
+###############################################################################
+
+class ResNetTracker(ModelTracker):
+    def update(self, model, val_acc):
+        """
+        For a ResNet model, record:
+          - Keep probabilities from each residual block:
+              For each block, record in order:
+                  • c_in (input dropout for the block),
+                  • c_hidden (dropout after weight_in/hidden activation),
+                  • c_out (dropout after weight_out).
+          - Finally, record the final layer’s input dropout parameter (c_final).
+          - If weight tracking is enabled, record:
+              • For each block: the weight_in and weight_out matrices,
+              • The final layer's weight matrix.
+          - Record the validation accuracy.
+        """
+        keep_list = []
+        for block in model.blocks:
+            keep_list.append(torch.sigmoid(block.c_in.detach()).cpu().numpy())
+            keep_list.append(torch.sigmoid(block.c_hidden.detach()).cpu().numpy())
+            keep_list.append(torch.sigmoid(block.c_out.detach()).cpu().numpy())
+        # Append the final layer's dropout parameter.
+        keep_list.append(torch.sigmoid(model.c_final.detach()).cpu().numpy())
+        self.keep_history.append(keep_list)
+
+        if self.track_weights:
+            weight_list = []
+            for block in model.blocks:
+                weight_list.append(block.weight_in.weight.detach().cpu().numpy().copy())
+                weight_list.append(block.weight_out.weight.detach().cpu().numpy().copy())
+            weight_list.append(model.final_layer.weight.detach().cpu().numpy().copy())
+            self.weight_history.append(weight_list)
+        else:
+            self.weight_history.append([])
+
+        self.val_acc_history.append(val_acc)
+
+    def _get_keep_titles(self):
+        """
+        Construct titles for each dropout parameter.
+          - For each block i (starting with 1), there are three dropout titles:
+                • "Block i Input Dropout"
+                • "Block i Hidden Dropout"
+                • "Block i Output Dropout"
+          - The final dropout parameter corresponds to the final layer input:
+                • "Final Layer Input Dropout"
+        """
+        # Determine number of blocks based on the number of dropout groups.
+        n_total = len(self.keep_history[0])  # should equal 3 * num_blocks + 1
+        num_blocks = (n_total - 1) // 3
+        titles = []
+        for i in range(num_blocks):
+            titles.append(f"Block {i + 1} Input Dropout")
+            titles.append(f"Block {i + 1} Hidden Dropout")
+            titles.append(f"Block {i + 1} Output Dropout")
+        titles.append("Final Layer Input Dropout")
+        return titles
+
+    def _get_weight_titles(self):
+        """
+        Construct titles for weight matrices in a ResNet:
+          - For each block i, two weight matrices are recorded:
+                • "Block i Weight_in (d→h)"
+                • "Block i Weight_out (h→d)"
+          - Finally, the final layer weight matrix:
+                • "Final Layer Weight (d→1)"
+        """
+        titles = []
+        if self.weight_history and self.weight_history[0]:
+            num_weights = len(self.weight_history[0])
+            # The final weight matrix is the last element; the remaining come in pairs.
+            num_blocks = (num_weights - 1) // 2
+            for i in range(num_blocks):
+                titles.append(f"Block {i + 1} Weight_in (d→h)")
+                titles.append(f"Block {i + 1} Weight_out (h→d)")
+            titles.append("Final Layer Weight (d→1)")
+        return titles
