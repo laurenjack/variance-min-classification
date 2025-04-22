@@ -77,8 +77,8 @@ def run_experiment(n, d, hidden_sizes, num_runs, learning_rate, num_epochs):
 
 def main(n, d_list):
     # Configuration
-    hidden_sizes = list(range(1, 11))  # h from 1 to 10
-    num_runs = 30
+    hidden_sizes = list(range(1, 41))  # h from 1 to 10
+    num_runs = 20
     learning_rate = 0.001
     num_epochs = 300
 
@@ -98,4 +98,4 @@ def main(n, d_list):
 
 
 if __name__ == "__main__":
-    main(100, [5, 10, 20])
+    main(100, [10])
