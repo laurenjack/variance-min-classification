@@ -163,33 +163,28 @@ class MLPTracker(ModelTracker):
 
 
 ###############################################################################
-# ResNetTracker: Implements tracking for the ResNet model.
+# ResNetTracker: Implements tracking for the updated ResNet model.
 ###############################################################################
 
 class ResNetTracker(ModelTracker):
     def update(self, model, val_acc):
         """
-        For a ResNet model, record:
-          - Keep probabilities from each residual block:
-              For each block, record in order:
-                  • c_in (input dropout for the block),
-                  • c_hidden (dropout after weight_in/hidden activation),
-                  • c_out (dropout after weight_out).
-          - Finally, record the final layer’s input dropout parameter (c_final).
-          - If weight tracking is enabled, record:
-              • For each block: the weight_in and weight_out matrices,
-              • The final layer's weight matrix.
-          - Record the validation accuracy.
+        Records (in this order) for each epoch:
+          • For every block b   : σ(c_b_hidden), σ(c_b_out)
+          • Final layer dropout : σ(c_final)
+
+        Weight tracking (if enabled) is unchanged: two matrices per block
+        (weight_in, weight_out) followed by the final layer’s weight.
         """
+        # ───── keep-probabilities ────────────────────────────────────────
         keep_list = []
         for block in model.blocks:
-            keep_list.append(torch.sigmoid(block.c_in.detach()).cpu().numpy())
             keep_list.append(torch.sigmoid(block.c_hidden.detach()).cpu().numpy())
             keep_list.append(torch.sigmoid(block.c_out.detach()).cpu().numpy())
-        # Append the final layer's dropout parameter.
         keep_list.append(torch.sigmoid(model.c_final.detach()).cpu().numpy())
         self.keep_history.append(keep_list)
 
+        # ───── weights (optional) ────────────────────────────────────────
         if self.track_weights:
             weight_list = []
             for block in model.blocks:
@@ -200,45 +195,40 @@ class ResNetTracker(ModelTracker):
         else:
             self.weight_history.append([])
 
+        # ───── validation accuracy ───────────────────────────────────────
         self.val_acc_history.append(val_acc)
 
     def _get_keep_titles(self):
         """
-        Construct titles for each dropout parameter.
-          - For each block i (starting with 1), there are three dropout titles:
-                • "Block i Input Dropout"
-                • "Block i Hidden Dropout"
-                • "Block i Output Dropout"
-          - The final dropout parameter corresponds to the final layer input:
-                • "Final Layer Input Dropout"
+        Titles in the same order as `update`:
+          Block 1 Hidden  Dropout
+          Block 1 Output  Dropout
+          Block 2 Hidden  Dropout
+          Block 2 Output  Dropout
+          ...
+          Final Layer Dropout
         """
-        # Determine number of blocks based on the number of dropout groups.
-        n_total = len(self.keep_history[0])  # should equal 3 * num_blocks + 1
-        num_blocks = (n_total - 1) // 3
+        n_total = len(self.keep_history[0])          # = 2·B + 1
+        num_blocks = (n_total - 1) // 2
+
         titles = []
         for i in range(num_blocks):
-            titles.append(f"Block {i + 1} Input Dropout")
             titles.append(f"Block {i + 1} Hidden Dropout")
             titles.append(f"Block {i + 1} Output Dropout")
-        titles.append("Final Layer Input Dropout")
+        titles.append("Final Layer Dropout")
         return titles
 
     def _get_weight_titles(self):
         """
-        Construct titles for weight matrices in a ResNet:
-          - For each block i, two weight matrices are recorded:
-                • "Block i Weight_in (d→h)"
-                • "Block i Weight_out (h→d)"
-          - Finally, the final layer weight matrix:
-                • "Final Layer Weight (d→1)"
+        Unchanged: two matrices per block then final layer.
         """
         titles = []
         if self.weight_history and self.weight_history[0]:
             num_weights = len(self.weight_history[0])
-            # The final weight matrix is the last element; the remaining come in pairs.
             num_blocks = (num_weights - 1) // 2
             for i in range(num_blocks):
-                titles.append(f"Block {i + 1} Weight_in (d→h)")
+                titles.append(f"Block {i + 1} Weight_in  (d→h)")
                 titles.append(f"Block {i + 1} Weight_out (h→d)")
             titles.append("Final Layer Weight (d→1)")
         return titles
+

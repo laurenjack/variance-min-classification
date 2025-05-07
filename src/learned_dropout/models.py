@@ -2,7 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from model_tracker import MLPTracker, ResNetTracker
+from src.learned_dropout.model_tracker import MLPTracker, ResNetTracker
 
 
 class MLP(nn.Module):
@@ -26,6 +26,7 @@ class MLP(nn.Module):
         self.c_list.append(nn.Parameter(torch.zeros(d)))  # For input.
         for i in range(L):
             self.c_list.append(nn.Parameter(torch.zeros(h_list[i])))
+
 
     @staticmethod
     def get_tracker(track_weights):
@@ -96,208 +97,225 @@ class MLP(nn.Module):
 
 
 class ResidualBlock(nn.Module):
-    def __init__(self, d, h, relus, layer_norm):
-        """
-        d: Dimension of the residual stream.
-        h: Hidden dimension for this block.
-        relus: If True, apply ReLU after the weight-in linear layer.
+    """
+    A residual block with *two* learnable dropout masks:
+      • c_hidden  – applied to the hidden activations (size =h)
+      • c_out     – applied to the block output   (size =d)
 
-        Each block contains:
-          - A weight_in layer: transforms from d to h.
-          - A weight_out layer: transforms from h to d.
-          - Three learned dropout parameters (c parameters):
-              • c_in: applied to the block input (shape: d)
-              • c_hidden: applied after the weight_in layer (shape: h)
-              • c_out: applied after the weight_out layer (shape: d)
-        """
-        super(ResidualBlock, self).__init__()
+    The forward paths come in two flavours:
+      • forward_network1 – stochastic (Bernoulli-sampled) dropout
+      • forward_network2 – deterministic scaling with σ(c)
+    """
+    def __init__(self, d: int, h: int, relus: bool, layer_norm: bool) -> None:
+        super().__init__()
+        self.d = d
         self.relus = relus
         self.layer_norm = layer_norm
         if self.layer_norm:
             self.layer_norm_layer = nn.LayerNorm(d)
-        self.weight_in = nn.Linear(d, h, bias=False)
+
+        # weights
+        self.weight_in  = nn.Linear(d, h, bias=False)
         self.weight_out = nn.Linear(h, d, bias=False)
 
-        # Learned dropout (keep probability) parameters.
-        # Note: no dropout is applied globally on the network input.
-        self.c_in = nn.Parameter(torch.zeros(d))  # For the block’s input.
-        self.c_hidden = nn.Parameter(torch.zeros(h))  # For the hidden activation.
-        self.c_out = nn.Parameter(torch.zeros(d))  # For the block output.
+        # learnable dropout parameters
+        self.c_hidden = nn.Parameter(torch.zeros(h))   # hidden mask
+        self.c_out    = nn.Parameter(torch.zeros(d))   # output mask
+        self.cb_hidden = torch.zeros(h)
+        self.cb_out = torch.zeros(d)
 
+    # ────────────────────────── forward paths ──────────────────────────
 
-    def forward_network1(self, x):
+    def forward_network1(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Non-differentiable dropout:
-          - For each dropout position, sample a binary mask using the detached keep probabilities.
-          - The order is: first apply dropout to the block input, then after weight_in (and optional ReLU),
-            then after weight_out.
-          - Finally, the block output is returned.
+        Bernoulli-sampled dropout on both the hidden and the output.
         """
-        n_samples = x.size(0)
         if self.layer_norm:
             x = self.layer_norm_layer(x)
-        # 1. Apply dropout to the block input.
-        p_in = 0.8 * torch.sigmoid(self.c_in.detach()) + 0.2
-        mask_in = torch.bernoulli(p_in.expand(n_samples, x.size(1)))
-        x_dropped = x * mask_in
 
-        # 2. Compute hidden activation.
-        hidden = self.weight_in(x_dropped)
+        n = x.size(0)
+
+        # hidden transformation + dropout
+        hidden = self.weight_in(x)
         if self.relus:
             hidden = F.relu(hidden)
-        # Apply dropout on hidden activation.
-        p_hidden = torch.sigmoid(self.c_hidden.detach())
-        mask_hidden = torch.bernoulli(p_hidden.expand(n_samples, hidden.size(1)))
-        hidden_dropped = hidden * mask_hidden
 
-        # 3. Compute block output.
-        out = self.weight_out(hidden_dropped)
-        # Apply dropout on block output.
-        p_out = torch.sigmoid(self.c_out.detach())
-        mask_out = torch.bernoulli(p_out.expand(n_samples, out.size(1)))
-        out_dropped = out * mask_out
+        p_h   = torch.sigmoid(self.c_hidden.detach())
+        maskh = torch.bernoulli(p_h.expand(n, -1))
+        hidden = hidden * maskh
 
-        return out_dropped
+        # output transformation + dropout
+        out = self.weight_out(hidden)
+        p_o   = torch.sigmoid(self.c_out.detach())
+        masko = torch.bernoulli(p_o.expand(n, -1))
+        return out * masko
 
-    def forward_network2(self, x):
+    def forward_network2(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Differentiable dropout:
-          - Instead of sampling masks, scale each activation by the keep probabilities (computed via sigmoid)
-          - Weight matrices are used in a detached manner.
+        Differentiable (deterministic) dropout on hidden & output.
         """
         if self.layer_norm:
             x = self.layer_norm_layer(x)
-        x_scaled = x * torch.sigmoid(self.c_in) / 0.8
-        hidden = F.linear(x_scaled, self.weight_in.weight.detach())
+
+        hidden = F.linear(x, self.weight_in.weight.detach())
         if self.relus:
             hidden = F.relu(hidden)
         hidden = hidden * torch.sigmoid(self.c_hidden)
-        out = F.linear(hidden, self.weight_out.weight.detach())
-        out = out * torch.sigmoid(self.c_out)
-        return out
 
-    def effective_param_count(self):
-        """
-        Computes the effective parameter count for this block.
-        Here we consider the two weight matrices.
-          - For weight_in: effective count = sum(sigmoid(c_in)) * sum(sigmoid(c_hidden))
-          - For weight_out: effective count = sum(sigmoid(c_hidden)) * sum(sigmoid(c_out))
-        The block's effective parameter count is the sum of these two contributions.
-        """
-        count_in = torch.sum(torch.sigmoid(self.c_in)) * torch.sum(torch.sigmoid(self.c_hidden))
-        count_out = torch.sum(torch.sigmoid(self.c_hidden)) * torch.sum(torch.sigmoid(self.c_out))
-        return count_in + count_out
+        out = F.linear(hidden, self.weight_out.weight.detach())
+        return out * torch.sigmoid(self.c_out)
+
+    def param_count(self):
+        return (self.d + torch.sigmoid(self.c_out)) * torch.sigmoid(self.c_in)
+
+
+    def randomize_dropout_biases(self, scale):
+        c_hidden = self.c_hidden
+        c_out = self.c_out
+        self.cb_hidden = c_hidden + scale * torch.randn(c_hidden.shape)
+        self.cb_out = c_out + scale * torch.randn(c_out.shape)
 
 
 class ResNet(nn.Module):
-    def __init__(self, d, n, h_list, relus, layer_norm):
-        """
-        d: Dimension of the residual stream.
-        n: Total number of training examples (used to scale the variance term).
-        h_list: List of hidden dimensions for each residual block.
-                The number of blocks is len(h_list).
-        relus: Whether to apply ReLU activation after the weight_in linear layer.
+    """
+    ResNet with learnable dropout masks on every hidden & output layer
+    (but **no** dropout on the raw input features).
+    """
+    def __init__(self,
+                 d: int,
+                 n: int,
+                 h_list: list[int],
+                 relus: bool,
+                 layer_norm: bool) -> None:
+        super().__init__()
+        self.d = d                     # input feature width
+        self.n = n                     # dataset size (for variance formula)
 
-        The network consists of a series of residual blocks and a final layer.
-          - There is no dropout at the global input.
-          - Each residual block applies dropout to its own input, hidden activation, and output.
-          - After all blocks, a final linear layer (d -> 1) is applied.
-            This final layer uses a learned dropout on its input (c_final).
-        """
-        super(ResNet, self).__init__()
-        self.d = d
-        self.n = n  # total number of training examples
-        self.L = len(h_list)  # number of residual blocks
-        self.blocks = nn.ModuleList([ResidualBlock(d, h, relus, layer_norm) for h in h_list])
+        # residual blocks
+        self.blocks = nn.ModuleList([
+            ResidualBlock(d, h, relus, layer_norm) for h in h_list
+        ])
 
-        # Final linear layer mapping from d to 1.
+        # final linear layer + its dropout mask
         self.final_layer = nn.Linear(d, 1, bias=False)
-        # Learned dropout parameter for the input of the final layer.
-        self.c_final = nn.Parameter(torch.zeros(d))
+        self.c_final     = nn.Parameter(torch.zeros(d))     # size =d
+        self.cb_final = torch.zeros(d)
+
+    # ────────────────────────── forward paths ──────────────────────────
+
+    def forward_network1(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Stochastic (Bernoulli) dropout:
+        – no mask on the raw input
+        – dropout in every block (handled inside the block)
+        – dropout before final layer
+        """
+        current = x
+        for block in self.blocks:
+            current = current + block.forward_network1(current)
+
+        n      = x.size(0)
+        p_f    = torch.sigmoid(self.c_final.detach())
+        mask_f = torch.bernoulli(p_f.expand(n, -1))
+        final_in = current * mask_f
+        return self.final_layer(final_in).squeeze(1)
 
     @staticmethod
     def get_tracker(track_weights):
         return ResNetTracker(track_weights)
 
-    def forward_network1(self, x):
+    def forward_network2(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass using non-differentiable (sampled) dropout.
-          - The input x is fed directly into the first residual block.
-          - Each residual block computes its output with dropout and that output
-            is added to the residual stream.
-          - After all blocks, a final dropout mask (sampled from c_final) is applied
-            to the residual stream before the final linear layer produces the output.
+        Deterministic (σ-scaled) dropout:
+        – no mask on the raw input
+        – σ(c_hidden) / σ(c_out) in every block
+        – σ(c_final) before final linear layer
         """
-        current = x  # No dropout applied to the very beginning.
+        current = x
         for block in self.blocks:
-            block_out = block.forward_network1(current)
-            current = current + block_out
+            current = current + block.forward_network2(current)
 
-        n_samples = current.size(0)
-        # Apply dropout for final layer input.
-        p_final = torch.sigmoid(self.c_final.detach())
-        mask_final = torch.bernoulli(p_final.expand(n_samples, self.d))
-        final_input = current * mask_final
-        output = self.final_layer(final_input).squeeze(1)
-        return output
+        final_in = current * torch.sigmoid(self.c_final)
+        return F.linear(final_in, self.final_layer.weight.detach()).squeeze(1)
 
-    def forward_network2(self, x):
-        """
-        Forward pass using differentiable dropout:
-          - Each dropout position scales the activation by the corresponding keep probability.
-          - Weight matrices are used in a detached manner.
-        """
-        current = x  # Start with the raw input.
+    def param_count(self):
+        total_param_count = 0.0
         for block in self.blocks:
-            block_out = block.forward_network2(current)
-            current = current + block_out
+            total_param_count += block.param_count()
+        total_param_count += torch.sigmoid(self.c_final)
+        return total_param_count
 
-        # Apply differentiable dropout to final layer input.
-        final_input = current * torch.sigmoid(self.c_final)
-        output = F.linear(final_input, self.final_layer.weight.detach()).squeeze(1)
-        return output
+    # ─────────────────────────── variance term ──────────────────────────
 
-    def var_network2(self, k):
+    def var_network2(self, k: float) -> torch.Tensor:
         """
-        Computes a variance term proportional to the effective parameter count.
-          - For each residual block, the effective parameter count is computed
-            as described in ResidualBlock.effective_param_count().
-          - The final layer's effective parameter count is the sum of its input keep probabilities:
-              • count_final = sum(sigmoid(c_final))
-          - The total is scaled by the constant k and divided by the total number of training examples n.
+        k/n · Σ_i d_i · Σ_{j≠i} d_j   with
+
+        • Hidden-layer connections  (block i) :
+              (d + Σ_{t<i} Σ(p_t_out)) · Σ(p_i_hidden)
+        • Output-layer connections  (block i) :
+              (Σ(p_final) + Σ_{t>i} Σ(p_t_hidden)) · Σ(p_i_out)
+        • Within-block connections  (block i) :
+              Σ(p_i_hidden) · Σ(p_i_out)
+        • Final layer connections   :
+              (d + Σ_{t=1..B} Σ(p_t_out)) · 1
         """
-        total_count = 0.0
+        # device, dtype = self.c_final.device, self.c_final.dtype
+        # d_val = torch.tensor(self.d, device=device, dtype=dtype)
+        #
+        # # σ(c) totals for each block
+        # p_h_sum = [torch.sum(torch.sigmoid(b.c_hidden)) for b in self.blocks]
+        # p_o_sum = [torch.sum(torch.sigmoid(b.c_out)) for b in self.blocks]
+        # p_final = torch.sum(torch.sigmoid(self.c_final))
+        #
+        # # hidden-layer connections (forward cumulative p_out)
+        # hidden_conns = []
+        # cum_out = torch.tensor(0.0, device=device, dtype=dtype)
+        # for h_sum, o_sum in zip(p_h_sum, p_o_sum):
+        #     hidden_conns.append((d_val + cum_out) * h_sum)
+        #     cum_out = cum_out + o_sum
+        #
+        # # output-layer connections (reverse cumulative p_hidden)
+        # output_conns = [None] * len(self.blocks)
+        # cum_hidden = torch.tensor(0.0, device=device, dtype=dtype)
+        # for idx in reversed(range(len(self.blocks))):
+        #     output_conns[idx] = (p_final + cum_hidden) * p_o_sum[idx]
+        #     cum_hidden = cum_hidden + p_h_sum[idx]
+        #
+        # # within-block connections
+        # inside_conns = [h * o for h, o in zip(p_h_sum, p_o_sum)]
+        #
+        # # final layer (scalar output)
+        # final_conns = (d_val + torch.sum(torch.stack(p_o_sum))) * torch.tensor(
+        #     1.0, device=device, dtype=dtype
+        # )
+        #
+        # # aggregate all connection counts
+        # all_conns = hidden_conns + output_conns + inside_conns + [final_conns]
+        # total_conn = torch.sum(torch.stack(all_conns))
+        param_count = self.param_count()
+        return (k * param_count) / self.n
+
+    def randomize_dropout_biases(self, scale):
         for block in self.blocks:
-            total_count = total_count + block.effective_param_count()
+            block.randomize_dropout_biases(scale)
+        c = self.c_final
+        self.cb_final = c + scale * torch.randn(c.shape)
 
-        # Final layer effective parameter count:
-        count_final = torch.sum(torch.sigmoid(self.c_final))
-        total_count = total_count + count_final
 
-        return k * total_count / self.n
+    # ────────────────────── helpers for optimisation ────────────────────
 
-    def get_weight_params(self):
-        """
-        Returns a list of all weight parameters from the ResNet.
-        It collects the weights from all residual blocks (both weight_in and weight_out)
-        and from the final linear layer.
-        """
+    def get_weight_params(self) -> list[nn.Parameter]:
         params = []
         for block in self.blocks:
-            params += list(block.weight_in.parameters())
-            params += list(block.weight_out.parameters())
-        params += list(self.final_layer.parameters())
+            params.extend(block.weight_in.parameters())
+            params.extend(block.weight_out.parameters())
+        params.extend(self.final_layer.parameters())
         return params
 
-    def get_drop_out_params(self):
-        """
-        Returns a list of all learned dropout (c) parameters for the ResNet.
-        It collects the dropout parameters from each residual block (c_in, c_hidden, c_out)
-        and the dropout parameter for the final layer (c_final).
-        """
+    def get_drop_out_params(self) -> list[nn.Parameter]:
         params = []
         for block in self.blocks:
-            params.append(block.c_in)
             params.append(block.c_hidden)
             params.append(block.c_out)
         params.append(self.c_final)

@@ -4,6 +4,39 @@ from torch import nn as nn, optim as optim
 from src.learned_dropout.model_tracker import NullTracker
 
 
+def polarise_dropout_masks(resnet, magnitude: float = 100.0) -> None:
+    """
+    Push every learnable dropout parameter c in-place toward ±`magnitude`:
+
+        • if  c_i > 0  ⇒  c_i ←  +magnitude   (σ(c_i) ≈ 1.00)
+        • if  c_i < 0  ⇒  c_i ←  -magnitude   (σ(c_i) ≈ 0.00)
+        • if  c_i == 0 ⇒  unchanged           (σ(c_i) = 0.50)
+
+    Parameters
+    ----------
+    resnet     : ResNet
+        The network whose dropout masks are modified **in-place**.
+    magnitude  : float, default=100.0
+        Absolute value used for the pushed parameters.  |10| already gives
+        σ(±10) ≈ 0.99995 / 0.000045; raise it if you need them even “closer”
+        to hard 0-1 behaviour.
+    """
+    with torch.no_grad():
+        # helper applied to every individual c tensor
+        def _polarise(tensor: torch.Tensor) -> None:
+            pos_mask = tensor >= 0
+            neg_mask = tensor < 0
+            tensor[pos_mask] =  magnitude
+            tensor[neg_mask] = -magnitude
+
+        # per-block masks
+        for block in resnet.blocks:
+            _polarise(block.c_hidden.data)
+            _polarise(block.c_out.data)
+
+        # final layer mask
+        _polarise(resnet.c_final.data)
+
 def train(dataset, model, batch_size, epochs, k, lr_weights, lr_dropout, weight_decay, do_track=False, track_weights=False):
 
     # Define the loss function.
@@ -27,7 +60,12 @@ def train(dataset, model, batch_size, epochs, k, lr_weights, lr_dropout, weight_
     x, y, x_val, y_val = dataset
     n = x.shape[0]
 
+    polarise_dropout_masks(model, magnitude=2.0)
+
+    dropout_noise_scale =0.0
     for epoch in range(epochs):
+        # if epoch == 500:
+        #     dropout_noise_scale = 2.0
         # Set the model to evaluation mode so that batch norm uses stored running statistics.
         model.eval()
         with torch.no_grad():
@@ -42,7 +80,9 @@ def train(dataset, model, batch_size, epochs, k, lr_weights, lr_dropout, weight_
 
         # Shuffle the dataset indices.
         permutation = torch.randperm(n)
+
         for i in range(0, n, batch_size):
+            model.randomize_dropout_biases(dropout_noise_scale)
             batch_indices = permutation[i:i + batch_size]
             x_batch = x[batch_indices]
             y_batch = y[batch_indices]
@@ -59,9 +99,10 @@ def train(dataset, model, batch_size, epochs, k, lr_weights, lr_dropout, weight_
             loss2 = criterion(logits2, y_batch)
             var_term = model.var_network2(k)
             loss2 = loss2 + var_term
-            optimizer_dropout.zero_grad()
-            loss2.backward()
-            optimizer_dropout.step()
+            if epoch >= 500:
+                optimizer_dropout.zero_grad()
+                loss2.backward()
+                optimizer_dropout.step()
 
 
 
@@ -72,7 +113,7 @@ def train(dataset, model, batch_size, epochs, k, lr_weights, lr_dropout, weight_
                 preds_train = (torch.sigmoid(logits_train) >= 0.5).float()
                 train_acc = (preds_train == y).float().mean().item()
             print(
-                f"Epoch {epoch}: loss1 = {loss1.item():.4f}, loss2 = {loss2.item():.4f}, train_acc = {train_acc:.4f}, val_acc = {accuracy:.4f}")
+                f"Epoch {epoch}: loss1 = {loss1.item():.4f}, loss2 = {loss2.item():.4f}, var term = {var_term.item():.4f}, train_acc = {train_acc:.4f}, val_acc = {accuracy:.4f}")
 
     # Final tracker update at end of training.
     model.eval()
@@ -89,7 +130,7 @@ def train(dataset, model, batch_size, epochs, k, lr_weights, lr_dropout, weight_
     return model
 
 
-def train_standard(dataset, model, batch_size, epochs, lr_weights, weight_decay, do_track=False, track_weights=False):
+def train_standard(dataset, model, batch_size, epochs, lr_weights, weight_decay, do_track=False, track_weights=False, print_progress=True):
     """
     Trains a standard model (MLPStandard or ResNetStandard) that has no learned dropout parameters.
     This function uses a single AdamW optimizer on all weights and only the model.forward method.
@@ -138,7 +179,7 @@ def train_standard(dataset, model, batch_size, epochs, lr_weights, weight_decay,
         tracker.update(model, val_acc)
 
         # Every 10 epochs, compute and print the training accuracy.
-        if epoch % 10 == 0:
+        if print_progress and epoch % 10 == 0:
             with torch.no_grad():
                 logits_train = model.forward(x)
                 preds_train = (torch.sigmoid(logits_train) >= 0.5).float()

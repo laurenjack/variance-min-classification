@@ -12,10 +12,10 @@ def train_and_get_sum(n_samples: int, d: int, epochs: int = 100, lr: float = 1e-
     # Generate data
     x = torch.randn(n_samples)                   # shape: (n_samples,)
     # Gating: sample independent Bernoulli for each sample and each weight
-    R = torch.bernoulli(0.5 * torch.ones(n_samples, d))  # shape: (n_samples, d)
+    # R = torch.bernoulli(0.5 * torch.ones(n_samples, d))  # shape: (n_samples, d)
 
     # Initialize weights
-    w = torch.zeros(d, requires_grad=True)
+    w = torch.randn(d, requires_grad=True)
     optimizer = optim.Adam([w], lr=lr)
     criterion = nn.MSELoss(reduction='mean')
 
@@ -23,6 +23,7 @@ def train_and_get_sum(n_samples: int, d: int, epochs: int = 100, lr: float = 1e-
     for epoch in range(epochs):
         optimizer.zero_grad()
         # Compute predictions: preds_i = sum_j R[i,j] * w[j]
+        R = 
         preds = R.matmul(w)  # shape: (n_samples,)
         loss = criterion(preds, x)
         loss.backward()
@@ -37,7 +38,7 @@ if __name__ == '__main__':
     n_runs = 30
     results = []
     for _ in range(n_runs):
-        total_w = train_and_get_sum(n_samples=1000, d=10, epochs=200, lr=1e-2)
+        total_w = train_and_get_sum(n_samples=1000, d=100, epochs=200, lr=1e-1)
         results.append(total_w)
 
     # Compute empirical variance of sum(w_j)
