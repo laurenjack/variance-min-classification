@@ -185,99 +185,127 @@ class HyperXorNormal:
     one corner (N(mu_i, I)) is classified (by nearest-mean rule) as belonging to
     that same corner, rather than to one of its d neighbors.
 
+    The parameter 'random_basis' (default False) applies a fixed random orthonormal
+    transformation to mix all dimensions (true + noisy),
+    so that each observed feature is an equal mixture of the underlying dims.
+
     Summarily: from each corner, sum of misclassification probabilities to
     its d neighbors = (1 - percent_correct).
     Hence each corner has p = (1 - percent_correct)/d chance to go to a
     specific neighbor, leading to c = sqrt(d) * Phi^{-1}(1 - p).
     """
 
-    def __init__(self, true_d: int, percent_correct: float, noisy_d: int = 0):
+    def __init__(
+        self,
+        true_d: int,
+        percent_correct: float,
+        noisy_d: int = 0,
+        random_basis: bool = False,
+    ):
         """
-        d : Dimension of the hypercube
-        percent_correct : Probability of correct classification under nearest-mean
-                          for each corner. (For example, 0.8 => 80% correct.)
+        Args:
+            true_d: dimension of the underlying hypercube
+            percent_correct: probability of correct nearest-mean classification
+            noisy_d: number of extra noise-only dimensions to append
+            random_basis: if True, apply a single random orthonormal rotation
+                          across all d = true_d + noisy_d dimensions
         """
-        misclassification = 1.0 - percent_correct  # e.g., 0.2 if percent_correct=0.8
-        if misclassification < 0 or misclassification > 1:
+        # Validate percent_correct
+        misclassification = 1.0 - percent_correct
+        if not 0.0 <= misclassification <= 1.0:
             raise ValueError("percent_correct must be between 0 and 1.")
 
-        # Probability of misclassifying to a specific (single) neighbor
-        # = total misclass / number of neighbors = misclassification / d
+        # Probability of misclassifying to a single neighbor
         p = misclassification / true_d
 
-        # We want 1 - Φ(c/√d) = p  =>  Φ(c/√d) = 1 - p  =>  c/√d = Φ⁻¹(1 - p)
+        # Compute c via inverse Gaussian CDF: Φ(c/√d) = 1 - p
         alpha = 1.0 - p
-        self.z = norm.ppf(alpha)  # inverse CDF
+        self.z = norm.ppf(alpha)
         c = math.sqrt(true_d) * self.z
 
-        # Build all sign patterns in {+1, -1}^d
-        # We'll have 2^d corners, each of shape (d,).
-        num_corners = 1 << true_d  # 2^d
-        corners = []
-        for i in range(num_corners):
-            sign_vec = []
-            for bit in range(true_d):
-                # If the bit-th bit of i is 1 => +1, else => -1
-                if (i >> bit) & 1 == 1:
-                    sign_vec.append(1.0)
-                else:
-                    sign_vec.append(-1.0)
-            corners.append(sign_vec)
-        corners = torch.tensor(corners, dtype=torch.float32)  # shape (2^d, d)
+        # Build the 2^true_d corner means in {+1,-1}^true_d
+        num_corners = 1 << true_d
+        # corners_true: (2^d_true, true_d)
+        corners_true = torch.tensor(
+            [
+                [(1.0 if (i >> bit) & 1 else -1.0) for bit in range(true_d)]
+                for i in range(num_corners)
+            ], dtype=torch.float32
+        )
+        # Scale to length c in true_d
+        corners_true = corners_true * (c / math.sqrt(true_d))
 
-        # Each sign vector has length sqrt(d). Scale to length c.
-        corners = corners * (c / math.sqrt(true_d))
+        # Append zero-valued noisy dims
+        if noisy_d > 0:
+            zeros = torch.zeros(num_corners, noisy_d)
+            corners = torch.cat([corners_true, zeros], dim=1)
+        else:
+            corners = corners_true
 
-        # Store the means
-        self.means = corners  # (2^d, d)
-
-        # Compute parity labels: +1 => bit=1, -1 => bit=0
-        # Class label = sum of bits mod 2
-        bits = (corners > 0).int()  # shape (2^d, d), 1 where >0 else 0
-        parity = bits.sum(dim=1) % 2  # shape (2^d,), 0 or 1
+        # Compute parity labels (0 or 1)
+        bits = (corners_true > 0).int()
+        parity = bits.sum(dim=1) % 2
         self.labels = parity
 
-        # Store c for reference (not strictly needed, but nice to have):
-        self.c = c
-        # Add the noisy dimensions
-        if noisy_d:
-            self.means = torch.cat([self.means, torch.zeros(num_corners, noisy_d)], dim=1)
+        # Total dimensionality
         self.d = true_d + noisy_d
+
+        # Apply a single random orthonormal basis change across all dims
+        if random_basis:
+            A = torch.randn(self.d, self.d)
+            Q, _ = torch.linalg.qr(A)
+            # Ensure right-handed coordinate system (det(Q)=+1)
+            if torch.det(Q) < 0:
+                Q[:, 0] *= -1
+            # corners = corners @ Q
+            self.basis = Q
+        else:
+            self.basis = None
+
+        self.means = corners
+        self.c = c
 
     def generate_dataset(self, n: int, shuffle: bool = True):
         """
         Sample 'n' data points. Each point comes from one of the 2^d corners
-        (chosen uniformly at random), plus standard normal noise.
+        (uniformly at random), plus standard normal noise, then downscaled.
 
         Returns:
-          x: shape (n, d)
-          y: shape (n,)  (0 or 1, the parity)
+          x: shape (n, d)  features
+          y: shape (n,)    labels (0 or 1)
         """
-        num_corners = self.means.size(0)  # = 2^d
+        num_corners = self.means.size(0)
         d = self.means.size(1)
 
         # 1) Pick random corner indices
         idx = torch.randint(low=0, high=num_corners, size=(n,))
 
         # 2) Gather the chosen means
-        chosen_means = self.means[idx]  # shape (n, d)
+        chosen_means = self.means[idx]
 
         # 3) Add standard normal noise
         noise = torch.randn(n, d)
         x = chosen_means + noise
-        # Downscale
+
+        # 4) Downscale (optional)
         x /= (2 * self.z)
 
-        # 4) Find the labels
-        y = self.labels[idx]  # shape (n,)
+        # # 5) Rotate
+        if self.basis is not None:
+            x = x @ self.basis
 
-        # 5) Optionally shuffle
+        # 5) Labels
+        y = self.labels[idx]
+
+        # 6) Shuffle
         if shuffle:
             perm = torch.randperm(n)
             x = x[perm]
             y = y[perm]
 
         return x, y
+
+
 
 
 class Gaussian:
