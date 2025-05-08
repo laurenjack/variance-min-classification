@@ -93,7 +93,7 @@ def main(n: int = 100, d: int = 10):
     """Runs both experiments and plots the results."""
     # configuration
     h_range = range(1, 11)  # 1‑10 inclusive
-    num_runs = 20
+    num_runs = 30
     lr = 1e-3
     epochs = 300
 
