@@ -6,16 +6,33 @@ from src.learned_dropout.models_standard import ResNetStandard
 from src.learned_dropout.trainer import train_standard
 
 
-def run_experiment(n, d, num_layers_list,
-                   hidden_size, num_runs,
-                   learning_rate, num_epochs,
-                   batch_size, weight_decay):
+def run_variation_block(block_to_vary: int,
+                        hidden_sizes_varied: list[int],
+                        *,
+                        n: int,
+                        d: int,
+                        num_runs: int,
+                        learning_rate: float,
+                        num_epochs: int,
+                        batch_size: int,
+                        weight_decay: float,
+                        device: torch.device) -> list[float]:
+    """Compute the mean zero‑centered variance E[z²] on a shared validation set
+    for a suite of models in which *one* residual block size is varied.
+
+    Args:
+        block_to_vary: Which residual block (0‑based index) should have its
+            hidden size swept over ``hidden_sizes_varied``.
+        hidden_sizes_varied: List of hidden sizes to plug into the chosen block.
+        n: Training‑set size.
+        d: Input dimension.
+        num_runs: Number of independent training runs per configuration.
+        learning_rate, num_epochs, batch_size, weight_decay: Training hyper‑parameters.
+        device: CPU or CUDA device.
+
+    Returns:
+        List of mean E[z²]—one entry per hidden size in *hidden_sizes_varied*.
     """
-    For a fixed d and training‐set size n, sweep over num_layers_list,
-    train num_runs ResNets (layer_norm="param") per L on n samples,
-    share a common validation set, and return [mean_var_L for each L].
-    """
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Shared validation set
     n_val = 1000
@@ -23,19 +40,20 @@ def run_experiment(n, d, num_layers_list,
     x_val, y_val = problem.generate_dataset(n_val, shuffle=True)
     x_val, y_val = x_val.to(device), y_val.float().to(device)
 
-    mean_vars = []
+    mean_vars: list[float] = []
 
-    for L in num_layers_list:
+    for h in hidden_sizes_varied:
         preds = []
         for run in range(num_runs):
-            # generate fresh training set of size n
+            # Fresh training set of size n
             x_train, y_train = problem.generate_dataset(n, shuffle=True)
             x_train, y_train = x_train.to(device), y_train.float().to(device)
-            dataset = (x_train, y_train, x_val, y_val)
 
-            # build and train ResNet with LayerNorm(params)
-            hidden_sizes = [hidden_size] * L
+            hidden_sizes = [10, 10, 10]  # default sizes for the 3 residual blocks
+            hidden_sizes[block_to_vary] = h           # vary the chosen block
+
             model = ResNetStandard(d, hidden_sizes, True, layer_norm="param").to(device)
+            dataset = (x_train, y_train, x_val, y_val)
             model = train_standard(dataset, model,
                                    batch_size, num_epochs,
                                    learning_rate, weight_decay,
@@ -48,49 +66,66 @@ def run_experiment(n, d, num_layers_list,
                     z = z.unsqueeze(1)
             preds.append(z.cpu())
 
-            print(f"d={d}, L={L}, run={run+1}/{num_runs} — sample z: {z[:3].view(-1).tolist()}")
+            print(f"block={block_to_vary+1}, h={h}, run={run+1}/{num_runs} — sample z: {z[:3].view(-1).tolist()}")
 
-        # Stack [runs, n_val, 1], compute E[z^2] per example, then average over validation
+        # Stack shape: [num_runs, n_val, 1]
         t = torch.stack(preds, dim=0)
-        sec_mom = (t ** 2).mean(dim=0)  # [n_val,1]
+        sec_mom = (t ** 2).mean(dim=0)          # [n_val, 1]
         mean_vars.append(sec_mom.mean().item())
 
-        print(f"L={L}: mean E[z²]={mean_vars[-1]:.4f}")
+        print(f"Varying block {block_to_vary+1}, h={h}: mean E[z²]={mean_vars[-1]:.4f}")
 
     return mean_vars
 
 
 if __name__ == "__main__":
-    # three training‐set sizes to compare
-    n_list = [1000, 1500, 2000]
-    d = 10
-    num_layers_list = list(range(1, 9))  # L = 1…8
-    hidden_size = 10
-    num_runs = 10
-    lr = 0.003
-    epochs = 750
-    bs = 200
-    wd = 0.0003
+    # Experimental setup
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    n = 1000              # training‑set size
+    d = 10                # input dimension
+    num_runs = 10         # independent runs per configuration
+    lr = 0.003            # learning rate
+    epochs = 750          # training epochs
+    bs = 200              # batch size
+    wd = 0.0003           # weight decay
+
+    hidden_sizes_varied = list(range(30, 110, 10))  # 5, 10, …, 40
 
     plt.figure(figsize=(10, 7))
 
-    # run for each n and plot
-    for marker, (n, style) in zip(
-        ["o", "s", "^"],
-        zip(n_list, ["-", "--", ":"])
-    ):
-        mv = run_experiment(n, d, num_layers_list,
-                            hidden_size, num_runs,
-                            lr, epochs, bs, wd)
-        plt.plot(num_layers_list, mv,
-                 marker=marker,
-                 linestyle=style,
-                 label=f"n={n}")
+    # ── Model 1: vary *first* residual block ──────────────────────────────────
+    mv1 = run_variation_block(block_to_vary=0,
+                              hidden_sizes_varied=hidden_sizes_varied,
+                              n=n, d=d,
+                              num_runs=num_runs,
+                              learning_rate=lr,
+                              num_epochs=epochs,
+                              batch_size=bs,
+                              weight_decay=wd,
+                              device=device)
+    plt.plot(hidden_sizes_varied, mv1,
+             marker="o", linestyle="-", label="Vary first block")
 
-    plt.xlabel("Number of Hidden Layers (L)")
-    plt.ylabel("Mean Zero-Centered Variance (E[z²])")
-    plt.title("Effect of Training-Set Size on Output Variance\n(all models use LayerNorm(param), d=10)")
-    plt.xticks(num_layers_list)
+    # ── Model 2: vary *third* residual block ─────────────────────────────────
+    mv2 = run_variation_block(block_to_vary=2,
+                              hidden_sizes_varied=hidden_sizes_varied,
+                              n=n, d=d,
+                              num_runs=num_runs,
+                              learning_rate=lr,
+                              num_epochs=epochs,
+                              batch_size=bs,
+                              weight_decay=wd,
+                              device=device)
+    plt.plot(hidden_sizes_varied, mv2,
+             marker="s", linestyle="--", label="Vary third block")
+
+    # ── Plot styling ─────────────────────────────────────────────────────────
+    plt.xlabel("Hidden Units in Varied Block")
+    plt.ylabel("Mean Zero‑Centered Variance (E[z²])")
+    plt.title("Effect of Hidden Units per Block on Output Variance\n"
+              "(d=10, n=1000, 3 residual blocks, LayerNorm(param))")
+    plt.xticks(hidden_sizes_varied)
     plt.legend()
     plt.grid(True)
     plt.show()
