@@ -9,14 +9,14 @@ from src.learned_dropout.models_standard import MLPStandard
 def build_model_m1(d: int, h: int, device: torch.device) -> nn.Module:
     """Model 1: single-hidden-layer MLPStandard: [d, h, 1] with LayerNorm and ReLU"""
     # hidden dims list for MLPStandard
-    h_list = h_list = [h // 4, d, h // 4, d, h // 4, d, h // 4, d]
+    h_list = [h, h // 2, h // 2, h // 4]
     return MLPStandard(d=d, h_list=h_list, relus=True, layer_norm=True).to(device)
 
 
 def build_model_m2(d: int, h: int, device: torch.device) -> nn.Module:
     """Model 2: two-hidden-layer MLPStandard: [d, h//2, d, 1] with LayerNorm and ReLU"""
     # hidden dims list for MLPStandard
-    h_list = [h // 2, d, h // 2, d]
+    h_list = [h, h, h, d]
     return MLPStandard(d=d, h_list=h_list, relus=True, layer_norm=True).to(device)
 
 def build_model_m3(d: int, h: int, device: torch.device) -> nn.Module:
