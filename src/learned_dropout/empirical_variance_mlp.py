@@ -9,20 +9,20 @@ from src.learned_dropout.models_standard import MLPStandard
 def build_model_m1(d: int, h: int, device: torch.device) -> nn.Module:
     """Model 1: single-hidden-layer MLPStandard: [d, h, 1] with LayerNorm and ReLU"""
     # hidden dims list for MLPStandard
-    h_list = [d, h]
+    h_list = [h // 4, d, h // 4, d, h // 2, d]
     return MLPStandard(d=d, h_list=h_list, relus=True, layer_norm=True).to(device)
 
 
 def build_model_m2(d: int, h: int, device: torch.device) -> nn.Module:
     """Model 2: two-hidden-layer MLPStandard: [d, h//2, d, 1] with LayerNorm and ReLU"""
     # hidden dims list for MLPStandard
-    h_list = [d, d, h]
+    h_list = [h // 2, d, h // 4, d, h // 4, d]
     return MLPStandard(d=d, h_list=h_list, relus=True, layer_norm=True).to(device)
 
 def build_model_m3(d: int, h: int, device: torch.device) -> nn.Module:
     """Model 2: two-hidden-layer MLPStandard: [d, h//2, d, 1] with LayerNorm and ReLU"""
     # hidden dims list for MLPStandard
-    h_list = [d, d, d, h]
+    h_list = [h // 4, d, h // 4, d, h // 4, d, h // 4, d]
     return MLPStandard(d=d, h_list=h_list, relus=True, layer_norm=True).to(device)
 
 
@@ -86,7 +86,7 @@ def run_experiment(
 
 def main(n: int = 1000, d: int = 40):
     # configuration
-    h_range = range(4, 161, 4)  # 4, 6, 8, ..., 20
+    h_range = range(4, 101, 4)  # 4, 6, 8, ..., 20
     num_runs = 20
     lr = 3e-3
     epochs = 300
