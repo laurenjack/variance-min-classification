@@ -29,11 +29,11 @@ def plot_2d_tensor(x: torch.Tensor, y: torch.Tensor):
 
 
 if __name__ == '__main__':
-    torch.manual_seed(4000)
+    torch.manual_seed(5000)
     n = 1000
     n_test = 1000  # Validation set size
-    true_d = 3
-    noisy_d = 40
+    true_d = 2
+    noisy_d = 0
     batch_size = 200
     h_list = [50, 50]
     epochs = 5000
@@ -54,11 +54,11 @@ if __name__ == '__main__':
     dataset = Dataset(x, y, x_val, y_val)
     d = true_d + noisy_d
 
-    #plot_2d_tensor(x, y)
+    # plot_2d_tensor(x, y)
 
     # model = MLP(d, n, h_list, relus=relus)
-    model = ResNet(d, n, h_list, relus=relus, layer_norm=True)
-    train(dataset, model, batch_size, epochs, k, lr_weights, lr_dropout, weight_decay, do_track=True, track_weights=False)
+    # model = ResNet(d, n, h_list, relus=relus, layer_norm=True)
+    # train(dataset, model, batch_size, epochs, k, lr_weights, lr_dropout, weight_decay, do_track=True, track_weights=False)
 
     # model = MLPStandard(d, h_list, relus=relus)
     # model = ResNetStandard(d, h_list, relus=relus, layer_norm=True)

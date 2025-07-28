@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, List, Union
 
 import torch
 from torch import Tensor
@@ -8,60 +8,44 @@ import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, TensorDataset
 
 from src import dataset_creator
-from src.learned_dropout.models_standard import MLPStandard
-
-def build_model_m1(d: int, h: int, device: torch.device, layer_norm: bool) -> nn.Module:
-    """Model 1: single-hidden-layer MLPStandard: [d, h, 1] with LayerNorm and ReLU"""
-    # hidden dims list for MLPStandard
-    h_list = [h, d]
-    return MLPStandard(d=d, h_list=h_list, relus=True, layer_norm=layer_norm).to(device)
-
-
-def build_model_m2(d: int, h: int, device: torch.device, layer_norm: bool) -> nn.Module:
-    """Model 2: two-hidden-layer MLPStandard: [d, h//2, d, 1] with LayerNorm and ReLU"""
-    # hidden dims list for MLPStandard
-    h_list = [h // 2, d, h // 2, d]
-    return MLPStandard(d=d, h_list=h_list, relus=True, layer_norm=layer_norm).to(device)
-
-def build_model_m3(d: int, h: int, device: torch.device, layer_norm: bool) -> nn.Module:
-    """Model 3: four-hidden-layer MLPStandard: [d, h//4, d, h//4, d, h//4, d, h//4, d, 1] with LayerNorm and ReLU"""
-    # hidden dims list for MLPStandard
-    h_list = [h // 4, d, h // 4, d, h // 4, d, h // 4, d]
-    return MLPStandard(d=d, h_list=h_list, relus=True, layer_norm=layer_norm).to(device)
-
-def build_single_layer_mlp(d, h, device: torch.device, layer_norm: bool) -> nn.Module:
-    return MLPStandard(d=d, h_list=[h], relus=True, layer_norm=layer_norm).to(device)
 
 
 def run_experiment(
     build_model_fn,
     n: int,
     d: int,
-    h_values: range,
+    h_values: List[int],
     num_runs: int,
     learning_rate: float,
     num_epochs: int,
     batch_size: int,
     device: torch.device,
-    layer_norm: bool,
+    layer_norm: Union[bool, str],  # bool for MLPs, str for ResNets
     validation_set: Tuple[Tensor, Tensor],
     problem
 ) -> tuple[list, list]:
     """Returns mean variances of validation logits and mean training losses for each hidden size h."""
     x_val, _ = validation_set
+    
+    # Generate all training sets once, outside the loops
+    training_sets = []
+    for _ in range(num_runs):
+        x_train, y_train = problem.generate_dataset(n, shuffle=True)
+        x_train, y_train = x_train.to(device), y_train.to(device)
+        training_sets.append((x_train, y_train))
+    
     mean_vars = []
     mean_train_losses = []
     for h in h_values:
         run_preds = []
         run_train_losses = []
-        for _ in range(num_runs):
-            # generate training data
-            x_train, y_train = problem.generate_dataset(n, shuffle=True)
-            x_train, y_train = x_train.to(device), y_train.to(device)
+        for run_idx in range(num_runs):
+            # Use the pre-generated training data for this run
+            x_train, y_train = training_sets[run_idx]
 
             # create data loader for batch training
             train_dataset = TensorDataset(x_train, y_train)
-            train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+            train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
 
             # build model with current hidden parameter
             model = build_model_fn(d, h, device, layer_norm)
@@ -105,7 +89,7 @@ def run_experiment(
         mean_train_loss = sum(run_train_losses) / len(run_train_losses)
         mean_train_losses.append(mean_train_loss)
         
-        print(f"h = {h:2d} | mean variance = {mean_var:.4e} | mean train loss = {mean_train_loss:.4f}")
+        print(f"h = {h:2d} | mean variance = {mean_var:.4e} | mean train loss = {mean_train_loss:.4f} | train_losses = {run_train_losses}")
 
     return mean_vars, mean_train_losses
 
