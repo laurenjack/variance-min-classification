@@ -2,7 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from src.learned_dropout.model_tracker import MLPTracker, ResNetTracker
+from src.learned_dropout.legacy.model_tracker import MLPTracker, ResNetTracker
 
 
 class MLP(nn.Module):
