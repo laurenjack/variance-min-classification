@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 from src import dataset_creator
-from src.learned_dropout.model_tracker import ModelTracker
+from src.learned_dropout.legacy.model_tracker import ModelTracker
 
 
 def train_model(n, n_test, true_d, noisy_d, batch_size, h_list, epochs, lr_weights, lr_c, weight_decay, relus):

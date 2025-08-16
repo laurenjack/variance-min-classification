@@ -1,9 +1,5 @@
-import torch
-
 from src import dataset_creator
-from src.learned_dropout.models import MLP, ResNet
 from src.learned_dropout.models_standard import MLPStandard, ResNetStandard
-from src.learned_dropout.trainer import train, train_standard
 from src.learned_dropout.domain import Dataset
 
 import matplotlib.pyplot as plt

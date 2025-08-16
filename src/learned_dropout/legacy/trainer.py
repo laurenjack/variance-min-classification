@@ -1,7 +1,7 @@
 import torch
 from torch import nn as nn, optim as optim
 
-from src.learned_dropout.model_tracker import NullTracker
+from src.learned_dropout.legacy.model_tracker import NullTracker
 
 
 def polarise_dropout_masks(resnet, magnitude: float = 100.0) -> None:
