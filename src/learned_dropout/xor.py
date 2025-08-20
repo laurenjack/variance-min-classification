@@ -1,6 +1,6 @@
 import torch
 
-from src.learned_dropout.data_generator import SubDirections
+from src.learned_dropout.data_generator import HyperXorNormal
 from src.learned_dropout.config import Config, ModelConfig
 from src.learned_dropout.sense_check import train_once
 
@@ -9,36 +9,40 @@ def main():
     torch.manual_seed(38173)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Problem: SubDirections with requested parameters
+    # Problem: HyperXorNormal with requested parameters
     percent_correct = 0.8
-    d = 12
-    problem = SubDirections(
-        d=d,
-        sub_d=4,
-        perms=24,
-        num_class=2,
-        sigma=0.05,
+    true_d = 3
+    noisy_d = 7
+    d = true_d + noisy_d  # Total dimensionality
+    
+    problem = HyperXorNormal(
+        true_d=true_d,
+        noisy_d=noisy_d,
+        random_basis=True,  # Apply random orthonormal transformation
+        device=device,
     )
 
-    # Model configuration
     model_config = ModelConfig(
         d=d,
         n_val=1000,
-        n=240,
-        batch_size=240,
+        n=512,
+        batch_size=128,
         layer_norm="rms_norm",
         lr=1e-3,
-        epochs=400,
+        epochs=300,
         weight_decay=0.001,
-        hidden_sizes=[100],
+        hidden_sizes=[5, 5],
         is_weight_tracker=False,
         l1_final=None,
-        d_model=10
-        # down_rank_dim=12
+        # d_model=10
     )
 
     # Generate validation set with class-balanced sampling
-    x_val, y_val, _, _ = problem.generate_dataset(model_config.n_val, shuffle=True, percent_correct=percent_correct)
+    x_val, y_val, _, _ = problem.generate_dataset(
+        model_config.n_val, 
+        shuffle=True, 
+        percent_correct=0.8
+    )
 
     validation_set = x_val.to(device), y_val.to(device)
 
