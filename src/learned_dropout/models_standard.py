@@ -67,10 +67,15 @@ class StandardResidualBlock(nn.Module):
         self.weight_in = nn.Linear(d, h, bias=False)
         self.weight_out = nn.Linear(h, d, bias=False)
 
-    def forward(self, x):
+    def forward(self, x, h_mask: Optional[torch.Tensor] = None):
         x = self.layer_norm(x)
         hidden = self.weight_in(x)
         hidden = F.relu(hidden)
+        
+        # Apply h_mask to hidden layer if provided
+        if h_mask is not None:
+            hidden = hidden * h_mask.unsqueeze(0)  # Broadcast across batch dimension
+            
         out = self.weight_out(hidden)
         return out
 
@@ -129,12 +134,17 @@ class ResNetStandard(nn.Module):
             return 0.0
         return self.l1_final * torch.sum(torch.abs(self.final_layer.weight))
 
-    def forward(self, x):
+    def forward(self, x, h_mask: Optional[torch.Tensor] = None):
         """
         Forward pass with optional pre‑norm on each block:
         Each block optionally normalizes its input, then applies two linear layers
         (with an optional ReLU), and adds the result back into the residual stream.
         Finally, applies optional layer norm before the output projection.
+        
+        Args:
+            x: Input tensor
+            h_mask: Optional tensor of shape (h,) containing 0.0 or 1.0 values.
+                   Applied to hidden layers in each residual block.
         """
         if self.input_projection is not None:
             # Project inputs to model dimension
@@ -143,7 +153,7 @@ class ResNetStandard(nn.Module):
             current = x
 
         for block in self.blocks:
-            block_out = block(current)
+            block_out = block(current, h_mask=h_mask)
             current = current + block_out
         
         # Apply optional down-ranking layer

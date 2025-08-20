@@ -5,6 +5,7 @@ from typing import Tuple, List, Optional
 
 import math
 import torch
+from scipy.stats import norm
 
 
 class Problem(ABC):
@@ -20,7 +21,7 @@ class Problem(ABC):
         n: int,
         percent_correct: float = 1.0,
         shuffle: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Generate a dataset of size n.
 
@@ -30,9 +31,11 @@ class Problem(ABC):
             shuffle: If True, randomly permute the resulting dataset.
 
         Returns:
-            (x, y):
+            (x, y, centers, center_indices):
               - x: shape (n, d) float32 tensor of features
               - y: shape (n,) int64 tensor of class labels
+              - centers: shape (num_centers, d) float32 tensor of center locations
+              - center_indices: shape (n,) int64 tensor of center index for each sample
         """
         raise NotImplementedError
 
@@ -198,7 +201,7 @@ class SubDirections(Problem):
         n: int,
         percent_correct: float = 1.0,
         shuffle: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         if n <= 0:
             raise ValueError("n must be positive")
         if not (0.0 <= percent_correct <= 1.0):
@@ -312,9 +315,337 @@ class SubDirections(Problem):
                         new_class = other_classes[torch.randint(len(other_classes), (1,), generator=self.generator, device=self.device).item()]
                         y[idx] = new_class
 
+        # Build centers tensor: shape (num_centers, d)
+        # For SubDirections, each center has its subsection block pattern and zeros elsewhere
+        centers = torch.zeros(self.perms, self.d, dtype=torch.float32, device=self.device)
+        for center_idx in range(self.perms):
+            subsection_idx = int(self.center_subsection[center_idx].item())
+            start_idx = subsection_idx * self.sub_d
+            end_idx = start_idx + self.sub_d
+            centers[center_idx, start_idx:end_idx] = self.centers_block_signs[center_idx]
+
+        # Store original center_indices before shuffling
+        original_center_indices = center_indices.clone()
+
         if shuffle:
             perm = torch.randperm(n, generator=self.generator, device=self.device)
             x = x[perm]
             y = y[perm]
+            center_indices = center_indices[perm]
 
-        return x, y
+        return x, y, centers, center_indices
+
+
+class HyperXorNormal(Problem):
+    """
+    This class creates 2^d corners of a d-dimensional hypercube as mean vectors.
+    The label is determined by the parity of the corner's bits.
+
+    The parameter 'percent_correct' (passed to generate_dataset) indicates the 
+    probability that a point from one corner (N(mu_i, I)) is classified 
+    (by nearest-mean rule) as belonging to that same corner, rather than to 
+    one of its d neighbors.
+
+    The parameter 'random_basis' (default False) applies a fixed random orthonormal
+    transformation to mix all dimensions (true + noisy),
+    so that each observed feature is an equal mixture of the underlying dims.
+
+    Summarily: from each corner, sum of misclassification probabilities to
+    its d neighbors = (1 - percent_correct).
+    Hence each corner has p = (1 - percent_correct)/d chance to go to a
+    specific neighbor, leading to c = sqrt(d) * Phi^{-1}(1 - p).
+    """
+
+    def __init__(
+        self,
+        true_d: int,
+        noisy_d: int = 0,
+        random_basis: bool = False,
+        device: torch.device | None = None,
+        generator: Optional[torch.Generator] = None,
+    ) -> None:
+        """
+        Args:
+            true_d: dimension of the underlying hypercube
+            noisy_d: number of extra noise-only dimensions to append
+            random_basis: if True, apply a single random orthonormal rotation
+                          across all d = true_d + noisy_d dimensions
+            device: torch device to use for tensors
+            generator: optional random generator for reproducibility
+        """
+        if true_d <= 0:
+            raise ValueError("true_d must be positive")
+        if noisy_d < 0:
+            raise ValueError("noisy_d must be non-negative")
+
+        self.true_d: int = int(true_d)
+        self.noisy_d: int = int(noisy_d)
+        self.random_basis: bool = random_basis
+        self.device: torch.device = device if device is not None else torch.device("cpu")
+        self.generator: Optional[torch.Generator] = generator
+
+        # Total dimensionality
+        self.d: int = self.true_d + self.noisy_d
+
+        # Build the 2^true_d corner means in {+1,-1}^true_d
+        self.num_corners: int = 1 << self.true_d
+        
+        # corners_true: (2^d_true, true_d)
+        corners_true = torch.tensor(
+            [
+                [(1.0 if (i >> bit) & 1 else -1.0) for bit in range(self.true_d)]
+                for i in range(self.num_corners)
+            ], 
+            dtype=torch.float32, 
+            device=self.device
+        )
+
+        # Compute parity labels (0 or 1)
+        bits = (corners_true > 0).int()
+        parity = bits.sum(dim=1) % 2
+        self.labels: torch.Tensor = parity  # (2^true_d,)
+
+        # Store base corners for later scaling
+        self.base_corners_true: torch.Tensor = corners_true
+
+        # Apply a single random orthonormal basis change across all dims if requested
+        if self.random_basis:
+            A = torch.randn(self.d, self.d, generator=self.generator, device=self.device)
+            Q, _ = torch.linalg.qr(A)
+            # Ensure right-handed coordinate system (det(Q)=+1)
+            if torch.det(Q) < 0:
+                Q[:, 0] *= -1
+            self.basis: Optional[torch.Tensor] = Q
+        else:
+            self.basis: Optional[torch.Tensor] = None
+
+    def generate_dataset(
+        self,
+        n: int,
+        percent_correct: float = 1.0,
+        shuffle: bool = True,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Generate a dataset of size n.
+
+        Args:
+            n: Number of samples to generate.
+            percent_correct: Probability of correct nearest-mean classification (1.0 = all correct).
+            shuffle: If True, randomly permute the resulting dataset.
+
+        Returns:
+            (x, y, centers, center_indices):
+              - x: shape (n, d) float32 tensor of features
+              - y: shape (n,) int64 tensor of class labels (0 or 1)
+              - centers: shape (num_centers, d) float32 tensor of center locations (scaled and rotated corners)
+              - center_indices: shape (n,) int64 tensor of corner index for each sample
+        """
+        if n <= 0:
+            raise ValueError("n must be positive")
+        if not (0.0 <= percent_correct <= 1.0):
+            raise ValueError("percent_correct must be between 0.0 and 1.0")
+
+        # Validate percent_correct
+        misclassification = 1.0 - percent_correct
+        if not 0.0 <= misclassification <= 1.0:
+            raise ValueError("percent_correct must be between 0 and 1.")
+
+        # Probability of misclassifying to a single neighbor
+        p = misclassification / self.true_d
+
+        # Compute c via inverse Gaussian CDF: Φ(c/√d) = 1 - p
+        alpha = 1.0 - p
+        # Handle edge case when alpha = 1.0 (perfect classification)
+        if alpha >= 1.0:
+            # Use a very large but finite value instead of infinity
+            z = 8.0  # Approximately norm.ppf(0.99999999)
+        else:
+            z = norm.ppf(alpha)
+        c = math.sqrt(self.true_d) * z
+
+        # Scale corners to length c in true_d
+        corners_true = self.base_corners_true * (c / math.sqrt(self.true_d))
+
+        # Append zero-valued noisy dims
+        if self.noisy_d > 0:
+            zeros = torch.zeros(self.num_corners, self.noisy_d, device=self.device)
+            corners = torch.cat([corners_true, zeros], dim=1)
+        else:
+            corners = corners_true
+
+        # 1) Pick random corner indices
+        idx = torch.randint(
+            low=0, 
+            high=self.num_corners, 
+            size=(n,), 
+            generator=self.generator, 
+            device=self.device
+        )
+
+        # 2) Gather the chosen means
+        chosen_means = corners[idx]
+
+        # 3) Add standard normal noise
+        noise = torch.randn(n, self.d, generator=self.generator, device=self.device)
+        x = chosen_means + noise
+
+        # 4) Downscale (optional)
+        x /= (2 * z)
+
+        # 5) Rotate if basis transformation is enabled
+        if self.basis is not None:
+            x = x @ self.basis
+
+        # 6) Labels
+        y = self.labels[idx].to(torch.int64)
+
+        # 7) Build centers tensor (scaled and rotated corners)
+        centers = corners.clone()
+        if self.basis is not None:
+            centers = centers @ self.basis
+
+        # Store original indices before shuffling
+        original_idx = idx.clone()
+
+        # 8) Shuffle
+        if shuffle:
+            perm = torch.randperm(n, generator=self.generator, device=self.device)
+            x = x[perm]
+            y = y[perm]
+            idx = idx[perm]
+
+        return x, y, centers, idx
+
+
+class Gaussian(Problem):
+    """
+    Generates random Gaussian data with 2 classes.
+    
+    Features are sampled from N(0, 1) in d dimensions.
+    Class labels are either:
+    - Perfectly balanced (half class 0, half class 1) if perfect_class_balance=True
+    - Randomly assigned if perfect_class_balance=False
+    
+    The percent_correct parameter controls label noise by flipping some labels.
+    """
+    
+    NUM_CLASS = 2
+    STANDARD_DEV = 1.0
+    
+    def __init__(
+        self,
+        d: int,
+        perfect_class_balance: bool = True,
+        device: torch.device | None = None,
+        generator: Optional[torch.Generator] = None,
+    ) -> None:
+        """
+        Args:
+            d: Dimensionality of the feature space
+            perfect_class_balance: If True, generate exactly n//2 samples per class.
+                                 If False, assign classes randomly.
+            device: torch device to use for tensors
+            generator: optional random generator for reproducibility
+        """
+        if d <= 0:
+            raise ValueError("d must be positive")
+            
+        self.d: int = int(d)
+        self.perfect_class_balance: bool = perfect_class_balance
+        self.device: torch.device = device if device is not None else torch.device("cpu")
+        self.generator: Optional[torch.Generator] = generator
+    
+    def generate_dataset(
+        self,
+        n: int,
+        percent_correct: float = 1.0,
+        shuffle: bool = True,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Generate a dataset of size n.
+
+        Args:
+            n: Number of samples to generate.
+            percent_correct: UNUSED - labels are randomly assigned, so there's no 
+                           concept of "correct" labels for this problem.
+            shuffle: If True, randomly permute the resulting dataset.
+
+        Returns:
+            (x, y, centers, center_indices):
+              - x: shape (n, d) float32 tensor of features sampled from N(0, 1)
+              - y: shape (n,) int64 tensor of class labels (0 or 1)
+              - centers: shape (1, d) float32 tensor with single center at origin
+              - center_indices: shape (n,) int64 tensor of zeros (all samples from same center)
+        """
+        if n <= 0:
+            raise ValueError("n must be positive")
+        # Note: percent_correct is ignored for this implementation
+        
+        # Generate features from standard normal distribution
+        x = torch.normal(
+            mean=0.0, 
+            std=self.STANDARD_DEV, 
+            size=(n, self.d),
+            generator=self.generator,
+            device=self.device,
+            dtype=torch.float32
+        )
+        
+        # Generate labels
+        if self.perfect_class_balance:
+            y = self._gen_class_balanced_labels(n)
+        else:
+            y = torch.randint(
+                0, 
+                self.NUM_CLASS, 
+                (n,), 
+                dtype=torch.int64,
+                generator=self.generator,
+                device=self.device
+            )
+        
+        # Build centers tensor: single center at origin
+        centers = torch.zeros(1, self.d, dtype=torch.float32, device=self.device)
+        
+        # All samples come from the same center (index 0)
+        center_indices = torch.zeros(n, dtype=torch.int64, device=self.device)
+        
+        # Shuffle if requested
+        if shuffle:
+            perm = torch.randperm(n, generator=self.generator, device=self.device)
+            x = x[perm]
+            y = y[perm]
+            # center_indices doesn't need to be shuffled since all are 0
+        
+        return x, y, centers, center_indices
+    
+    def _gen_class_balanced_labels(self, n: int) -> torch.Tensor:
+        """Generate perfectly balanced class labels."""
+        class_n = n // self.NUM_CLASS
+        
+        # Create labels for each class
+        labels = []
+        for class_idx in range(self.NUM_CLASS):
+            class_labels = torch.full(
+                (class_n,), 
+                class_idx, 
+                dtype=torch.int64, 
+                device=self.device
+            )
+            labels.append(class_labels)
+        
+        # Handle remainder if n is not perfectly divisible by NUM_CLASS
+        remainder = n % self.NUM_CLASS
+        if remainder > 0:
+            # Randomly assign the remainder samples to classes
+            remaining_classes = torch.randint(
+                0, 
+                self.NUM_CLASS, 
+                (remainder,), 
+                generator=self.generator, 
+                device=self.device,
+                dtype=torch.int64
+            )
+            labels.append(remaining_classes)
+        
+        return torch.cat(labels)
