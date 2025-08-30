@@ -31,14 +31,14 @@ def main():
         lr=1e-3,
         epochs=300,
         weight_decay=0.001,
-        hidden_sizes=[5, 5],
+        hidden_sizes=[20, 20, 20],
         is_weight_tracker=False,
         l1_final=None,
-        # d_model=10
+        d_model=5
     )
 
     # Generate validation set with class-balanced sampling
-    x_val, y_val, _, _ = problem.generate_dataset(
+    x_val, y_val, _ = problem.generate_dataset(
         model_config.n_val, 
         shuffle=True, 
         percent_correct=0.8

@@ -71,16 +71,14 @@ def test_class_balancing_within_subsections():
 
 def test_generate_shapes_and_types():
     sd = SubDirections(d=6, sub_d=3, perms=6, num_class=2, generator=make_gen(1))
-    x, y, centers, center_indices = sd.generate_dataset(n=12, shuffle=False)
+    x, y, center_indices = sd.generate_dataset(n=12, shuffle=False)
     assert isinstance(x, torch.Tensor) and isinstance(y, torch.Tensor)
-    assert isinstance(centers, torch.Tensor) and isinstance(center_indices, torch.Tensor)
+    assert isinstance(center_indices, torch.Tensor)
     assert x.dtype == torch.float32
     assert y.dtype == torch.int64
-    assert centers.dtype == torch.float32
     assert center_indices.dtype == torch.int64
     assert x.shape == (12, 6)
     assert y.shape == (12,)
-    assert centers.shape == (6, 6)  # 6 centers, 6 dimensions
     assert center_indices.shape == (12,)  # n samples
     
     # center_indices should be valid indices
@@ -95,7 +93,7 @@ def test_center_balanced_sampling_counts():
     
     # Test case 1: n divisible by perms - each center gets exactly n//perms samples
     n = 120  # 120 = 12 * 10, so each center gets exactly 10 samples
-    x, y, _, _ = sd.generate_dataset(n=n, shuffle=False)
+    x, y, _ = sd.generate_dataset(n=n, shuffle=False)
     
     # Since sampling is center-balanced, we can verify the structure
     # We know each center gets exactly n//perms = 10 samples
@@ -104,7 +102,7 @@ def test_center_balanced_sampling_counts():
     
     # Test case 2: n not divisible by perms - some centers get +1 sample
     n2 = 125  # 125 = 12*10 + 5, so 5 centers get 11 samples, 7 centers get 10 samples
-    x2, y2, _, _ = sd.generate_dataset(n=n2, shuffle=False)
+    x2, y2, _ = sd.generate_dataset(n=n2, shuffle=False)
     base2 = n2 // perms  # 10
     remainder2 = n2 % perms  # 5
     
@@ -143,11 +141,11 @@ def test_center_balance_with_incorrect_samples():
     assert remainder_incorrect == 2
     
     # Generate dataset
-    x, y, _, _ = sd.generate_dataset(n=n, percent_correct=percent_correct, shuffle=False)
+    x, y, _ = sd.generate_dataset(n=n, percent_correct=percent_correct, shuffle=False)
     
     # Generate perfect labels for comparison
     sd_perfect = SubDirections(d=d, sub_d=sub_d, perms=perms, num_class=num_class, generator=make_gen(42))
-    x_perfect, y_perfect, _, _ = sd_perfect.generate_dataset(n=n, percent_correct=1.0, shuffle=False)
+    x_perfect, y_perfect, _ = sd_perfect.generate_dataset(n=n, percent_correct=1.0, shuffle=False)
     
     # Verify exact number of incorrect labels
     different_labels = torch.sum(y != y_perfect).item()
@@ -159,11 +157,11 @@ def test_center_balance_with_incorrect_samples():
 def test_determinism_with_generator():
     gen = make_gen(42)
     sd1 = SubDirections(d=6, sub_d=3, perms=12, num_class=2, generator=gen)
-    x1, y1, _, _ = sd1.generate_dataset(n=24, shuffle=False)
+    x1, y1, _ = sd1.generate_dataset(n=24, shuffle=False)
 
     gen2 = make_gen(42)
     sd2 = SubDirections(d=6, sub_d=3, perms=12, num_class=2, generator=gen2)
-    x2, y2, _, _ = sd2.generate_dataset(n=24, shuffle=False)
+    x2, y2, _ = sd2.generate_dataset(n=24, shuffle=False)
 
     assert torch.allclose(x1, x2)
     assert torch.equal(y1, y2)
@@ -174,7 +172,7 @@ def test_sample_generation_logic():
     d, sub_d, perms = 8, 2, 8
     sd = SubDirections(d=d, sub_d=sub_d, perms=perms, num_class=2, generator=make_gen(0), sigma=1e-6)
     n = 80  # 80 = 8*10, so each center gets exactly 10 samples
-    x, y, _, _ = sd.generate_dataset(n=n, shuffle=False)
+    x, y, _ = sd.generate_dataset(n=n, shuffle=False)
 
     # With center-balanced sampling, we know the structure:
     # Each center gets exactly n//perms = 10 samples
@@ -218,11 +216,11 @@ def test_percent_correct_functionality():
     # Test with 80% correct
     n = 100
     percent_correct = 0.8
-    x, y, _, _ = sd.generate_dataset(n=n, percent_correct=percent_correct, shuffle=False)
+    x, y, _ = sd.generate_dataset(n=n, percent_correct=percent_correct, shuffle=False)
     
     # Generate the same dataset with 100% correct to compare
     sd_perfect = SubDirections(d=d, sub_d=sub_d, perms=perms, num_class=num_class, generator=make_gen(42))
-    x_perfect, y_perfect, _, _ = sd_perfect.generate_dataset(n=n, percent_correct=1.0, shuffle=False)
+    x_perfect, y_perfect, _ = sd_perfect.generate_dataset(n=n, percent_correct=1.0, shuffle=False)
     
     # Count how many labels are different
     different_labels = torch.sum(y != y_perfect).item()
@@ -242,11 +240,11 @@ def test_percent_correct_balance_across_centers():
     
     n = 90  # Divisible by perms (9) for exact center balance: each center gets 10 samples
     percent_correct = 0.7  # 30% incorrect = 27 incorrect samples
-    x, y, _, _ = sd.generate_dataset(n=n, percent_correct=percent_correct, shuffle=False)
+    x, y, _ = sd.generate_dataset(n=n, percent_correct=percent_correct, shuffle=False)
     
     # Generate perfect labels for comparison
     sd_perfect = SubDirections(d=d, sub_d=sub_d, perms=perms, num_class=num_class, generator=make_gen(123))
-    x_perfect, y_perfect, _, _ = sd_perfect.generate_dataset(n=n, percent_correct=1.0, shuffle=False)
+    x_perfect, y_perfect, _ = sd_perfect.generate_dataset(n=n, percent_correct=1.0, shuffle=False)
     
     # Count how many labels are different
     different_labels = torch.sum(y != y_perfect).item()
@@ -276,8 +274,8 @@ def test_percent_correct_edge_cases():
     sd = SubDirections(d=d, sub_d=sub_d, perms=perms, num_class=num_class, generator=make_gen(99))
     
     # Test 100% correct (default)
-    x1, y1, _, _ = sd.generate_dataset(n=20, percent_correct=1.0)
-    x2, y2, _, _ = sd.generate_dataset(n=20, percent_correct=1.0)
+    x1, y1, _ = sd.generate_dataset(n=20, percent_correct=1.0)
+    x2, y2, _ = sd.generate_dataset(n=20, percent_correct=1.0)
     # Should be deterministic with same generator state
     # (Note: generator state advances, so we can't directly compare)
     
@@ -285,8 +283,8 @@ def test_percent_correct_edge_cases():
     sd_zero = SubDirections(d=d, sub_d=sub_d, perms=perms, num_class=num_class, generator=make_gen(99))
     sd_perfect = SubDirections(d=d, sub_d=sub_d, perms=perms, num_class=num_class, generator=make_gen(99))
     
-    x_zero, y_zero, _, _ = sd_zero.generate_dataset(n=20, percent_correct=0.0, shuffle=False)
-    x_perf, y_perf, _, _ = sd_perfect.generate_dataset(n=20, percent_correct=1.0, shuffle=False)
+    x_zero, y_zero, _ = sd_zero.generate_dataset(n=20, percent_correct=0.0, shuffle=False)
+    x_perf, y_perf, _ = sd_perfect.generate_dataset(n=20, percent_correct=1.0, shuffle=False)
     
     # All labels should be different when percent_correct=0
     different_count = torch.sum(y_zero != y_perf).item()
@@ -319,7 +317,7 @@ def test_subdirections_centers_and_indices():
     d, sub_d, perms, num_class = 8, 2, 8, 2
     sd = SubDirections(d=d, sub_d=sub_d, perms=perms, num_class=num_class, generator=make_gen(42))
     
-    x, y, centers, center_indices = sd.generate_dataset(n=16, shuffle=False)
+    x, y, center_indices = sd.generate_dataset(n=16, shuffle=False)
     
     # Test centers structure
     assert centers.shape == (8, 8)  # 8 centers, 8 dimensions
@@ -371,7 +369,7 @@ def test_gaussian_centers():
     from src.learned_dropout.data_generator import Gaussian
     
     gauss = Gaussian(d=5)
-    x, y, centers, center_indices = gauss.generate_dataset(n=10, shuffle=False)
+    x, y, center_indices = gauss.generate_dataset(n=10, shuffle=False)
     
     # Gaussian should have only one center at the origin
     assert centers.shape == (1, 5)

@@ -13,38 +13,40 @@ from src import dataset_creator
 from src.learned_dropout.config import EmpiricalConfig
 
 
-def _generate_training_sets(problem, c: EmpiricalConfig, device: torch.device) -> List[Tuple[Tensor, Tensor]]:
+def _generate_training_sets(problem, c: EmpiricalConfig, device: torch.device, percent_correct: float) -> List[Tuple[Tensor, Tensor]]:
     # Generate all training sets once, outside the loops
     training_sets = []
     for _ in range(c.num_runs):
-        x_train, y_train, _, _ = problem.generate_dataset(c.n, shuffle=True)
+        x_train, y_train, _ = problem.generate_dataset(c.n, shuffle=True, percent_correct=percent_correct)
         x_train, y_train = x_train.to(device), y_train.to(device)
         training_sets.append((x_train, y_train))
     return training_sets
 
-def _build_models(build_model_fn, c: EmpiricalConfig, device: torch.device) -> List[List[nn.Module]]:
+def _build_models(resnet_builder, c: EmpiricalConfig, device: torch.device) -> List[List[nn.Module]]:
     # A [num_h, num_runs] List of Lists of models
     num_h = len(c.h_range)
     h_max = max(c.h_range)
     model_lists = []
+
     for _ in range(num_h):
         models = []
         for _ in range(c.num_runs):
-            model = build_model_fn(c, h_max, device)
+            model = resnet_builder.build(c, h_max, device)
             models.append(model)
         model_lists.append(models)
     return model_lists
 
 def run_experiment_parallel(
-    build_model_fn,
+    resnet_builder,
     device: torch.device,
-    validation_set: Tuple[Tensor, Tensor],
+    validation_set: Tuple[Tensor, Tensor, Tensor],
     problem,
-    c: EmpiricalConfig
+    c: EmpiricalConfig,
+    percent_correct: float
 ) -> tuple[list, list, list, list]:
-    x_val, y_val = validation_set
-    training_sets = _generate_training_sets(problem, c, device)
-    model_lists = _build_models(build_model_fn, c, device)
+    x_val, y_val, center_indices_val = validation_set
+    training_sets = _generate_training_sets(problem, c, device, percent_correct)
+    model_lists = _build_models(resnet_builder, c, device)
     
     num_h = len(c.h_range)
     num_runs = c.num_runs
@@ -106,6 +108,10 @@ def run_experiment_parallel(
         # Generate per-run permutations
         perms = [torch.randperm(n, device=device) for _ in range(num_runs)]
         
+        # Track epoch losses for reporting
+        epoch_loss_sum_per_model = torch.zeros(num_h * num_runs, device=device)
+        epoch_sample_count = 0
+        
         for b in range(0, n, batch_size):
             m = min(batch_size, n - b)
             # Get next batch indices for each run and prepare tensors
@@ -114,11 +120,24 @@ def run_experiment_parallel(
             x, y = stack_and_broadcast_runs(x_list, y_list, num_h)
             grads, losses = vectorized_models(params, buffers, x, y, h_mask)
 
+            # Accumulate losses for epoch reporting
+            epoch_loss_sum_per_model += losses * m
+            epoch_sample_count += m
+
             # Set gradients on the optimizer-owned Parameters
             for name, param in params.items():
                 param.grad = grads[name]
             opt.step()
             opt.zero_grad(set_to_none=True)
+        
+        # Compute and report average training loss per h for this epoch
+        epoch_loss_mean_per_model = epoch_loss_sum_per_model / epoch_sample_count
+        epoch_loss_mean_per_h = epoch_loss_mean_per_model.view(num_h, num_runs).mean(dim=1)
+        
+        print(f"Epoch {epoch + 1:3d}/{c.epochs}: ", end="")
+        for h_idx, h in enumerate(c.h_range):
+            print(f"h={h:2d}: {epoch_loss_mean_per_h[h_idx]:.4f}", end="  ")
+        print()
 
     # Evaluation
     num_models = num_h * num_runs
@@ -183,9 +202,22 @@ def run_experiment_parallel(
     val_loss_mean_per_h = val_loss_mean_per_model.view(num_h, num_runs).mean(dim=1)
     val_acc_mean_per_h = val_acc_mean_per_model.view(num_h, num_runs).mean(dim=1)
 
-    # Variance of validation logits across runs, then mean across samples
-    var_across_runs = val_logits_all.var(dim=1, unbiased=False)  # [num_h, n_val]
-    mean_var_per_h = var_across_runs.mean(dim=1)
+    # Variance of validation logits across runs, grouped by center, then mean across centers and samples
+    unique_centers = torch.unique(center_indices_val)
+    num_centers = len(unique_centers)
+    
+    # Group by center, compute variance across runs for entire center, then mean across centers
+    center_variances = []
+    for center_idx in range(num_centers):
+        center_mask = (center_indices_val == center_idx)
+        center_logits = val_logits_all[:, :, center_mask]  # [num_h, num_runs, num_samples_in_center]
+        # Compute variance across runs for all samples in this center simultaneously
+        center_var = center_logits.var(dim=1, unbiased=False)  # [num_h, num_samples_in_center]
+        # Mean across samples in this center
+        center_variances.append(center_var.mean(dim=1))  # [num_h]
+    
+    # Stack and mean across centers: [num_h, num_centers] -> [num_h]  
+    mean_var_per_h = torch.stack(center_variances, dim=1).mean(dim=1)
 
     mean_vars = [v.item() for v in mean_var_per_h]
     mean_train_losses = [v.item() for v in train_loss_mean_per_h]
@@ -199,15 +231,16 @@ def run_experiment_parallel(
 
 
 def run_experiment(
-    build_model_fn,
+    resnet_builder,
     device: torch.device,
-    validation_set: Tuple[Tensor, Tensor],
+    validation_set: Tuple[Tensor, Tensor, Tensor],
     problem,
-    c: EmpiricalConfig
+    c: EmpiricalConfig,
+    percent_correct: float
 ) -> tuple[list, list, list, list]:
     """Returns mean variances of validation logits, mean training losses, mean validation accuracies, and mean validation losses for each hidden size h."""
-    x_val, y_val = validation_set
-    training_sets = _generate_training_sets(problem, c, device)
+    x_val, y_val, center_indices_val = validation_set
+    training_sets = _generate_training_sets(problem, c, device, percent_correct)
     
     mean_vars = []
     mean_train_losses = []
@@ -227,7 +260,7 @@ def run_experiment(
             train_loader = DataLoader(train_dataset, batch_size=c.batch_size, shuffle=True)
 
             # build model with current hidden parameter
-            model = build_model_fn(c, h, device)
+            model = resnet_builder.build(c, h, device)
 
             # loss and optimizer
             criterion = nn.BCEWithLogitsLoss()
@@ -271,125 +304,17 @@ def run_experiment(
             run_val_accuracies.append(val_accuracy)
             run_val_losses.append(val_loss)
 
-        # compute variance across runs for each sample, then mean
+        # compute variance across runs for each center, then mean across centers and samples
         preds_stack = torch.stack(run_preds, dim=0)  # [num_runs, n_val]
-        var_z = preds_stack.var(dim=0, unbiased=False)
-        mean_var = var_z.mean().item()
-        mean_vars.append(mean_var)
+        unique_centers = torch.unique(center_indices_val)
         
-        # compute mean training loss across runs
-        mean_train_loss = sum(run_train_losses) / len(run_train_losses)
-        mean_train_losses.append(mean_train_loss)
-        
-        # compute mean validation accuracy across runs
-        mean_val_accuracy = sum(run_val_accuracies) / len(run_val_accuracies)
-        mean_val_accuracies.append(mean_val_accuracy)
-        
-        # compute mean validation loss across runs
-        mean_val_loss = sum(run_val_losses) / len(run_val_losses)
-        mean_val_losses.append(mean_val_loss)
-        
-        print(f"h = {h:2d} | mean variance = {mean_var:.4e} | mean train loss = {mean_train_loss:.4f} | mean val acc = {mean_val_accuracy:.4f} | mean val loss = {mean_val_loss:.4f}")
-
-    return mean_vars, mean_train_losses, mean_val_accuracies, mean_val_losses
-
-
-def run_experiment_h_mask(
-    build_model_fn,
-    device: torch.device,
-    validation_set: Tuple[Tensor, Tensor],
-    problem,
-    c: EmpiricalConfig
-) -> tuple[list, list, list, list]:
-    """Returns mean variances of validation logits, mean training losses, mean validation accuracies, and mean validation losses for each hidden size h.
-    
-    Uses h_mask approach: builds models with max(h_range) and applies masks to simulate smaller hidden dimensions.
-    """
-    x_val, y_val = validation_set
-    training_sets = _generate_training_sets(problem, c, device)  
-    # Build all models upfront with max_h
-    model_lists = _build_models(build_model_fn, c, device)
-    # Get maximum hidden size for masks
-    max_h = max(c.h_range)
-    
-    mean_vars = []
-    mean_train_losses = []
-    mean_val_accuracies = []
-    mean_val_losses = []
-    
-    n = c.n
-    perms_per_run_per_epoch = [[torch.randperm(n, device=device) for _ in range(c.num_runs)] for _ in range(c.epochs)]
-    
-    # Training
-    for h_idx, h in enumerate(c.h_range):
-        # Create h_mask: first h elements are 1.0, rest are 0.0
-        h_mask = torch.zeros(max_h, device=device)
-        h_mask[:h] = 1.0
-        
-        run_preds = []
-        run_train_losses = []
-        run_val_accuracies = []
-        run_val_losses = []
-        
-        for run_idx in range(c.num_runs):
-            # Use the pre-generated training data for this run
-            x_train, y_train = training_sets[run_idx]
-
-            # Use pre-built model for this run
-            model = model_lists[h_idx][run_idx]
-
-            # loss and optimizer
-            criterion = nn.BCEWithLogitsLoss()
-            optimizer = optim.AdamW(model.parameters(), lr=c.lr, weight_decay=c.weight_decay)
-
-            # Training loop
-            model.train()
-            for epoch in range(c.epochs):
-                perm = perms_per_run_per_epoch[epoch][run_idx]
-                for b in range(0, n, c.batch_size):
-                    m = min(c.batch_size, n - b)
-                    idx = perm[b:b+m]
-                    batch_x = x_train.index_select(0, idx)
-                    batch_y = y_train.index_select(0, idx)
-                    optimizer.zero_grad()
-                    # Apply h_mask during forward pass
-                    logits = model(batch_x, h_mask=h_mask).squeeze()
-                    loss = criterion(logits, batch_y.float())
-                    
-                    # # Add L1 regularization if specified
-                    # l1_reg_loss = model.get_l1_regularization_loss()
-                    # total_loss = loss + l1_reg_loss
-                    
-                    loss.backward()
-                    optimizer.step()
-
-            # compute total training loss on whole dataset after training
-            model.eval()
-            with torch.no_grad():
-                total_logits = model(x_train, h_mask=h_mask).squeeze()
-                total_train_loss = criterion(total_logits, y_train.float()).item()
-            
-            # store total training loss for this run
-            run_train_losses.append(total_train_loss)
-
-            # validation predictions and metrics
-            model.eval()
-            with torch.no_grad():
-                z_val = model(x_val, h_mask=h_mask).squeeze()  # [n_val]
-                val_probs = torch.sigmoid(z_val)
-                val_predictions = (val_probs > 0.5).float()
-                val_accuracy = (val_predictions == y_val).float().mean().item()
-                # Compute validation loss
-                criterion = nn.BCEWithLogitsLoss()
-                val_loss = criterion(z_val, y_val.float()).item()
-            run_preds.append(z_val)
-            run_val_accuracies.append(val_accuracy)
-            run_val_losses.append(val_loss)
-
-        # compute variance across runs for each sample, then mean
-        preds_stack = torch.stack(run_preds, dim=0)  # [num_runs, n_val]
-        var_z = preds_stack.var(dim=0, unbiased=False)
-        mean_var = var_z.mean().item()
+        center_vars = []
+        for center_idx in unique_centers:
+            center_mask = (center_indices_val == center_idx)
+            center_preds = preds_stack[:, center_mask]  # [num_runs, num_samples_in_center]
+            center_var = center_preds.var(dim=0, unbiased=False)  # [num_samples_in_center]
+            center_vars.append(center_var.mean())  # Mean variance across samples in this center
+        mean_var = torch.stack(center_vars).mean().item()  # Mean across centers
         mean_vars.append(mean_var)
         
         # compute mean training loss across runs

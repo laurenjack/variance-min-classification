@@ -20,7 +20,7 @@ def train_once(device, problem, validation_set, c: ModelConfig, percent_correct:
     print(f"Starting training with ResNet: d={c.d}, d_model={c.d_model}, hidden_sizes={c.hidden_sizes}, layer_norm={c.layer_norm}")
     
     # Generate training data
-    x_train, y_train, _, _ = problem.generate_dataset(c.n, shuffle=True, percent_correct=percent_correct)
+    x_train, y_train, _ = problem.generate_dataset(c.n, shuffle=True, percent_correct=percent_correct)
     x_train, y_train = x_train.to(device), y_train.to(device)
     
     # Create data loader for batch training
@@ -42,7 +42,7 @@ def train_once(device, problem, validation_set, c: ModelConfig, percent_correct:
     optimizer = optim.AdamW(model.parameters(), lr=c.lr, weight_decay=c.weight_decay)
     
     # Get validation set
-    x_val, y_val = validation_set
+    x_val, y_val, center_indices = validation_set
     
     print("Starting training...")
     
