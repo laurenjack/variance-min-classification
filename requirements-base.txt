@@ -1,0 +1,10 @@
+numpy>=1.26,<2.0
+matplotlib>=3.5
+scipy>=1.10
+tqdm>=4.66
+datasets>=2.19
+transformers>=4.41
+tokenizers>=0.15.2
+safetensors>=0.4.2
+
+pytest>=7.0.0 

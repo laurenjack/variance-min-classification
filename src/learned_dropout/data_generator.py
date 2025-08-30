@@ -15,13 +15,24 @@ class Problem(ABC):
     Implementations must return features and labels as tensors.
     """
 
+    @property
+    @abstractmethod
+    def d(self) -> int:
+        """
+        The total dimensionality of the feature space.
+        
+        Returns:
+            int: Total number of dimensions in generated features
+        """
+        raise NotImplementedError
+
     @abstractmethod
     def generate_dataset(
         self,
         n: int,
         percent_correct: float = 1.0,
         shuffle: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Generate a dataset of size n.
 
@@ -31,10 +42,9 @@ class Problem(ABC):
             shuffle: If True, randomly permute the resulting dataset.
 
         Returns:
-            (x, y, centers, center_indices):
+            (x, y, center_indices):
               - x: shape (n, d) float32 tensor of features
               - y: shape (n,) int64 tensor of class labels
-              - centers: shape (num_centers, d) float32 tensor of center locations
               - center_indices: shape (n,) int64 tensor of center index for each sample
         """
         raise NotImplementedError
@@ -44,7 +54,7 @@ class SubDirections(Problem):
     """
     Subsection-based center generator in R^d with center-balanced sampling.
 
-    - d is partitioned into S = d // sub_d contiguous subsections of length sub_d.
+    - true_d is partitioned into S = true_d // sub_d contiguous subsections of length sub_d.
       subsection s covers indices [s*sub_d, (s+1)*sub_d).
     - There are 2^sub_d possible sign patterns per subsection.
     - perms centers are assigned round-robin to subsections (0,1,...,S-1, 0,1,...),
@@ -59,50 +69,62 @@ class SubDirections(Problem):
       All other subsection blocks use independently sampled random sign patterns, 
       drawn uniformly with replacement from the subsection's patterns EXCLUDING 
       that subsection's center patterns. If `sigma` was provided at construction 
-      (and > 0), Gaussian noise N(0, sigma^2 I) is added over R^d. The sample's 
-      label is the center's class. Label noise can be introduced via percent_correct,
-      with incorrect samples distributed proportionally across centers.
+      (and > 0), Gaussian noise N(0, sigma^2 I) is added over R^d where d = true_d + noisy_d. 
+      The sample's label is the center's class. Label noise can be introduced via 
+      percent_correct, with incorrect samples distributed proportionally across centers.
+    - noisy_d additional dimensions are appended with random {-1, +1} values and standard Gaussian noise.
+    - random_basis applies a fixed random orthonormal transformation across all d dimensions.
 
     Constraints:
-    - d >= sub_d > 0
-    - d % sub_d == 0
-    - ceil(perms / (d // sub_d)) < 2^sub_d  (leave at least one non-center pattern)
+    - true_d >= sub_d > 0
+    - true_d % sub_d == 0
+    - ceil(perms / (true_d // sub_d)) < 2^sub_d  (leave at least one non-center pattern)
     - sigma: optional; if provided must be >= 0
+    - noisy_d: optional; if provided must be >= 0
     """
 
     def __init__(
         self,
-        d: int,
+        true_d: int,
         sub_d: int,
         perms: int,
         num_class: int,
         sigma: Optional[float] = None,
+        noisy_d: int = 0,
+        random_basis: bool = False,
         device: torch.device | None = None,
         generator: Optional[torch.Generator] = None,
     ) -> None:
         if sub_d <= 0:
             raise ValueError("sub_d must be positive")
-        if d < sub_d:
-            raise ValueError("d must be >= sub_d")
-        if d % sub_d != 0:
-            raise ValueError("d % sub_d must be zero")
+        if true_d < sub_d:
+            raise ValueError("true_d must be >= sub_d")
+        if true_d % sub_d != 0:
+            raise ValueError("true_d % sub_d must be zero")
         if perms <= 0:
             raise ValueError("perms must be positive")
         if num_class <= 0:
             raise ValueError("num_class must be positive")
         if sigma is not None and sigma < 0:
             raise ValueError("sigma must be >= 0 if provided")
+        if noisy_d < 0:
+            raise ValueError("noisy_d must be non-negative")
 
-        self.d: int = int(d)
+        self.true_d: int = int(true_d)  # The true dimensionality for subsection logic
         self.sub_d: int = int(sub_d)
         self.perms: int = int(perms)
         self.num_class: int = int(num_class)
         self.sigma: Optional[float] = float(sigma) if sigma is not None else None
+        self.noisy_d: int = int(noisy_d)
+        self.random_basis: bool = random_basis
         self.device: torch.device = device if device is not None else torch.device("cpu")
         self.generator: Optional[torch.Generator] = generator
+        
+        # Total dimensionality
+        self._d: int = self.true_d + self.noisy_d
 
-        # Subsection structure
-        self.num_subsections: int = self.d // self.sub_d
+        # Subsection structure (based on true_d only)
+        self.num_subsections: int = self.true_d // self.sub_d
         self.subsection_ranges: List[tuple[int, int]] = [
             (s * self.sub_d, (s + 1) * self.sub_d) for s in range(self.num_subsections)
         ]
@@ -186,6 +208,27 @@ class SubDirections(Problem):
             if allowed.numel() == 0:
                 raise ValueError(f"No non-center patterns left to sample in subsection {s}")
             self._allowed_noncenter_pattern_indices.append(allowed)
+        
+        # Apply a single random orthonormal basis change across all dims if requested
+        if self.random_basis:
+            A = torch.randn(self._d, self._d, generator=self.generator, device=self.device)
+            Q, _ = torch.linalg.qr(A)
+            # Ensure right-handed coordinate system (det(Q)=+1)
+            if torch.det(Q) < 0:
+                Q[:, 0] *= -1
+            self.basis: Optional[torch.Tensor] = Q
+        else:
+            self.basis: Optional[torch.Tensor] = None
+
+    @property
+    def d(self) -> int:
+        """
+        The total dimensionality of the feature space.
+        
+        Returns:
+            int: Total number of dimensions in generated features
+        """
+        return self._d
 
     def _enumerate_sign_patterns(self, k: int) -> torch.Tensor:
         """Return tensor of shape (2^k, k) with all +/-1 sign patterns."""
@@ -201,7 +244,7 @@ class SubDirections(Problem):
         n: int,
         percent_correct: float = 1.0,
         shuffle: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if n <= 0:
             raise ValueError("n must be positive")
         if not (0.0 <= percent_correct <= 1.0):
@@ -249,14 +292,30 @@ class SubDirections(Problem):
 
             blocks.append(block_patterns)
 
-        means = torch.cat(blocks, dim=1)  # (n, d)
+        means_true = torch.cat(blocks, dim=1)  # (n, true_d)
+        
+        # Append random {-1, +1} valued noisy dims
+        if self.noisy_d > 0:
+            noisy_signs = torch.randint(
+                0, 2, (n, self.noisy_d), 
+                generator=self.generator, 
+                device=self.device,
+                dtype=torch.float32
+            ) * 2.0 - 1.0  # Convert {0,1} to {-1,+1}
+            means = torch.cat([means_true, noisy_signs], dim=1)  # (n, d)
+        else:
+            means = means_true
 
         # Add Gaussian noise if configured
         if self.sigma is not None:
-            noise = torch.randn(n, self.d, generator=self.generator, device=self.device, dtype=torch.float32) * float(self.sigma)
+            noise = torch.randn(n, self._d, generator=self.generator, device=self.device, dtype=torch.float32) * float(self.sigma)
             x = means + noise
         else:
             x = means.clone()
+        
+        # Apply random basis transformation if enabled
+        if self.basis is not None:
+            x = x @ self.basis
 
         # Labels are the class of the chosen center
         y = self.center_to_class[center_indices].to(torch.int64)
@@ -315,25 +374,13 @@ class SubDirections(Problem):
                         new_class = other_classes[torch.randint(len(other_classes), (1,), generator=self.generator, device=self.device).item()]
                         y[idx] = new_class
 
-        # Build centers tensor: shape (num_centers, d)
-        # For SubDirections, each center has its subsection block pattern and zeros elsewhere
-        centers = torch.zeros(self.perms, self.d, dtype=torch.float32, device=self.device)
-        for center_idx in range(self.perms):
-            subsection_idx = int(self.center_subsection[center_idx].item())
-            start_idx = subsection_idx * self.sub_d
-            end_idx = start_idx + self.sub_d
-            centers[center_idx, start_idx:end_idx] = self.centers_block_signs[center_idx]
-
-        # Store original center_indices before shuffling
-        original_center_indices = center_indices.clone()
-
         if shuffle:
             perm = torch.randperm(n, generator=self.generator, device=self.device)
             x = x[perm]
             y = y[perm]
             center_indices = center_indices[perm]
 
-        return x, y, centers, center_indices
+        return x, y, center_indices
 
 
 class HyperXorNormal(Problem):
@@ -385,7 +432,7 @@ class HyperXorNormal(Problem):
         self.generator: Optional[torch.Generator] = generator
 
         # Total dimensionality
-        self.d: int = self.true_d + self.noisy_d
+        self._d: int = self.true_d + self.noisy_d
 
         # Build the 2^true_d corner means in {+1,-1}^true_d
         self.num_corners: int = 1 << self.true_d
@@ -419,6 +466,16 @@ class HyperXorNormal(Problem):
         else:
             self.basis: Optional[torch.Tensor] = None
 
+    @property
+    def d(self) -> int:
+        """
+        The total dimensionality of the feature space.
+        
+        Returns:
+            int: Total number of dimensions in generated features
+        """
+        return self._d
+
     def generate_dataset(
         self,
         n: int,
@@ -434,10 +491,9 @@ class HyperXorNormal(Problem):
             shuffle: If True, randomly permute the resulting dataset.
 
         Returns:
-            (x, y, centers, center_indices):
+            (x, y, center_indices):
               - x: shape (n, d) float32 tensor of features
               - y: shape (n,) int64 tensor of class labels (0 or 1)
-              - centers: shape (num_centers, d) float32 tensor of center locations (scaled and rotated corners)
               - center_indices: shape (n,) int64 tensor of corner index for each sample
         """
         if n <= 0:
@@ -486,7 +542,7 @@ class HyperXorNormal(Problem):
         chosen_means = corners[idx]
 
         # 3) Add standard normal noise
-        noise = torch.randn(n, self.d, generator=self.generator, device=self.device)
+        noise = torch.randn(n, self._d, generator=self.generator, device=self.device)
         x = chosen_means + noise
 
         # 4) Downscale (optional)
@@ -499,22 +555,14 @@ class HyperXorNormal(Problem):
         # 6) Labels
         y = self.labels[idx].to(torch.int64)
 
-        # 7) Build centers tensor (scaled and rotated corners)
-        centers = corners.clone()
-        if self.basis is not None:
-            centers = centers @ self.basis
-
-        # Store original indices before shuffling
-        original_idx = idx.clone()
-
-        # 8) Shuffle
+        # 7) Shuffle
         if shuffle:
             perm = torch.randperm(n, generator=self.generator, device=self.device)
             x = x[perm]
             y = y[perm]
             idx = idx[perm]
 
-        return x, y, centers, idx
+        return x, y, idx
 
 
 class Gaussian(Problem):
@@ -550,10 +598,20 @@ class Gaussian(Problem):
         if d <= 0:
             raise ValueError("d must be positive")
             
-        self.d: int = int(d)
+        self._d: int = int(d)
         self.perfect_class_balance: bool = perfect_class_balance
         self.device: torch.device = device if device is not None else torch.device("cpu")
         self.generator: Optional[torch.Generator] = generator
+    
+    @property
+    def d(self) -> int:
+        """
+        The total dimensionality of the feature space.
+        
+        Returns:
+            int: Total number of dimensions in generated features
+        """
+        return self._d
     
     def generate_dataset(
         self,
@@ -571,10 +629,9 @@ class Gaussian(Problem):
             shuffle: If True, randomly permute the resulting dataset.
 
         Returns:
-            (x, y, centers, center_indices):
+            (x, y, center_indices):
               - x: shape (n, d) float32 tensor of features sampled from N(0, 1)
               - y: shape (n,) int64 tensor of class labels (0 or 1)
-              - centers: shape (1, d) float32 tensor with single center at origin
               - center_indices: shape (n,) int64 tensor of zeros (all samples from same center)
         """
         if n <= 0:
@@ -585,7 +642,7 @@ class Gaussian(Problem):
         x = torch.normal(
             mean=0.0, 
             std=self.STANDARD_DEV, 
-            size=(n, self.d),
+            size=(n, self._d),
             generator=self.generator,
             device=self.device,
             dtype=torch.float32
@@ -604,9 +661,6 @@ class Gaussian(Problem):
                 device=self.device
             )
         
-        # Build centers tensor: single center at origin
-        centers = torch.zeros(1, self.d, dtype=torch.float32, device=self.device)
-        
         # All samples come from the same center (index 0)
         center_indices = torch.zeros(n, dtype=torch.int64, device=self.device)
         
@@ -617,7 +671,7 @@ class Gaussian(Problem):
             y = y[perm]
             # center_indices doesn't need to be shuffled since all are 0
         
-        return x, y, centers, center_indices
+        return x, y, center_indices
     
     def _gen_class_balanced_labels(self, n: int) -> torch.Tensor:
         """Generate perfectly balanced class labels."""

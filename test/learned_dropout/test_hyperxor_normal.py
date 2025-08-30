@@ -21,7 +21,7 @@ class TestHyperXorNormal:
         assert problem.noisy_d == 1
 
         # Generate a small dataset
-        x, y, centers, center_indices = problem.generate_dataset(n=8, percent_correct=0.8, shuffle=True)
+        x, y, center_indices = problem.generate_dataset(n=8, percent_correct=0.8, shuffle=True)
         
         assert x.shape == (8, 3)  # n=8, d=3
         assert y.shape == (8,)
@@ -51,7 +51,7 @@ class TestHyperXorNormal:
         assert problem.num_corners == 8  # 2^3
         assert problem.basis is not None  # random_basis=True
         
-        x, y, centers, center_indices = problem.generate_dataset(n=16, percent_correct=1.0)
+        x, y, center_indices = problem.generate_dataset(n=16, percent_correct=1.0)
         
         assert x.shape == (16, 3)
         assert y.shape == (16,)
@@ -67,8 +67,8 @@ class TestHyperXorNormal:
         problem = HyperXorNormal(true_d=2)
         
         # Generate datasets with different percent_correct values
-        x_perfect, y_perfect, _, _ = problem.generate_dataset(n=100, percent_correct=1.0)
-        x_imperfect, y_imperfect, _, _ = problem.generate_dataset(n=100, percent_correct=0.6)
+        x_perfect, y_perfect, _ = problem.generate_dataset(n=100, percent_correct=1.0)
+        x_imperfect, y_imperfect, _ = problem.generate_dataset(n=100, percent_correct=0.6)
         
         assert x_perfect.shape == x_imperfect.shape == (100, 2)
         assert y_perfect.shape == y_imperfect.shape == (100,)
@@ -80,7 +80,7 @@ class TestHyperXorNormal:
     def test_no_shuffle(self):
         """Test dataset generation without shuffling."""
         problem = HyperXorNormal(true_d=2)
-        x, y, _, _ = problem.generate_dataset(n=10, shuffle=False)
+        x, y, _ = problem.generate_dataset(n=10, shuffle=False)
         
         assert x.shape == (10, 2)
         assert y.shape == (10,)
@@ -92,7 +92,7 @@ class TestHyperXorNormal:
         generator.manual_seed(42)
         
         problem = HyperXorNormal(true_d=2, device=device, generator=generator)
-        x, y, _, _ = problem.generate_dataset(n=10)
+        x, y, _ = problem.generate_dataset(n=10)
         
         assert x.device == device
         assert y.device == device
@@ -135,8 +135,8 @@ class TestHyperXorNormal:
         problem1 = HyperXorNormal(true_d=2, generator=generator1)
         problem2 = HyperXorNormal(true_d=2, generator=generator2)
         
-        x1, y1, _, _ = problem1.generate_dataset(n=10, shuffle=False)
-        x2, y2, _, _ = problem2.generate_dataset(n=10, shuffle=False)
+        x1, y1, _ = problem1.generate_dataset(n=10, shuffle=False)
+        x2, y2, _ = problem2.generate_dataset(n=10, shuffle=False)
         
         # Results should be identical with same seed
         assert torch.allclose(x1, x2)
@@ -146,7 +146,7 @@ class TestHyperXorNormal:
         """Test the new centers and center_indices functionality."""
         problem = HyperXorNormal(true_d=2, noisy_d=1, random_basis=False)
         
-        x, y, centers, center_indices = problem.generate_dataset(n=12, shuffle=False)
+        x, y, center_indices = problem.generate_dataset(n=12, shuffle=False)
         
         # Test centers structure for HyperXorNormal
         assert centers.shape == (4, 3)  # 2^2 corners, 3 total dimensions
@@ -167,12 +167,10 @@ class TestHyperXorNormal:
         
         # Test with random_basis=True
         problem_rotated = HyperXorNormal(true_d=2, noisy_d=0, random_basis=True)
-        x_rot, y_rot, centers_rot, center_indices_rot = problem_rotated.generate_dataset(n=8, shuffle=False)
+        x_rot, y_rot, center_indices_rot = problem_rotated.generate_dataset(n=8, shuffle=False)
         
-        # Centers should be rotated
-        assert centers_rot.shape == (4, 2)  # 2^2 corners, 2 dimensions
-        # The centers should not be axis-aligned anymore due to rotation
-        # (This is harder to test precisely, but we can check they're different from unrotated)
+        # Test that rotation was applied (data should be different)
+        # (This is harder to test precisely, but we can check dimensions are correct)
         assert problem_rotated.basis is not None
 
 
@@ -186,7 +184,7 @@ def test_hyperxor_normal_basic():
     print(f'Number of corners: {problem.num_corners}')
 
     # Generate a small dataset
-    x, y, centers, center_indices = problem.generate_dataset(n=8, percent_correct=0.8, shuffle=True)
+    x, y, center_indices = problem.generate_dataset(n=8, percent_correct=0.8, shuffle=True)
     print(f'Generated dataset: x.shape={x.shape}, y.shape={y.shape}')
     print(f'Centers shape: {centers.shape}, center_indices shape: {center_indices.shape}')
     print(f'X dtype: {x.dtype}, Y dtype: {y.dtype}')
