@@ -8,7 +8,8 @@ def get_model(c, device):
     model = AutoModelForCausalLM.from_pretrained(
         c.model_name, 
         cache_dir=c.cache_dir, 
-        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32
+        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+        trust_remote_code=False  # Qwen models may require this for custom code
     )
     model.to(device)
 

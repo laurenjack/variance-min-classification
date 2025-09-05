@@ -11,19 +11,23 @@ def download_data(c):
     train_data = dataset["train"]
     val_data   = dataset.get("test", dataset.get("validation", None))  # use 'test' split as validation if available
 
-    # Initialize tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(c.model_name, cache_dir=c.cache_dir)
+    # Initialize tokenizer - Qwen models may require trust_remote_code
+    tokenizer = AutoTokenizer.from_pretrained(
+        c.model_name, 
+        cache_dir=c.cache_dir,
+        trust_remote_code=False
+    )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token  # ensure pad_token is defined
 
-    # Preprocessing: tokenize prompt+chosen and prompt+rejected for each example
+    # Preprocessing: tokenize chosen and rejected conversations
+    # In Anthropic/hh-rlhf, chosen and rejected are full conversations, not separate prompt/response
     def tokenize_pair(example):
-        prompt = example["prompt"]
         chosen = example["chosen"]
         rejected = example["rejected"]
-        # Concatenate prompt with each response; include EOS token to mark end of response
-        chosen_text = prompt + " " + chosen + (tokenizer.eos_token or "")
-        rejected_text = prompt + " " + rejected + (tokenizer.eos_token or "")
+        # Add EOS token to mark end of conversation
+        chosen_text = chosen + (tokenizer.eos_token or "")
+        rejected_text = rejected + (tokenizer.eos_token or "")
         chosen_enc = tokenizer(chosen_text, max_length=c.max_length, padding=False, truncation=True)
         rejected_enc = tokenizer(rejected_text, max_length=c.max_length, padding=False, truncation=True)
         return {
@@ -43,17 +47,25 @@ def download_data(c):
 
     def collate_fn(batch):
         # Batch is a list of examples (dicts) with keys: chosen_ids, chosen_attention_mask, rejected_ids, rejected_attention_mask
-        # We need to pad chosen and rejected sequences separately and then combine.
+        # Pad all sequences to max_length for consistent tensor shapes
         chosen_list = [torch.tensor(ex["chosen_ids"], dtype=torch.long) for ex in batch]
         reject_list = [torch.tensor(ex["rejected_ids"], dtype=torch.long) for ex in batch]
-        # Pad sequences
-        chosen_padded = nn.utils.rnn.pad_sequence(chosen_list, batch_first=True, padding_value=tokenizer.pad_token_id)
-        reject_padded = nn.utils.rnn.pad_sequence(reject_list, batch_first=True, padding_value=tokenizer.pad_token_id)
-        # Attention masks (pad with 0s accordingly)
-        chosen_mask = nn.utils.rnn.pad_sequence([torch.tensor(ex["chosen_attention_mask"], dtype=torch.long) for ex in batch],
-                                            batch_first=True, padding_value=0)
-        reject_mask = nn.utils.rnn.pad_sequence([torch.tensor(ex["rejected_attention_mask"], dtype=torch.long) for ex in batch],
-                                            batch_first=True, padding_value=0)
+        
+        # Pad all sequences to the configured max_length
+        def pad_to_length(tensor, target_len, pad_value):
+            if len(tensor) >= target_len:
+                return tensor[:target_len]
+            else:
+                padding = torch.full((target_len - len(tensor),), pad_value, dtype=tensor.dtype)
+                return torch.cat([tensor, padding])
+        
+        chosen_padded = torch.stack([pad_to_length(seq, c.max_length, tokenizer.pad_token_id) for seq in chosen_list])
+        reject_padded = torch.stack([pad_to_length(seq, c.max_length, tokenizer.pad_token_id) for seq in reject_list])
+        
+        # Create attention masks (1 for real tokens, 0 for padding)
+        chosen_mask = torch.stack([pad_to_length(torch.tensor(ex["chosen_attention_mask"], dtype=torch.long), c.max_length, 0) for ex in batch])
+        reject_mask = torch.stack([pad_to_length(torch.tensor(ex["rejected_attention_mask"], dtype=torch.long), c.max_length, 0) for ex in batch])
+        
         # Stack chosen and rejected together into one batch dimension of size 2*batch_size for efficient forward pass
         input_ids = torch.cat([chosen_padded, reject_padded], dim=0)
         attention_mask = torch.cat([chosen_mask, reject_mask], dim=0)

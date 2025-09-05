@@ -8,10 +8,10 @@ from src.reward_model.trainer import train
 
 @dataclass
 class Config:
-    model_name: str = "meta-llama/Llama-3.2-1B-Instruct"   # HuggingFace model ID
-    dataset_name: str = "Dahoas/full-hh-rlhf"             # Dataset containing Anthropics HH-RLHF comparisons
+    model_name: str = "Qwen/Qwen3-1.7B"          # HuggingFace model ID - Qwen3 1.7B parameter model
+    dataset_name: str = "Anthropic/hh-rlhf"               # Official Anthropic HH-RLHF dataset
     cache_dir: str = "./cache"                             # Cache directory for model/dataset
-    max_length: int = 512                                  # Max sequence length (tokens) for prompt+response (to truncate long dialogues)
+    max_length: int = 1024                                  # Max sequence length (tokens) for prompt+response (to truncate long dialogues)
     train_batch_size: int = 8
     eval_batch_size: int = 8
     learning_rate: float = 1e-5
