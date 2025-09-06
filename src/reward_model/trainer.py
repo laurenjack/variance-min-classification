@@ -9,7 +9,7 @@ def compute_reward_scores(model, input_ids, attention_mask, device):
     # We use the model's forward to get last hidden state. 
     # AutoModelForCausalLM returns logits by default, but we can get hidden states by passing output_hidden_states=True.
     outputs = model(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)
-    last_hidden_state = outputs.last_hidden_state  # shape: [batch_size, seq_len, hidden_size]
+    last_hidden_state = outputs.hidden_states[-1]  # shape: [batch_size, seq_len, hidden_size]
     # Take hidden state of last non-padded token for each sequence. We find index of last token via attention mask.
     seq_lengths = attention_mask.sum(dim=1) - 1  # index of last token for each sequence
     last_token_hidden = last_hidden_state[torch.arange(last_hidden_state.size(0), device=device), seq_lengths]
