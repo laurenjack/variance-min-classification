@@ -9,8 +9,12 @@ def get_model(c, device):
         c.model_name, 
         cache_dir=c.cache_dir, 
         torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-        trust_remote_code=False  # Qwen models may require this for custom code
+        trust_remote_code=False,
+        attn_implementation="sdpa"
     )
+    # For training with reduced memory footprint
+    model.config.use_cache = False
+    model.gradient_checkpointing_enable()
     model.to(device)
 
     # Add a reward head: a single linear layer to output a scalar from the final hidden state of the last token
