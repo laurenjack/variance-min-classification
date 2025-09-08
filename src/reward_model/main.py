@@ -1,6 +1,7 @@
 import os
 import torch
 from dataclasses import dataclass
+from typing import Optional
 from src.reward_model.data_downloader import download_data
 from src.reward_model.model import get_model
 from src.reward_model.trainer import train
@@ -8,12 +9,13 @@ from src.reward_model.trainer import train
 
 @dataclass
 class Config:
-    model_name: str = "meta-llama/Llama-3.2-1B-Instruct"          # HuggingFace model ID - Qwen3 1.7B parameter model
-    dataset_name: str = "Anthropic/hh-rlhf"               # Official Anthropic HH-RLHF dataset
+    model_name: str = "meta-llama/Llama-3.2-1B-Instruct"
+    hf_dataset: str = "Anthropic/hh-rlhf"                 # Official Anthropic HH-RLHF dataset
+    subset_name: Optional[str] = "helpful-base"           # Dataset subset/configuration to use
     cache_dir: str = "./cache"                             # Cache directory for model/dataset
     max_length: int = 1024                                  # Max sequence length (tokens) for prompt+response (to truncate long dialogues)
-    train_batch_size: int = 8
-    eval_batch_size: int = 8
+    train_batch_size: int = 64
+    eval_batch_size: int = 64
     learning_rate: float = 1e-5
     weight_decay: float = 0.01
     num_epochs: int = 3
