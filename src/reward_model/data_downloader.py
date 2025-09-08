@@ -7,7 +7,8 @@ from torch.utils.data import DataLoader
 
 def download_data(c):
     # Load the dataset (download if not already cached)
-    dataset = load_dataset(c.dataset_name, cache_dir=c.cache_dir)
+    # Use subset_name if specified, otherwise load the default configuration
+    dataset = load_dataset(c.hf_dataset, name=c.subset_name, cache_dir=c.cache_dir)
     train_data = dataset["train"]
     val_data   = dataset.get("test", dataset.get("validation", None))  # use 'test' split as validation if available
 
