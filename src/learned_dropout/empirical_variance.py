@@ -10,54 +10,60 @@ from torch.utils.data import DataLoader, TensorDataset
 from torch.func import vmap, stack_module_state, functional_call, grad_and_value
 
 from src import dataset_creator
-from src.learned_dropout.config import EmpiricalConfig
+from src.learned_dropout.config import Config
+from src.learned_dropout.models_standard import ResNetStandard
 
 
-def _generate_training_sets(problem, c: EmpiricalConfig, device: torch.device, percent_correct: float) -> List[Tuple[Tensor, Tensor]]:
+def _generate_training_sets(problem, c: Config, num_runs: int, device: torch.device, percent_correct: float) -> List[Tuple[Tensor, Tensor]]:
     # Generate all training sets once, outside the loops
     training_sets = []
-    for _ in range(c.num_runs):
+    for _ in range(num_runs):
         x_train, y_train, _ = problem.generate_dataset(c.n, shuffle=True, percent_correct=percent_correct)
         x_train, y_train = x_train.to(device), y_train.to(device)
         training_sets.append((x_train, y_train))
     return training_sets
 
-def _build_models(resnet_builder, c: EmpiricalConfig, device: torch.device) -> List[List[nn.Module]]:
+def _build_models(c: Config, h_range: list[int], num_runs: int, device: torch.device) -> List[List[nn.Module]]:
     # A [num_h, num_runs] List of Lists of models
-    num_h = len(c.h_range)
-    h_max = max(c.h_range)
+    num_h = len(h_range)
+    h_max = max(h_range)
     model_lists = []
 
     for _ in range(num_h):
         models = []
-        for _ in range(c.num_runs):
-            model = resnet_builder.build(c, h_max, device)
+        for _ in range(num_runs):
+            model = ResNetStandard(c).to(device)
             models.append(model)
         model_lists.append(models)
     return model_lists
 
 def run_experiment_parallel(
-    resnet_builder,
     device: torch.device,
     validation_set: Tuple[Tensor, Tensor, Tensor],
     problem,
-    c: EmpiricalConfig,
+    c: Config,
+    h_range: list[int],
+    num_runs: int,
     percent_correct: float
 ) -> tuple[list, list, list, list]:
+    """
+    Run num_widths * num_runs experiments in parallel for ResNet models.
+
+    We are running experiments at different neural network widths (e.g. h values).
+    """
     x_val, y_val, center_indices_val = validation_set
-    training_sets = _generate_training_sets(problem, c, device, percent_correct)
-    model_lists = _build_models(resnet_builder, c, device)
+    training_sets = _generate_training_sets(problem, c, num_runs, device, percent_correct)
+    model_lists = _build_models(c, h_range, num_runs, device)
     
-    num_h = len(c.h_range)
-    num_runs = c.num_runs
-    h_max = max(c.h_range)
+    num_h = len(h_range)
+    h_max = max(h_range)
     n = c.n
     d = c.d
     batch_size = c.batch_size
 
     # Create h_mask: first h elements are 1.0, rest are 0.0
     h_mask = torch.zeros(num_h, num_runs, h_max, device=device)
-    for h_index, h in enumerate(c.h_range):
+    for h_index, h in enumerate(h_range):
         h_mask[h_index, :, :h] = 1.0
     h_mask = h_mask.reshape(num_h * num_runs, h_max)
     
@@ -135,7 +141,7 @@ def run_experiment_parallel(
         epoch_loss_mean_per_h = epoch_loss_mean_per_model.view(num_h, num_runs).mean(dim=1)
         
         print(f"Epoch {epoch + 1:3d}/{c.epochs}: ", end="")
-        for h_idx, h in enumerate(c.h_range):
+        for h_idx, h in enumerate(h_range):
             print(f"h={h:2d}: {epoch_loss_mean_per_h[h_idx]:.4f}", end="  ")
         print()
 
@@ -224,51 +230,51 @@ def run_experiment_parallel(
     mean_val_accuracies = [v.item() for v in val_acc_mean_per_h]
     mean_val_losses = [v.item() for v in val_loss_mean_per_h]
 
-    for i, h in enumerate(c.h_range):
+    for i, h in enumerate(h_range):
         print(f"h = {h:2d} | mean variance = {mean_vars[i]:.4e} | mean train loss = {mean_train_losses[i]:.4f} | mean val acc = {mean_val_accuracies[i]:.4f} | mean val loss = {mean_val_losses[i]:.4f}")
 
     return mean_vars, mean_train_losses, mean_val_accuracies, mean_val_losses
 
 
 def run_experiment(
-    resnet_builder,
     device: torch.device,
     validation_set: Tuple[Tensor, Tensor, Tensor],
     problem,
-    c: EmpiricalConfig,
+    configs: list[Config],
+    num_runs: int,
     percent_correct: float
 ) -> tuple[list, list, list, list]:
-    """Returns mean variances of validation logits, mean training losses, mean validation accuracies, and mean validation losses for each hidden size h."""
+    """Returns mean variances of validation logits, mean training losses, mean validation accuracies, and mean validation losses for each config."""
     x_val, y_val, center_indices_val = validation_set
-    training_sets = _generate_training_sets(problem, c, device, percent_correct)
     
     mean_vars = []
     mean_train_losses = []
     mean_val_accuracies = []
     mean_val_losses = []
-    for h in c.h_range:
+    for config in configs:
+        training_sets = _generate_training_sets(problem, config, num_runs, device, percent_correct)
         run_preds = []
         run_train_losses = []
         run_val_accuracies = []
         run_val_losses = []
-        for run_idx in range(c.num_runs):
+        for run_idx in range(num_runs):
             # Use the pre-generated training data for this run
             x_train, y_train = training_sets[run_idx]
 
             # create data loader for batch training
             train_dataset = TensorDataset(x_train, y_train)
-            train_loader = DataLoader(train_dataset, batch_size=c.batch_size, shuffle=True)
+            train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True)
 
-            # build model with current hidden parameter
-            model = resnet_builder.build(c, h, device)
+            # build model with current config
+            model = ResNetStandard(config).to(device)
 
             # loss and optimizer
             criterion = nn.BCEWithLogitsLoss()
-            optimizer = optim.AdamW(model.parameters(), lr=c.lr, weight_decay=c.weight_decay)
+            optimizer = optim.AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
 
             # training loop
             model.train()
-            for epoch in range(c.epochs):
+            for epoch in range(config.epochs):
                 for batch_x, batch_y in train_loader:
                     optimizer.zero_grad()
                     logits = model(batch_x).squeeze()
@@ -329,6 +335,6 @@ def run_experiment(
         mean_val_loss = sum(run_val_losses) / len(run_val_losses)
         mean_val_losses.append(mean_val_loss)
         
-        print(f"h = {h:2d} | mean variance = {mean_var:.4e} | mean train loss = {mean_train_loss:.4f} | mean val acc = {mean_val_accuracy:.4f} | mean val loss = {mean_val_loss:.4f}")
+        print(f"h = {config.h:2d} | mean variance = {mean_var:.4e} | mean train loss = {mean_train_loss:.4f} | mean val acc = {mean_val_accuracy:.4f} | mean val loss = {mean_val_loss:.4f}")
 
     return mean_vars, mean_train_losses, mean_val_accuracies, mean_val_losses

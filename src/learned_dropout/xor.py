@@ -1,7 +1,7 @@
 import torch
 
 from src.learned_dropout.data_generator import HyperXorNormal
-from src.learned_dropout.config import Config, ModelConfig
+from src.learned_dropout.config import Config
 from src.learned_dropout.sense_check import train_once
 
 
@@ -22,7 +22,7 @@ def main():
         device=device,
     )
 
-    model_config = ModelConfig(
+    model_config = Config(
         d=d,
         n_val=1000,
         n=512,
@@ -31,7 +31,8 @@ def main():
         lr=1e-3,
         epochs=300,
         weight_decay=0.001,
-        hidden_sizes=[20, 20, 20],
+        h=20,
+        num_layers=3,
         is_weight_tracker=False,
         l1_final=None,
         d_model=5
