@@ -1,7 +1,7 @@
 import torch
 
 from src.learned_dropout.data_generator import SubDirections
-from src.learned_dropout.config import ModelConfig
+from src.learned_dropout.config import Config
 from src.learned_dropout.sense_check import train_once
 
 
@@ -10,20 +10,20 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Problem: SubDirections with requested parameters
-    percent_correct = 1.0
+    percent_correct = 0.8
     problem = SubDirections(
         true_d=12,
         sub_d=4,
         perms=24,
         num_class=2,
         sigma=0.2,
-        noisy_d=0,
+        noisy_d=12,
         random_basis=True,
         device=device
     )
 
     # Model configuration
-    model_config = ModelConfig(
+    model_config = Config(
         d=problem.d,
         n_val=1000,
         n=1280,
@@ -32,7 +32,8 @@ def main():
         lr=1e-3,
         epochs=1000,
         weight_decay=0.001,
-        hidden_sizes=[20],  # Using d_model=20 from main.py as hidden size
+        h=20,
+        num_layers=1,
         is_weight_tracker=False,
         l1_final=None,
         d_model=20

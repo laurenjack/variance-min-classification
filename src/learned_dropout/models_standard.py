@@ -81,16 +81,14 @@ class StandardResidualBlock(nn.Module):
 
 
 class ResNetStandard(nn.Module):
-    def __init__(self, c: Config, h_list, down_rank_dim=None):
+    def __init__(self, c: Config):
         """
-        c: Configuration object
-        h_list: List of hidden dimensions, one per residual block.
-        down_rank_dim (optional): If not None, introduce a rank reducing dim before the last layer.
+        c: Configuration object containing all model parameters
         """
         super(ResNetStandard, self).__init__()
         self.input_dim = c.d
         self.d_model = c.d if c.d_model is None else c.d_model
-        self.down_rank_dim = down_rank_dim
+        self.down_rank_dim = c.down_rank_dim
         self.layer_norm = c.layer_norm
         self.l1_final = c.l1_final
 
@@ -103,15 +101,15 @@ class ResNetStandard(nn.Module):
 
         # Residual blocks operate in d_model space
         self.blocks = nn.ModuleList([
-            StandardResidualBlock(self.d_model, h, layer_norm=c.layer_norm)
-            for h in h_list
+            StandardResidualBlock(self.d_model, c.h, layer_norm=c.layer_norm)
+            for _ in range(c.num_layers)
         ])
         
         # Optionally add the down-ranking layer (in d_model space)
-        if down_rank_dim is not None:
-            self.down_rank_layer = nn.Linear(self.d_model, down_rank_dim, bias=False)
-            self.final_layer = nn.Linear(down_rank_dim, 1, bias=False)
-            final_norm_dim = down_rank_dim
+        if c.down_rank_dim is not None:
+            self.down_rank_layer = nn.Linear(self.d_model, c.down_rank_dim, bias=False)
+            self.final_layer = nn.Linear(c.down_rank_dim, 1, bias=False)
+            final_norm_dim = c.down_rank_dim
         else:
             self.down_rank_layer = None
             self.final_layer = nn.Linear(self.d_model, 1, bias=False)
