@@ -8,12 +8,12 @@ from src.learned_dropout.config import Config
 
 
 def run_list_resnet_experiment(device, problem, validation_set, configs: list[Config], h_range: list[int], num_runs: int, percent_correct: float):
-    """Train and compare ResNet models using parallel experiment."""
+    """Train and compare Resnet models using parallel experiment."""
     
     # Run experiments for each config
     results = []
     for i, c in enumerate(configs):
-        print(f"Running ResNet experiment {i + 1}")
+        print(f"Running Resnet experiment {i + 1}")
         vars_, losses, val_accuracies, val_losses = ev.run_experiment_parallel(
             device, validation_set, problem, c, h_range, num_runs, percent_correct
         )
@@ -71,6 +71,6 @@ def run_list_resnet_experiment(device, problem, validation_set, configs: list[Co
     ax3.legend()
     
     config_names = " vs ".join([f"Config {i+1}" for i in range(len(configs))])
-    plt.suptitle(f"ResNet Comparison: {config_names} (d = {configs[0].d}, n = {configs[0].n})")
+    plt.suptitle(f"Resnet Comparison: {config_names} (d = {configs[0].d}, n = {configs[0].n})")
     plt.tight_layout()
     plt.show()

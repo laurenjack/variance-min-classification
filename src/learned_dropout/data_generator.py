@@ -30,7 +30,7 @@ class Problem(ABC):
     def generate_dataset(
         self,
         n: int,
-        percent_correct: float = 1.0,
+        percent_correct: Optional[float] = None,
         shuffle: bool = True,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -38,7 +38,7 @@ class Problem(ABC):
 
         Args:
             n: Number of samples to generate.
-            percent_correct: Fraction of samples with correct labels (1.0 = all correct).
+            percent_correct: Fraction of samples with correct labels (None or 1.0 = all correct).
             shuffle: If True, randomly permute the resulting dataset.
 
         Returns:
@@ -57,28 +57,31 @@ class SubDirections(Problem):
     - true_d is partitioned into S = true_d // sub_d contiguous subsections of length sub_d.
       subsection s covers indices [s*sub_d, (s+1)*sub_d).
     - There are 2^sub_d possible sign patterns per subsection.
-    - perms centers are assigned round-robin to subsections (0,1,...,S-1, 0,1,...),
+    - centers are assigned round-robin to subsections (0,1,...,S-1, 0,1,...),
       choosing a unique sign pattern (no duplicates) within each subsection from
       its 2^sub_d possibilities.
     - Each center is assigned a class label in [0, num_class) such that within
       each subsection, class labels are as balanced as possible across classes
       (order randomized), to avoid coupling a class to a single subsection.
     - To generate a sample: uses center-balanced sampling to ensure equal representation
-      across all centers. Each center gets approximately n/perms samples.
+      across all centers. Each center gets approximately n/centers samples.
       The chosen center's subsection block uses the center's fixed sign pattern. 
       All other subsection blocks use independently sampled random sign patterns, 
       drawn uniformly with replacement from the subsection's patterns EXCLUDING 
       that subsection's center patterns. If `sigma` was provided at construction 
       (and > 0), Gaussian noise N(0, sigma^2 I) is added over R^d where d = true_d + noisy_d. 
       The sample's label is the center's class. Label noise can be introduced via 
-      percent_correct, with incorrect samples distributed proportionally across centers.
+      percent_correct parameter in generate_dataset, or if is_percent_correct_per_center=True, 
+      each center has its own randomly assigned percent_correct value in [0.55, 0.95].
     - noisy_d additional dimensions are appended with random {-1, +1} values and standard Gaussian noise.
     - random_basis applies a fixed random orthonormal transformation across all d dimensions.
+    - is_percent_correct_per_center: if True, each center gets a random percent_correct value
+      in [0.55, 0.95] and generate_dataset must be called with percent_correct=None.
 
     Constraints:
     - true_d >= sub_d > 0
     - true_d % sub_d == 0
-    - ceil(perms / (true_d // sub_d)) < 2^sub_d  (leave at least one non-center pattern)
+    - ceil(centers / (true_d // sub_d)) < 2^sub_d  (leave at least one non-center pattern)
     - sigma: optional; if provided must be >= 0
     - noisy_d: optional; if provided must be >= 0
     """
@@ -87,11 +90,12 @@ class SubDirections(Problem):
         self,
         true_d: int,
         sub_d: int,
-        perms: int,
+        centers: int,
         num_class: int,
         sigma: Optional[float] = None,
         noisy_d: int = 0,
         random_basis: bool = False,
+        is_percent_correct_per_center: bool = False,
         device: torch.device | None = None,
         generator: Optional[torch.Generator] = None,
     ) -> None:
@@ -101,8 +105,8 @@ class SubDirections(Problem):
             raise ValueError("true_d must be >= sub_d")
         if true_d % sub_d != 0:
             raise ValueError("true_d % sub_d must be zero")
-        if perms <= 0:
-            raise ValueError("perms must be positive")
+        if centers <= 0:
+            raise ValueError("centers must be positive")
         if num_class <= 0:
             raise ValueError("num_class must be positive")
         if sigma is not None and sigma < 0:
@@ -112,11 +116,12 @@ class SubDirections(Problem):
 
         self.true_d: int = int(true_d)  # The true dimensionality for subsection logic
         self.sub_d: int = int(sub_d)
-        self.perms: int = int(perms)
+        self.centers: int = int(centers)
         self.num_class: int = int(num_class)
         self.sigma: Optional[float] = float(sigma) if sigma is not None else None
         self.noisy_d: int = int(noisy_d)
         self.random_basis: bool = random_basis
+        self.is_percent_correct_per_center: bool = is_percent_correct_per_center
         self.device: torch.device = device if device is not None else torch.device("cpu")
         self.generator: Optional[torch.Generator] = generator
         
@@ -131,11 +136,11 @@ class SubDirections(Problem):
 
         # Capacity constraint per subsection
         num_patterns = 1 << self.sub_d
-        max_centers_per_subsection = (self.perms + self.num_subsections - 1) // self.num_subsections
+        max_centers_per_subsection = (self.centers + self.num_subsections - 1) // self.num_subsections
         if max_centers_per_subsection >= num_patterns:
             raise ValueError(
-                "Requested perms leaves no non-center patterns for sampling in some subsection: "
-                f"ceil(perms/S)={max_centers_per_subsection} >= 2^sub_d={num_patterns}"
+                "Requested centers leaves no non-center patterns for sampling in some subsection: "
+                f"ceil(centers/S)={max_centers_per_subsection} >= 2^sub_d={num_patterns}"
             )
 
         # Precompute all sign patterns of length sub_d as {-1,+1}
@@ -149,13 +154,13 @@ class SubDirections(Problem):
             pattern_order_per_subsection.append(order)
 
         # Assign centers round-robin to subsections with unique patterns within each subsection
-        centers_block_signs = torch.zeros(self.perms, self.sub_d, dtype=torch.float32, device=self.device)
-        center_subsection = torch.empty(self.perms, dtype=torch.int64, device=self.device)
+        centers_block_signs = torch.zeros(self.centers, self.sub_d, dtype=torch.float32, device=self.device)
+        center_subsection = torch.empty(self.centers, dtype=torch.int64, device=self.device)
 
         # Track how many centers already assigned per subsection to take next unique pattern
         taken_count = [0 for _ in range(self.num_subsections)]
 
-        for i in range(self.perms):
+        for i in range(self.centers):
             s = i % self.num_subsections
             idx_in_s = taken_count[s]
             if idx_in_s >= num_patterns:
@@ -168,11 +173,11 @@ class SubDirections(Problem):
             centers_block_signs[i] = block
             center_subsection[i] = s
 
-        self.center_subsection: torch.Tensor = center_subsection  # (perms,)
-        self.centers_block_signs: torch.Tensor = centers_block_signs  # (perms, sub_d)
+        self.center_subsection: torch.Tensor = center_subsection  # (centers,)
+        self.centers_block_signs: torch.Tensor = centers_block_signs  # (centers, sub_d)
 
         # Assign classes balanced within each subsection to avoid coupling a class to a subsection
-        center_to_class = torch.empty(self.perms, dtype=torch.int64, device=self.device)
+        center_to_class = torch.empty(self.centers, dtype=torch.int64, device=self.device)
         # Collect center indices per subsection
         indices_per_subsection: List[torch.Tensor] = [
             torch.nonzero(center_subsection == s, as_tuple=False).view(-1) for s in range(self.num_subsections)
@@ -194,7 +199,16 @@ class SubDirections(Problem):
             labels_tensor = labels_tensor[perm]
             center_to_class[idxs] = labels_tensor
 
-        self.center_to_class: torch.Tensor = center_to_class  # (perms,)
+        self.center_to_class: torch.Tensor = center_to_class  # (centers,)
+
+        # Create per-center percent_correct values if requested
+        if self.is_percent_correct_per_center:
+            # Uniform random values between 0.55 and 0.95
+            self.percent_correct_per_center: torch.Tensor = torch.rand(
+                self.centers, generator=self.generator, device=self.device
+            ) * 0.4 + 0.55  # Maps [0,1] to [0.55, 0.95]
+        else:
+            self.percent_correct_per_center: Optional[torch.Tensor] = None
 
         # Precompute allowed non-center pattern indices per subsection (for sampling with replacement)
         self._allowed_noncenter_pattern_indices: List[torch.Tensor] = []
@@ -242,28 +256,41 @@ class SubDirections(Problem):
     def generate_dataset(
         self,
         n: int,
-        percent_correct: float = 1.0,
+        percent_correct: Optional[float] = None,
         shuffle: bool = True,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if n <= 0:
             raise ValueError("n must be positive")
-        if not (0.0 <= percent_correct <= 1.0):
-            raise ValueError("percent_correct must be between 0.0 and 1.0")
+        
+        # Validation: cannot use both percent_correct and is_percent_correct_per_center
+        if self.is_percent_correct_per_center and percent_correct is not None:
+            raise ValueError(
+                "Cannot specify percent_correct when is_percent_correct_per_center=True. "
+                "Per-center percent_correct values are used automatically."
+            )
+        
+        # Treat None as 1.0 (no label noise) when not using per-center values
+        if not self.is_percent_correct_per_center:
+            if percent_correct is None:
+                percent_correct = 1.0
+            
+            if not (0.0 <= percent_correct <= 1.0):
+                raise ValueError("percent_correct must be between 0.0 and 1.0")
 
         # Balance samples across centers (not classes)
-        base_per_center = n // self.perms
-        remainder = n % self.perms
+        base_per_center = n // self.centers
+        remainder = n % self.centers
         
         # Each center gets base_per_center samples
-        counts_per_center = torch.full((self.perms,), base_per_center, dtype=torch.int64, device=self.device)
+        counts_per_center = torch.full((self.centers,), base_per_center, dtype=torch.int64, device=self.device)
         
         # Randomly assign the remainder samples to centers
-        center_order = torch.randperm(self.perms, generator=self.generator, device=self.device)
+        center_order = torch.randperm(self.centers, generator=self.generator, device=self.device)
         counts_per_center[center_order[:remainder]] += 1
 
         # Build the per-sample center index list
         center_indices = torch.repeat_interleave(
-            torch.arange(self.perms, device=self.device), counts_per_center
+            torch.arange(self.centers, device=self.device), counts_per_center
         )
         # Safety: ensure length matches n (could differ due to integer math bugs)
         if int(center_indices.numel()) != n:
@@ -321,51 +348,27 @@ class SubDirections(Problem):
         y = self.center_to_class[center_indices].to(torch.int64)
 
         # Apply label noise based on percent_correct
-        num_incorrect = round(n * (1.0 - percent_correct))
-        if num_incorrect > 0:
-            # Distribute incorrect samples across centers, aligned with sample distribution
-            # Use the same logic as sample distribution for consistency
-            base_incorrect_per_center = num_incorrect // self.perms
-            remainder_incorrect = num_incorrect % self.perms
-            
-            # Each center gets base_incorrect_per_center incorrect samples
-            incorrect_per_center = torch.full((self.perms,), base_incorrect_per_center, dtype=torch.int64, device=self.device)
-            
-            # Centers that got extra samples should also get extra incorrect samples first
-            # Use the same random order as sample distribution
-            if remainder_incorrect > 0:
-                # Reuse the same center_order from sample distribution for consistency
-                if remainder > 0:
-                    # Use the same centers that got extra samples
-                    extra_sample_centers = center_order[:remainder]
-                    # Give priority to these centers for extra incorrect samples
-                    num_extra_from_sample_centers = min(remainder_incorrect, remainder)
-                    incorrect_per_center[extra_sample_centers[:num_extra_from_sample_centers]] += 1
-                    remainder_incorrect -= num_extra_from_sample_centers
-                
-                # If there are still remaining incorrect samples to distribute, distribute to centers that didn't get extra samples
-                if remainder_incorrect > 0:
-                    if remainder + remainder_incorrect > self.perms:
-                        raise ValueError("Should not happen")
-                    selected_centers = center_order[remainder: remainder + remainder_incorrect]
-                    incorrect_per_center[selected_centers] += 1
-            
-            # Build list of sample indices to make incorrect
+        if self.is_percent_correct_per_center:
+            # Use per-center percent_correct values
+            # For each center, determine how many samples should be incorrect
             incorrect_indices = []
-            for center_idx in range(self.perms):
-                num_to_change = int(incorrect_per_center[center_idx].item())
+            for center_idx in range(self.centers):
+                center_percent_correct = float(self.percent_correct_per_center[center_idx].item())
                 # Find all samples from this center
                 center_sample_mask = (center_indices == center_idx)
                 center_sample_indices = torch.nonzero(center_sample_mask, as_tuple=False).view(-1)
-                if num_to_change > center_sample_indices.numel():
-                    raise ValueError("Should not happen")
-                incorrect_indices.extend(center_sample_indices[:num_to_change].tolist()) 
+                num_center_samples = center_sample_indices.numel()
+                
+                if num_center_samples > 0:
+                    num_incorrect_for_center = round(num_center_samples * (1.0 - center_percent_correct))
+                    if num_incorrect_for_center > 0:
+                        # Randomly select which samples from this center should be incorrect
+                        perm = torch.randperm(num_center_samples, generator=self.generator, device=self.device)
+                        incorrect_indices.extend(center_sample_indices[perm[:num_incorrect_for_center]].tolist())
             
-            # Convert to tensor and apply incorrect labels
+            # Apply incorrect labels
             if incorrect_indices:
                 incorrect_tensor = torch.tensor(incorrect_indices, dtype=torch.int64, device=self.device)
-                
-                # For each incorrect sample, assign a random different class
                 for idx in incorrect_tensor:
                     original_class = int(y[idx].item())
                     # Choose a random class different from the original
@@ -373,6 +376,60 @@ class SubDirections(Problem):
                     if other_classes:
                         new_class = other_classes[torch.randint(len(other_classes), (1,), generator=self.generator, device=self.device).item()]
                         y[idx] = new_class
+        else:
+            # Use global percent_correct value
+            num_incorrect = round(n * (1.0 - percent_correct))
+            if num_incorrect > 0:
+                # Distribute incorrect samples across centers, aligned with sample distribution
+                # Use the same logic as sample distribution for consistency
+                base_incorrect_per_center = num_incorrect // self.centers
+                remainder_incorrect = num_incorrect % self.centers
+                
+                # Each center gets base_incorrect_per_center incorrect samples
+                incorrect_per_center = torch.full((self.centers,), base_incorrect_per_center, dtype=torch.int64, device=self.device)
+                
+                # Centers that got extra samples should also get extra incorrect samples first
+                # Use the same random order as sample distribution
+                if remainder_incorrect > 0:
+                    # Reuse the same center_order from sample distribution for consistency
+                    if remainder > 0:
+                        # Use the same centers that got extra samples
+                        extra_sample_centers = center_order[:remainder]
+                        # Give priority to these centers for extra incorrect samples
+                        num_extra_from_sample_centers = min(remainder_incorrect, remainder)
+                        incorrect_per_center[extra_sample_centers[:num_extra_from_sample_centers]] += 1
+                        remainder_incorrect -= num_extra_from_sample_centers
+                    
+                    # If there are still remaining incorrect samples to distribute, distribute to centers that didn't get extra samples
+                    if remainder_incorrect > 0:
+                        if remainder + remainder_incorrect > self.centers:
+                            raise ValueError("Should not happen")
+                        selected_centers = center_order[remainder: remainder + remainder_incorrect]
+                        incorrect_per_center[selected_centers] += 1
+                
+                # Build list of sample indices to make incorrect
+                incorrect_indices = []
+                for center_idx in range(self.centers):
+                    num_to_change = int(incorrect_per_center[center_idx].item())
+                    # Find all samples from this center
+                    center_sample_mask = (center_indices == center_idx)
+                    center_sample_indices = torch.nonzero(center_sample_mask, as_tuple=False).view(-1)
+                    if num_to_change > center_sample_indices.numel():
+                        raise ValueError("Should not happen")
+                    incorrect_indices.extend(center_sample_indices[:num_to_change].tolist()) 
+                
+                # Convert to tensor and apply incorrect labels
+                if incorrect_indices:
+                    incorrect_tensor = torch.tensor(incorrect_indices, dtype=torch.int64, device=self.device)
+                    
+                    # For each incorrect sample, assign a random different class
+                    for idx in incorrect_tensor:
+                        original_class = int(y[idx].item())
+                        # Choose a random class different from the original
+                        other_classes = [c for c in range(self.num_class) if c != original_class]
+                        if other_classes:
+                            new_class = other_classes[torch.randint(len(other_classes), (1,), generator=self.generator, device=self.device).item()]
+                            y[idx] = new_class
 
         if shuffle:
             perm = torch.randperm(n, generator=self.generator, device=self.device)
@@ -479,7 +536,7 @@ class HyperXorNormal(Problem):
     def generate_dataset(
         self,
         n: int,
-        percent_correct: float = 1.0,
+        percent_correct: Optional[float] = None,
         shuffle: bool = True,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -487,7 +544,7 @@ class HyperXorNormal(Problem):
 
         Args:
             n: Number of samples to generate.
-            percent_correct: Probability of correct nearest-mean classification (1.0 = all correct).
+            percent_correct: Probability of correct nearest-mean classification (None or 1.0 = all correct).
             shuffle: If True, randomly permute the resulting dataset.
 
         Returns:
@@ -498,6 +555,11 @@ class HyperXorNormal(Problem):
         """
         if n <= 0:
             raise ValueError("n must be positive")
+        
+        # Treat None as 1.0 (no label noise)
+        if percent_correct is None:
+            percent_correct = 1.0
+        
         if not (0.0 <= percent_correct <= 1.0):
             raise ValueError("percent_correct must be between 0.0 and 1.0")
 
@@ -616,7 +678,7 @@ class Gaussian(Problem):
     def generate_dataset(
         self,
         n: int,
-        percent_correct: float = 1.0,
+        percent_correct: Optional[float] = None,
         shuffle: bool = True,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
