@@ -1,137 +1,155 @@
 #!/usr/bin/env python3
 """
-Pytest tests to verify h_mask functionality works as expected.
+Pytest tests to verify width-mask functionality (h, d_model, down_rank_dim).
+The masked models should behave like smaller base Resnet models with the
+corresponding parameter equal to the mask length, when weights are aligned.
 """
 
 import torch
 import pytest
-import sys
-import os
 
-# Add src to path
-sys.path.append(os.path.join(os.path.dirname(__file__), '../../src'))
-
-from src.learned_dropout.models_standard import ResNetStandard
-from src.learned_dropout.config import ModelConfig
+from src.learned_dropout.models import Resnet, ResnetH, ResnetDModel, ResnetDownRankDim
+from src.learned_dropout.config import Config
 
 
 def test_h_mask_forward_pass():
-    """Test that h_mask reduces effective hidden dimension correctly in forward pass."""
-    
-    # Create a simple configuration
-    config = ModelConfig(
-        d=4,
-        n_val=100,
-        n=1000,
-        batch_size=32,
-        layer_norm="layer_norm",
-        lr=0.001,
-        epochs=10,
-        weight_decay=0.0,
-        hidden_sizes=[8, 8],  # Two blocks with hidden size 8
-        d_model=None
-    )
-    
-    # Create model with h_list = [8, 8]
-    model_full = ResNetStandard(config, h_list=[8, 8])
-    
-    # Create model with h_list = [4, 4] (reduced)
-    model_reduced = ResNetStandard(config, h_list=[4, 4])
-    
-    # Copy weights from full model to reduced model (first 4 dimensions)
+    """h-mask reduces effective hidden dimension in forward pass to match base Resnet(h*)."""
+    d = 4
+    h_max = 8
+    h_star = 4
+    c_full = Config(d=d, n_val=100, n=1000, batch_size=32, lr=0.001, epochs=1, weight_decay=0.0,
+                    h=h_max, num_layers=2, d_model=None, width_varyer="h")
+    c_reduced = Config(d=d, n_val=100, n=1000, batch_size=32, lr=0.001, epochs=1, weight_decay=0.0,
+                       h=h_star, num_layers=2, d_model=None)
+
+    model_masked = ResnetH(c_full)
+    model_reduced = Resnet(c_reduced)
+
+    # Align weights for overlapping hidden dims
     with torch.no_grad():
-        # Copy input weights (first 4 columns)
-        for i, (full_block, reduced_block) in enumerate(zip(model_full.blocks, model_reduced.blocks)):
-            reduced_block.weight_in.weight.data = full_block.weight_in.weight.data[:4, :]
-            reduced_block.weight_out.weight.data = full_block.weight_out.weight.data[:, :4]
-            
-        # Copy final layer weights  
-        model_reduced.final_layer.weight.data = model_full.final_layer.weight.data
-    
-    # Create h_mask with first 4 elements as 1.0, rest as 0.0
-    h_mask = torch.zeros(8)
-    h_mask[:4] = 1.0
-    
-    # Test with same input
-    x = torch.randn(5, 4)  # batch_size=5, input_dim=4
-    
-    # Forward pass with full model and mask
-    output_masked = model_full(x, h_mask=h_mask)
-    
-    # Forward pass with reduced model
-    output_reduced = model_reduced(x)
-    
-    # They should be very close (small numerical differences expected)
-    assert torch.allclose(output_masked, output_reduced, atol=1e-5), "Outputs should be nearly identical"
+        for full_blk, red_blk in zip(model_masked.blocks, model_reduced.blocks):
+            red_blk.weight_in.weight.data = full_blk.weight_in.weight.data[:h_star, :]
+            red_blk.weight_out.weight.data = full_blk.weight_out.weight.data[:, :h_star]
+        model_reduced.final_layer.weight.data = model_masked.final_layer.weight.data
+
+    h_mask = torch.zeros(h_max)
+    h_mask[:h_star] = 1.0
+
+    x = torch.randn(5, d)
+    out_masked = model_masked(x, width_mask=h_mask)
+    out_reduced = model_reduced(x)
+    assert torch.allclose(out_masked, out_reduced, atol=1e-5)
 
 
 def test_h_mask_gradients():
-    """Test that gradients are identical between masked and reduced models."""
-    
-    # Create configuration
-    config = ModelConfig(
-        d=3,
-        n_val=100,
-        n=1000,
-        batch_size=32,
-        layer_norm="rms_norm",
-        lr=0.001,
-        epochs=10,
-        weight_decay=0.0,
-        hidden_sizes=[6],  # One block with hidden size 6
-        d_model=None
-    )
-    
-    # Create models
-    model_full = ResNetStandard(config, h_list=[6])
-    model_reduced = ResNetStandard(config, h_list=[3])
-    
-    # Copy weights from full model to reduced model (first 3 dimensions)
+    """Gradients match between masked h model and base smaller-h model when weights align."""
+    d = 3
+    h_max = 6
+    h_star = 3
+    c_full = Config(d=d, n_val=100, n=1000, batch_size=32, lr=0.001, epochs=1, weight_decay=0.0,
+                    h=h_max, num_layers=1, d_model=None, width_varyer="h")
+    c_reduced = Config(d=d, n_val=100, n=1000, batch_size=32, lr=0.001, epochs=1, weight_decay=0.0,
+                       h=h_star, num_layers=1, d_model=None)
+
+    model_masked = ResnetH(c_full)
+    model_reduced = Resnet(c_reduced)
+
     with torch.no_grad():
-        model_reduced.blocks[0].weight_in.weight.data = model_full.blocks[0].weight_in.weight.data[:3, :]
-        model_reduced.blocks[0].weight_out.weight.data = model_full.blocks[0].weight_out.weight.data[:, :3]
-        model_reduced.final_layer.weight.data = model_full.final_layer.weight.data
-    
-    # Create h_mask with first 3 elements as 1.0, rest as 0.0
-    h_mask = torch.zeros(6)
-    h_mask[:3] = 1.0
-    
-    # Test input and target (need separate inputs for separate backward passes)
-    x_masked = torch.randn(2, 3, requires_grad=True)
+        model_reduced.blocks[0].weight_in.weight.data = model_masked.blocks[0].weight_in.weight.data[:h_star, :]
+        model_reduced.blocks[0].weight_out.weight.data = model_masked.blocks[0].weight_out.weight.data[:, :h_star]
+        model_reduced.final_layer.weight.data = model_masked.final_layer.weight.data
+
+    h_mask = torch.zeros(h_max)
+    h_mask[:h_star] = 1.0
+
+    x_masked = torch.randn(2, d, requires_grad=True)
     x_reduced = x_masked.clone().detach().requires_grad_(True)
     target = torch.randn(2)
-    
-    # Forward pass with masked model
-    output_masked = model_full(x_masked, h_mask=h_mask)
-    loss_masked = torch.nn.functional.mse_loss(output_masked, target)
-    
-    # Forward pass with reduced model
-    output_reduced = model_reduced(x_reduced)
-    loss_reduced = torch.nn.functional.mse_loss(output_reduced, target)
-    
-    # Compute gradients
+
+    out_masked = model_masked(x_masked, width_mask=h_mask)
+    out_reduced = model_reduced(x_reduced)
+    loss_masked = torch.nn.functional.mse_loss(out_masked, target)
+    loss_reduced = torch.nn.functional.mse_loss(out_reduced, target)
+
     loss_masked.backward()
     loss_reduced.backward()
-    
-    # Check that outputs are nearly identical
-    assert torch.allclose(output_masked, output_reduced, atol=1e-5), "Outputs should be nearly identical"
-    
-    # Check that losses are nearly identical
-    assert torch.allclose(loss_masked, loss_reduced, atol=1e-5), "Losses should be nearly identical"
-    
-    # Check gradients for input
-    assert torch.allclose(x_masked.grad, x_reduced.grad, atol=1e-5), "Input gradients should be identical"
-    
-    # Check gradients for corresponding weights in both models
-    # Input layer weights (first 3 rows should match)
-    full_input_grad = model_full.blocks[0].weight_in.weight.grad[:3, :]
-    reduced_input_grad = model_reduced.blocks[0].weight_in.weight.grad
-    assert torch.allclose(full_input_grad, reduced_input_grad, atol=1e-5), "Input weight gradients should match"
-    
-    # Output layer weights (first 3 columns should match)
-    full_output_grad = model_full.blocks[0].weight_out.weight.grad[:, :3]
-    reduced_output_grad = model_reduced.blocks[0].weight_out.weight.grad
-    assert torch.allclose(full_output_grad, reduced_output_grad, atol=1e-5), "Output weight gradients should match"
-    
-    # Final layer weights should match
-    assert torch.allclose(model_full.final_layer.weight.grad, model_reduced.final_layer.weight.grad, atol=1e-5), "Final layer gradients should match"
+
+    assert torch.allclose(out_masked, out_reduced, atol=1e-5)
+    assert torch.allclose(loss_masked, loss_reduced, atol=1e-5)
+    assert torch.allclose(x_masked.grad, x_reduced.grad, atol=1e-5)
+
+    full_in_grad = model_masked.blocks[0].weight_in.weight.grad[:h_star, :]
+    red_in_grad = model_reduced.blocks[0].weight_in.weight.grad
+    assert torch.allclose(full_in_grad, red_in_grad, atol=1e-5)
+
+    full_out_grad = model_masked.blocks[0].weight_out.weight.grad[:, :h_star]
+    red_out_grad = model_reduced.blocks[0].weight_out.weight.grad
+    assert torch.allclose(full_out_grad, red_out_grad, atol=1e-5)
+
+    assert torch.allclose(model_masked.final_layer.weight.grad, model_reduced.final_layer.weight.grad, atol=1e-5)
+
+
+def test_d_model_mask_forward_pass():
+    """d_model mask simulates a base Resnet with d_model* (no down-rank)."""
+    d = 5
+    d_model_max = 12
+    d_model_star = 7
+    h = 6
+    c_masked = Config(d=d, n_val=10, n=10, batch_size=2, lr=1e-3, epochs=1, weight_decay=0.0,
+                      h=h, num_layers=2, d_model=d_model_max, width_varyer="d_model")
+    c_reduced = Config(d=d, n_val=10, n=10, batch_size=2, lr=1e-3, epochs=1, weight_decay=0.0,
+                       h=h, num_layers=2, d_model=d_model_star)
+
+    model_masked = ResnetDModel(c_masked)
+    model_reduced = Resnet(c_reduced)
+
+    with torch.no_grad():
+        # Align input projection
+        model_reduced.input_projection.weight.data = model_masked.input_projection.weight.data[:d_model_star, :]
+        # Align block weights (match d_model* columns)
+        for full_blk, red_blk in zip(model_masked.blocks, model_reduced.blocks):
+            red_blk.weight_in.weight.data = full_blk.weight_in.weight.data[:, :d_model_star]
+            red_blk.weight_out.weight.data = full_blk.weight_out.weight.data[:d_model_star, :]
+        # Align final layer (first d_model* columns)
+        model_reduced.final_layer.weight.data = model_masked.final_layer.weight.data[:, :d_model_star]
+
+    d_mask = torch.zeros(d_model_max)
+    d_mask[:d_model_star] = 1.0
+
+    x = torch.randn(3, d)
+    out_masked = model_masked(x, width_mask=d_mask)
+    out_reduced = model_reduced(x)
+    assert torch.allclose(out_masked, out_reduced, atol=1e-5)
+
+
+def test_down_rank_dim_mask_forward_pass():
+    """down_rank_dim mask simulates base Resnet with down_rank_dim*."""
+    d = 4
+    d_model = None
+    h = 6
+    dr_max = 8
+    dr_star = 5
+    c_masked = Config(d=d, n_val=10, n=10, batch_size=2, lr=1e-3, epochs=1, weight_decay=0.0,
+                      h=h, num_layers=2, d_model=d_model, down_rank_dim=dr_max, width_varyer="down_rank_dim")
+    c_reduced = Config(d=d, n_val=10, n=10, batch_size=2, lr=1e-3, epochs=1, weight_decay=0.0,
+                       h=h, num_layers=2, d_model=d_model, down_rank_dim=dr_star)
+
+    model_masked = ResnetDownRankDim(c_masked)
+    model_reduced = Resnet(c_reduced)
+
+    with torch.no_grad():
+        # Align all pre-down-rank weights (blocks are same shape)
+        for full_blk, red_blk in zip(model_masked.blocks, model_reduced.blocks):
+            red_blk.weight_in.weight.data = full_blk.weight_in.weight.data
+            red_blk.weight_out.weight.data = full_blk.weight_out.weight.data
+        # Align down-rank layer and final
+        model_reduced.down_rank_layer.weight.data = model_masked.down_rank_layer.weight.data[:dr_star, :]
+        model_reduced.final_layer.weight.data = model_masked.final_layer.weight.data[:, :dr_star]
+
+    dr_mask = torch.zeros(dr_max)
+    dr_mask[:dr_star] = 1.0
+
+    x = torch.randn(3, d)
+    out_masked = model_masked(x, width_mask=dr_mask)
+    out_reduced = model_reduced(x)
+    assert torch.allclose(out_masked, out_reduced, atol=1e-5)

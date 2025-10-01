@@ -27,7 +27,6 @@ def main():
         n_val=1000,
         n=512,
         batch_size=128,
-        layer_norm="rms_norm",
         lr=1e-3,
         epochs=300,
         weight_decay=0.001,

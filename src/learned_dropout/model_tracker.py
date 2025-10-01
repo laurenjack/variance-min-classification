@@ -3,7 +3,7 @@ import numpy as np
 import torch
 
 
-class ResNetStandardTracker:
+class ResnetTracker:
     def __init__(self, track_weights=True):
         """
         Parameters:
@@ -26,7 +26,7 @@ class ResNetStandardTracker:
 
     def update(self, model, val_acc, train_acc=None, val_loss=None, train_loss=None):
         """
-        For a standard ResNet, record:
+        For a Resnet, record:
           - The weight matrices from each residual block (each block has two weight matrices: weight_in and weight_out)
           - The weight matrix from the down-rank layer (if it exists)
           - The weight matrix from the final linear layer (model.final_layer)
@@ -55,15 +55,15 @@ class ResNetStandardTracker:
             
             self.weight_history.append(linear_weights)
             
-            # Track layer norm weights
+            # Track RMS norm weights
             norm_weights = []
             
-            # Track layer norm weights from each residual block
+            # Track RMS norm weights from each residual block
             for block in model.blocks:
-                norm_weights.append(block.layer_norm.weight.detach().cpu().numpy().copy())
+                norm_weights.append(block.rms_norm.weight.detach().cpu().numpy().copy())
             
-            # Track final layer norm weights
-            norm_weights.append(model.final_layer_norm.weight.detach().cpu().numpy().copy())
+            # Track final RMS norm weights
+            norm_weights.append(model.final_rms_norm.weight.detach().cpu().numpy().copy())
             
             self.norm_history.append(norm_weights)
         else:
@@ -79,7 +79,7 @@ class ResNetStandardTracker:
 
     def _get_weight_titles(self):
         """
-        Return titles for the linear layer weight matrices in a standard ResNet.
+        Return titles for the linear layer weight matrices in a Resnet.
         Distinguishes between hidden layers (blocks) and final layers (down-rank + output).
         """
         titles = []
@@ -115,7 +115,7 @@ class ResNetStandardTracker:
 
     def _get_norm_titles(self):
         """
-        Return titles for the layer norm weight vectors in a standard ResNet.
+        Return titles for the layer norm weight vectors in a Resnet.
         Distinguishes between hidden layer norms (blocks) and final layer norm.
         """
         titles = []

@@ -3,13 +3,13 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
-from src.learned_dropout.models_standard import ResNetStandard
+from src.learned_dropout.models import Resnet
 from src.learned_dropout.config import Config
 
 
 def train_once(device, problem, validation_set, c: Config, percent_correct: float = 1.0):
     """
-    Create and train a ResNet model with weight tracking for testing purposes.
+    Create and train a Resnet model with weight tracking for testing purposes.
     
     Parameters:
         device: torch.device to run computation on
@@ -17,7 +17,7 @@ def train_once(device, problem, validation_set, c: Config, percent_correct: floa
         validation_set: Tuple of (x_val, y_val) tensors
         c: Config containing training and architecture parameters
     """
-    print(f"Starting training with ResNet: d={c.d}, d_model={c.d_model}, h={c.h}, num_layers={c.num_layers}, layer_norm={c.layer_norm}")
+    print(f"Starting training with Resnet: d={c.d}, d_model={c.d_model}, h={c.h}, num_layers={c.num_layers}")
     
     # Generate training data
     x_train, y_train, _ = problem.generate_dataset(c.n, shuffle=True, percent_correct=percent_correct)
@@ -27,8 +27,8 @@ def train_once(device, problem, validation_set, c: Config, percent_correct: floa
     train_dataset = TensorDataset(x_train, y_train)
     train_loader = DataLoader(train_dataset, batch_size=c.batch_size, shuffle=True)
     
-    # Create ResNet model
-    model = ResNetStandard(c).to(device)
+    # Create Resnet model
+    model = Resnet(c).to(device)
     
     # Create weight tracker with tracking enabled
     tracker = model.get_tracker(track_weights=c.is_weight_tracker)

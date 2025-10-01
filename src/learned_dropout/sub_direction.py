@@ -6,7 +6,7 @@ from src.learned_dropout.sense_check import train_once
 
 
 def main():
-    torch.manual_seed(38173)
+    # torch.manual_seed(38173)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Problem: SubDirections with requested parameters
@@ -14,10 +14,10 @@ def main():
     problem = SubDirections(
         true_d=12,
         sub_d=4,
-        perms=24,
+        centers=24,
         num_class=2,
         sigma=0.2,
-        noisy_d=12,
+        noisy_d=0,
         random_basis=True,
         device=device
     )
@@ -26,14 +26,13 @@ def main():
     model_config = Config(
         d=problem.d,
         n_val=1000,
-        n=1280,
-        batch_size=128,
-        layer_norm="rms_norm",
+        n=512,
+        batch_size=64,
         lr=1e-3,
-        epochs=1000,
+        epochs=300,
         weight_decay=0.001,
-        h=20,
-        num_layers=1,
+        h=40,
+        num_layers=2,
         is_weight_tracker=False,
         l1_final=None,
         d_model=20

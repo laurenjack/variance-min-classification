@@ -24,7 +24,7 @@ def main():
     problem = SubDirections(
         true_d=12,
         sub_d=4,
-        perms=24,
+        centers=24,
         num_class=2,
         sigma=0.2,
         noisy_d=0,
@@ -36,26 +36,35 @@ def main():
     # problem = Gaussian(d=d, perfect_class_balance=True)
     
     # Experiment parameters
-    h_range = list(range(4, 21, 4))
+    # h_range = list(range(2, 31, 2))
+    # h = max(h_range)
+    # d_model = 20
+    h = 40
+    # d_model = 20
+    width_range = list(range(2, 21, 2))
+    d_model = max(width_range)
+    # width_range = list(range(2, 21, 2))
+    # down_rank_dim = max(width_range)
+    down_rank_dim = 5
     num_runs = 20
-    h_max = max(h_range)
+    
     
     # Base configuration parameters
     c = Config(
         d=problem.d,
         n_val=1000,
-        n=1280,
-        batch_size=128,
-        layer_norm="rms_norm",
+        n=512,
+        batch_size=64,
         lr=1e-3,
         epochs=300,
         weight_decay=0.001,
-        h=h_max,
+        h=h,
         num_layers=2,
-        d_model=20,
+        d_model=d_model,
         l1_final=None,
         is_weight_tracker=False,
-        down_rank_dim=None
+        down_rank_dim=down_rank_dim,
+        width_varyer="d_model"
     )
     
     # Generate validation set with class-balanced sampling
@@ -71,8 +80,8 @@ def main():
     #h_list = [20, 20, 20]
     # run_d_model_experiment(device, problem, validation_set, c, h_list)
     
-    # Run ResNet experiments
-    run_list_resnet_experiment(device, problem, validation_set, [c], h_range, num_runs, percent_correct)
+    # Run Resnet experiments
+    run_list_resnet_experiment(device, problem, validation_set, [c], width_range, num_runs, percent_correct)
 
 
 if __name__ == "__main__":
