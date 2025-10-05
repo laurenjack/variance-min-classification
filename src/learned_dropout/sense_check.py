@@ -7,7 +7,7 @@ from src.learned_dropout.models import Resnet
 from src.learned_dropout.config import Config
 
 
-def train_once(device, problem, validation_set, c: Config, percent_correct: float = 1.0):
+def train_once(device, problem, validation_set, c: Config, use_percent_correct: bool = True):
     """
     Create and train a Resnet model with weight tracking for testing purposes.
     
@@ -20,7 +20,7 @@ def train_once(device, problem, validation_set, c: Config, percent_correct: floa
     print(f"Starting training with Resnet: d={c.d}, d_model={c.d_model}, h={c.h}, num_layers={c.num_layers}")
     
     # Generate training data
-    x_train, y_train, _ = problem.generate_dataset(c.n, shuffle=True, percent_correct=percent_correct)
+    x_train, y_train, _ = problem.generate_dataset(c.n, shuffle=True, use_percent_correct=use_percent_correct)
     x_train, y_train = x_train.to(device), y_train.to(device)
     
     # Create data loader for batch training
