@@ -14,11 +14,11 @@ from src.learned_dropout.config import Config
 from src.learned_dropout.models import create_resnet
 
 
-def _generate_training_sets(problem, c: Config, num_runs: int, device: torch.device, percent_correct: float) -> List[Tuple[Tensor, Tensor]]:
+def _generate_training_sets(problem, c: Config, num_runs: int, device: torch.device, use_percent_correct: bool) -> List[Tuple[Tensor, Tensor]]:
     # Generate all training sets once, outside the loops
     training_sets = []
     for _ in range(num_runs):
-        x_train, y_train, _ = problem.generate_dataset(c.n, shuffle=True, percent_correct=percent_correct)
+        x_train, y_train, _ = problem.generate_dataset(c.n, shuffle=True, use_percent_correct=use_percent_correct)
         x_train, y_train = x_train.to(device), y_train.to(device)
         training_sets.append((x_train, y_train))
     return training_sets
@@ -44,7 +44,7 @@ def run_experiment_parallel(
     c: Config,
     width_range: list[int],
     num_runs: int,
-    percent_correct: float
+    use_percent_correct: bool,
 ) -> tuple[list, list, list, list]:
     """
     Run num_widths * num_runs experiments in parallel for Resnet models.
@@ -52,7 +52,7 @@ def run_experiment_parallel(
     We are running experiments at different neural network widths (e.g. h values).
     """
     x_val, y_val, center_indices_val = validation_set
-    training_sets = _generate_training_sets(problem, c, num_runs, device, percent_correct)
+    training_sets = _generate_training_sets(problem, c, num_runs, device, use_percent_correct)
     model_lists = _build_models(c, width_range, num_runs, device)
     
     num_widths = len(width_range)

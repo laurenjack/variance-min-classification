@@ -10,6 +10,7 @@ def main():
     torch.manual_seed(38173)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     percent_correct = 0.8
+    use_percent_correct = True
     
     # Problem: HyperXorNormal with requested parameters
     true_d = 3
@@ -29,6 +30,7 @@ def main():
         sigma=0.2,
         noisy_d=0,
         random_basis=True,
+        percent_correct=percent_correct,
         device=device
     )   
 
@@ -40,12 +42,12 @@ def main():
     # h = max(h_range)
     # d_model = 20
     h = 40
-    # d_model = 20
+    d_model = 20
     width_range = list(range(2, 21, 2))
-    d_model = max(width_range)
-    # width_range = list(range(2, 21, 2))
-    # down_rank_dim = max(width_range)
-    down_rank_dim = 5
+    # d_model = max(width_range)
+    # width_range = list(range(2, 11, 1))
+    down_rank_dim = max(width_range)
+    # down_rank_dim = 5
     num_runs = 20
     
     
@@ -64,14 +66,14 @@ def main():
         l1_final=None,
         is_weight_tracker=False,
         down_rank_dim=down_rank_dim,
-        width_varyer="d_model"
+        width_varyer="down_rank_dim"
     )
     
     # Generate validation set with class-balanced sampling
     x_val, y_val, center_indices = problem.generate_dataset(
         c.n_val, 
         shuffle=True, 
-        percent_correct=1.0
+        use_percent_correct=False
     )
     validation_set = x_val.to(device), y_val.to(device), center_indices.to(device)
     
@@ -81,7 +83,15 @@ def main():
     # run_d_model_experiment(device, problem, validation_set, c, h_list)
     
     # Run Resnet experiments
-    run_list_resnet_experiment(device, problem, validation_set, [c], width_range, num_runs, percent_correct)
+    run_list_resnet_experiment(
+        device,
+        problem,
+        validation_set,
+        [c],
+        width_range,
+        num_runs,
+        use_percent_correct,
+    )
 
 
 if __name__ == "__main__":
