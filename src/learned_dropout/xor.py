@@ -23,6 +23,7 @@ def main():
     )
 
     model_config = Config(
+        model_type='resnet',
         d=d,
         n_val=1000,
         n=512,
@@ -30,10 +31,9 @@ def main():
         lr=1e-3,
         epochs=300,
         weight_decay=0.001,
-        h=20,
         num_layers=3,
+        h=20,
         is_weight_tracker=False,
-        l1_final=None,
         d_model=5
     )
 

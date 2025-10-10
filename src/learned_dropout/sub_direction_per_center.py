@@ -20,7 +20,7 @@ def main() -> None:
     random_basis = True
 
     # Sample per-center percent_correct values uniformly from {0.6, 0.8, 1.0}
-    percent_choices = torch.tensor([0.6, 0.8], dtype=torch.float32, device=device)
+    percent_choices = torch.tensor([0.6, 0.8, 1.0], dtype=torch.float32, device=device)
     percent_choice_idx_per_center = torch.randint(
         low=0,
         high=percent_choices.numel(),
@@ -44,6 +44,7 @@ def main() -> None:
 
     # Model configuration (same style as sub_direction.py)
     model_config = Config(
+        model_type='resnet',
         d=problem.d,
         n_val=1000,
         n=512,
@@ -51,10 +52,9 @@ def main() -> None:
         lr=1e-3,
         epochs=300,
         weight_decay=0.001,
-        h=80,
         num_layers=2,
+        h=80,
         is_weight_tracker=False,
-        l1_final=None,
         d_model=40,
         down_rank_dim=None
     )
@@ -68,7 +68,7 @@ def main() -> None:
 
     # Train the model using sense_check (kept consistent with sub_direction.py)
     validation_set = x_val.to(device), y_val.to(device), center_indices.to(device)
-    model, _ = train_once(device, problem, validation_set, model_config, use_percent_correct=True)
+    model, _, _, _, _ = train_once(device, problem, validation_set, model_config, use_percent_correct=True)
 
     # Evaluate model predictions against the true center class (exclude label noise)
     model.eval()

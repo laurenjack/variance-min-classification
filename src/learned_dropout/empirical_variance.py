@@ -11,7 +11,7 @@ from torch.func import vmap, stack_module_state, functional_call, grad_and_value
 
 from src import dataset_creator
 from src.learned_dropout.config import Config
-from src.learned_dropout.models import create_resnet
+from src.learned_dropout.models import create_model
 
 
 def _generate_training_sets(problem, c: Config, num_runs: int, device: torch.device, use_percent_correct: bool) -> List[Tuple[Tensor, Tensor]]:
@@ -32,7 +32,7 @@ def _build_models(c: Config, width_range: list[int], num_runs: int, device: torc
     for _ in range(num_widths):
         models = []
         for _ in range(num_runs):
-            model = create_resnet(c).to(device)
+            model = create_model(c).to(device)
             models.append(model)
         model_lists.append(models)
     return model_lists
@@ -47,9 +47,9 @@ def run_experiment_parallel(
     use_percent_correct: bool,
 ) -> tuple[list, list, list, list]:
     """
-    Run num_widths * num_runs experiments in parallel for Resnet models.
+    Run num_widths * num_runs experiments in parallel for models (Resnet or MLP).
 
-    We are running experiments at different neural network widths (e.g. h values).
+    We are running experiments at different neural network widths (e.g. h, d_model, or down_rank_dim values).
     """
     x_val, y_val, center_indices_val = validation_set
     training_sets = _generate_training_sets(problem, c, num_runs, device, use_percent_correct)

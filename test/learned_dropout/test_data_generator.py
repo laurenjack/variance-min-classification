@@ -378,3 +378,483 @@ def test_gaussian_centers():
     # All samples should come from center 0
     assert center_indices.shape == (10,)
     assert torch.all(center_indices == 0)
+
+
+def test_two_gaussians_basic():
+    """Test basic TwoGaussians functionality."""
+    from src.learned_dropout.data_generator import TwoGaussians
+    from scipy.stats import norm
+    
+    # Set seed for reproducibility
+    torch.manual_seed(42)
+    
+    # Test basic instantiation
+    problem = TwoGaussians(true_d=10, noisy_d=5, percent_correct=0.9)
+    
+    # Check dimensions
+    assert problem.d == 15  # true_d + noisy_d
+    assert problem.true_d == 10
+    assert problem.noisy_d == 5
+    
+    # Check mean vector norm is correct
+    expected_norm = norm.ppf(0.9)
+    actual_norm = torch.norm(problem.mu).item()
+    assert abs(actual_norm - expected_norm) < 1e-5, f"Expected norm {expected_norm}, got {actual_norm}"
+    
+    # Test dataset generation
+    x, y, center_indices = problem.generate_dataset(n=100)
+    assert x.shape == (100, 15)
+    assert y.shape == (100,)
+    assert center_indices.shape == (100,)
+    
+    # Check class balance
+    class_0_count = torch.sum(y == 0).item()
+    class_1_count = torch.sum(y == 1).item()
+    assert class_0_count == 50
+    assert class_1_count == 50
+    
+    # Check labels match centers
+    assert torch.all(y == center_indices)
+
+
+def test_two_gaussians_validation():
+    """Test TwoGaussians input validation."""
+    from src.learned_dropout.data_generator import TwoGaussians
+    
+    # Test invalid true_d
+    with pytest.raises(ValueError):
+        TwoGaussians(true_d=0, percent_correct=0.9)
+    
+    with pytest.raises(ValueError):
+        TwoGaussians(true_d=-5, percent_correct=0.9)
+    
+    # Test invalid noisy_d
+    with pytest.raises(ValueError):
+        TwoGaussians(true_d=5, noisy_d=-1, percent_correct=0.9)
+    
+    # Test invalid percent_correct
+    with pytest.raises(ValueError):
+        TwoGaussians(true_d=5, percent_correct=0.5)  # Must be > 0.5
+    
+    with pytest.raises(ValueError):
+        TwoGaussians(true_d=5, percent_correct=1.0)  # Can't be exactly 1.0
+    
+    with pytest.raises(ValueError):
+        TwoGaussians(true_d=5, percent_correct=1.1)  # Must be < 1.0
+    
+    with pytest.raises(ValueError):
+        TwoGaussians(true_d=5, percent_correct=0.3)  # Must be > 0.5
+
+
+def test_two_gaussians_percent_correct_error():
+    """Test that percent_correct cannot be passed to generate_dataset."""
+    from src.learned_dropout.data_generator import TwoGaussians
+    
+    torch.manual_seed(42)
+    problem = TwoGaussians(true_d=5, percent_correct=0.9)
+    
+    # Should raise error if percent_correct is passed
+    with pytest.raises(ValueError, match="percent_correct cannot be specified"):
+        problem.generate_dataset(n=100, percent_correct=0.8)
+    
+    # Should work fine without percent_correct
+    x, y, center_indices = problem.generate_dataset(n=100)
+    assert x.shape == (100, 5)
+
+
+def test_two_gaussians_class_balance():
+    """Test that TwoGaussians maintains class balance."""
+    from src.learned_dropout.data_generator import TwoGaussians
+    
+    torch.manual_seed(123)
+    problem = TwoGaussians(true_d=8, percent_correct=0.85)
+    
+    # Test even n
+    x, y, center_indices = problem.generate_dataset(n=200, shuffle=False)
+    assert torch.sum(y == 0).item() == 100
+    assert torch.sum(y == 1).item() == 100
+    
+    # Test odd n
+    x2, y2, center_indices2 = problem.generate_dataset(n=201, shuffle=False)
+    class_0_count = torch.sum(y2 == 0).item()
+    class_1_count = torch.sum(y2 == 1).item()
+    # One class should have 100, the other 101
+    assert class_0_count + class_1_count == 201
+    assert abs(class_0_count - class_1_count) == 1
+
+
+def test_two_gaussians_noisy_dimensions():
+    """Test that noisy dimensions are properly added."""
+    from src.learned_dropout.data_generator import TwoGaussians
+    
+    torch.manual_seed(456)
+    
+    # Test with noisy_d = 0
+    problem_no_noise = TwoGaussians(true_d=10, noisy_d=0, percent_correct=0.9)
+    x_no_noise, _, _ = problem_no_noise.generate_dataset(n=50)
+    assert x_no_noise.shape == (50, 10)
+    
+    # Test with noisy_d > 0
+    problem_with_noise = TwoGaussians(true_d=10, noisy_d=5, percent_correct=0.9)
+    x_with_noise, _, _ = problem_with_noise.generate_dataset(n=50)
+    assert x_with_noise.shape == (50, 15)
+
+
+def test_two_gaussians_shuffle():
+    """Test that shuffle flag works correctly."""
+    from src.learned_dropout.data_generator import TwoGaussians
+    
+    torch.manual_seed(789)
+    problem = TwoGaussians(true_d=5, percent_correct=0.9)
+    
+    # Generate without shuffle
+    torch.manual_seed(100)
+    x1, y1, center_indices1 = problem.generate_dataset(n=100, shuffle=False)
+    
+    # Generate again with same seed
+    torch.manual_seed(100)
+    x2, y2, center_indices2 = problem.generate_dataset(n=100, shuffle=False)
+    
+    # Should be identical
+    assert torch.allclose(x1, x2)
+    assert torch.equal(y1, y2)
+    
+    # Generate with shuffle
+    torch.manual_seed(100)
+    x3, y3, center_indices3 = problem.generate_dataset(n=100, shuffle=True)
+    
+    # Should have same class distribution but different order
+    assert torch.sum(y3 == 0).item() == torch.sum(y1 == 0).item()
+    # Order should be different (with high probability)
+    assert not torch.equal(y1, y3) or not torch.allclose(x1, x3)
+
+
+def test_two_gaussians_overlap_statistical():
+    """Test that the overlap between Gaussians matches percent_correct using statistical validation."""
+    from src.learned_dropout.data_generator import TwoGaussians
+    from scipy.stats import binom
+    
+    # Set seed for reproducibility
+    torch.manual_seed(42)
+    
+    # Create problem with known percent_correct
+    percent_correct = 0.8
+    problem = TwoGaussians(true_d=20, noisy_d=0, percent_correct=percent_correct)
+    
+    # Generate large dataset
+    n = 10000
+    x, y, center_indices = problem.generate_dataset(n=n, shuffle=False)
+    
+    # For each sample, check if it's closer to its own center or the other center
+    # Center 0 is at +mu, Center 1 is at -mu
+    # Decision boundary is x^T mu = 0
+    
+    # Compute distances to both centers for all samples
+    # For samples from center 0 (class 0):
+    mask_class_0 = (y == 0)
+    x_class_0 = x[mask_class_0]  # (n/2, true_d)
+    n_class_0 = x_class_0.shape[0]
+    
+    # Distance to own center (mu) vs other center (-mu)
+    # Since we're comparing ||x - mu||^2 vs ||x - (-mu)||^2
+    # This simplifies to comparing 2*x^T*mu (positive means closer to mu)
+    projection_0 = x_class_0 @ problem.mu  # (n/2,)
+    correct_class_0 = (projection_0 > 0).sum().item()
+    
+    # For samples from center 1 (class 1):
+    mask_class_1 = (y == 1)
+    x_class_1 = x[mask_class_1]
+    n_class_1 = x_class_1.shape[0]
+    
+    # For class 1, samples should be closer to -mu, so projection should be negative
+    projection_1 = x_class_1 @ problem.mu
+    correct_class_1 = (projection_1 < 0).sum().item()
+    
+    # Calculate empirical percent_correct
+    total_correct = correct_class_0 + correct_class_1
+    empirical_percent_correct = total_correct / n
+    
+    # Statistical test with alpha = 0.01
+    # Under null hypothesis: true percent_correct = 0.8
+    # We have n Bernoulli trials
+    # Use binomial test to check if empirical_percent_correct is consistent with 0.8
+    
+    # Calculate 99% confidence interval (alpha = 0.01)
+    # Two-tailed test, so we use alpha/2 = 0.005 on each tail
+    lower_bound = binom.ppf(0.005, n, percent_correct) / n
+    upper_bound = binom.ppf(0.995, n, percent_correct) / n
+    
+    # Assert that empirical percent_correct falls within the confidence interval
+    assert lower_bound <= empirical_percent_correct <= upper_bound, \
+        f"Empirical percent_correct {empirical_percent_correct:.4f} is outside 99% CI [{lower_bound:.4f}, {upper_bound:.4f}]"
+    
+    print(f"Empirical percent_correct: {empirical_percent_correct:.4f}")
+    print(f"99% CI: [{lower_bound:.4f}, {upper_bound:.4f}]")
+    print(f"Test passed: overlap matches expected percent_correct={percent_correct}")
+
+
+def test_two_directions_basic():
+    """Test basic TwoDirections functionality."""
+    from src.learned_dropout.data_generator import TwoDirections
+    
+    # Set seed for reproducibility
+    torch.manual_seed(42)
+    
+    # Test basic instantiation
+    problem = TwoDirections(true_d=10, noisy_d=5, percent_correct=0.9)
+    
+    # Check dimensions
+    assert problem.d == 15  # true_d + noisy_d
+    assert problem.true_d == 10
+    assert problem.noisy_d == 5
+    
+    # Check mean vector is unit norm
+    actual_norm = torch.norm(problem.mu).item()
+    assert abs(actual_norm - 1.0) < 1e-5, f"Expected unit norm, got {actual_norm}"
+    
+    # Test dataset generation
+    x, y, center_indices = problem.generate_dataset(n=100)
+    assert x.shape == (100, 15)
+    assert y.shape == (100,)
+    assert center_indices.shape == (100,)
+    
+    # Check class balance
+    class_0_count = torch.sum(y == 0).item()
+    class_1_count = torch.sum(y == 1).item()
+    assert class_0_count == 50
+    assert class_1_count == 50
+
+
+def test_two_directions_deterministic():
+    """Test exact generation with no sigma, random_basis=False, n=100, percent_correct=0.8."""
+    from src.learned_dropout.data_generator import TwoDirections
+    
+    # Create problem with no sigma and no random basis
+    problem = TwoDirections(
+        true_d=5,
+        noisy_d=0,
+        percent_correct=0.8,
+        sigma=None,
+        random_basis=False
+    )
+    
+    # Generate dataset without shuffling for deterministic testing
+    n = 100
+    x, y, center_indices = problem.generate_dataset(n=n, shuffle=False)
+    
+    # Check shapes
+    assert x.shape == (100, 5)
+    assert y.shape == (100,)
+    assert center_indices.shape == (100,)
+    
+    # Check class balance (50 from each center)
+    unique_centers, center_counts = torch.unique(center_indices, return_counts=True)
+    assert len(unique_centers) == 2
+    assert center_counts[0].item() == 50
+    assert center_counts[1].item() == 50
+    
+    # First 50 samples should be from center 0, last 50 from center 1
+    assert torch.all(center_indices[:50] == 0)
+    assert torch.all(center_indices[50:] == 1)
+    
+    # Without sigma and noisy_d=0, all samples from center 0 should be exactly at mu
+    # All samples from center 1 should be exactly at -mu
+    for i in range(50):
+        assert torch.allclose(x[i], problem.mu, atol=1e-6)
+    for i in range(50, 100):
+        assert torch.allclose(x[i], -problem.mu, atol=1e-6)
+    
+    # Check label noise: 20% of 100 = 20 flipped labels
+    # These should be balanced: 10 from class 0, 10 from class 1
+    num_incorrect = round(n * (1.0 - 0.8))
+    assert num_incorrect == 20
+    
+    # Count correct and incorrect labels based on center_indices
+    # Correct label should match center index
+    num_correct = torch.sum(y == center_indices).item()
+    num_flipped = torch.sum(y != center_indices).item()
+    
+    assert num_flipped == 20, f"Expected 20 flipped labels, got {num_flipped}"
+    assert num_correct == 80, f"Expected 80 correct labels, got {num_correct}"
+    
+    # Check that flipping is balanced across classes
+    # Count flipped labels for each center
+    flipped_from_center_0 = torch.sum((center_indices == 0) & (y != 0)).item()
+    flipped_from_center_1 = torch.sum((center_indices == 1) & (y != 1)).item()
+    
+    # With round-robin balancing: 20 flips = 10 per class
+    assert flipped_from_center_0 == 10, f"Expected 10 flips from center 0, got {flipped_from_center_0}"
+    assert flipped_from_center_1 == 10, f"Expected 10 flips from center 1, got {flipped_from_center_1}"
+
+
+def test_two_directions_validation():
+    """Test TwoDirections input validation."""
+    from src.learned_dropout.data_generator import TwoDirections
+    
+    # Test invalid true_d
+    with pytest.raises(ValueError):
+        TwoDirections(true_d=0, percent_correct=0.9)
+    
+    with pytest.raises(ValueError):
+        TwoDirections(true_d=-5, percent_correct=0.9)
+    
+    # Test invalid noisy_d
+    with pytest.raises(ValueError):
+        TwoDirections(true_d=5, noisy_d=-1, percent_correct=0.9)
+    
+    # Test invalid percent_correct
+    with pytest.raises(ValueError):
+        TwoDirections(true_d=5, percent_correct=0.4)  # Must be >= 0.5
+    
+    with pytest.raises(ValueError):
+        TwoDirections(true_d=5, percent_correct=1.1)  # Must be <= 1.0
+    
+    # Test valid percent_correct = 1.0 (should work)
+    problem = TwoDirections(true_d=5, percent_correct=1.0)
+    assert problem.percent_correct == 1.0
+    
+    # Test invalid sigma
+    with pytest.raises(ValueError):
+        TwoDirections(true_d=5, sigma=-0.1)
+
+
+def test_two_directions_use_percent_correct_flag():
+    """Test the use_percent_correct flag functionality."""
+    from src.learned_dropout.data_generator import TwoDirections
+    
+    torch.manual_seed(42)
+    problem = TwoDirections(true_d=5, percent_correct=0.8)
+    
+    # Test with use_percent_correct=True (should have label noise)
+    x1, y1, center_indices1 = problem.generate_dataset(n=100, use_percent_correct=True, shuffle=False)
+    num_flipped_with_noise = torch.sum(y1 != center_indices1).item()
+    assert num_flipped_with_noise == 20, f"Expected 20 flipped labels, got {num_flipped_with_noise}"
+    
+    # Test with use_percent_correct=False (should have perfect labels)
+    torch.manual_seed(42)  # Reset seed for same randomness
+    problem2 = TwoDirections(true_d=5, percent_correct=0.8)
+    x2, y2, center_indices2 = problem2.generate_dataset(n=100, use_percent_correct=False, shuffle=False)
+    num_flipped_without_noise = torch.sum(y2 != center_indices2).item()
+    assert num_flipped_without_noise == 0, f"Expected 0 flipped labels, got {num_flipped_without_noise}"
+    
+    # Features should be the same (only labels differ)
+    assert torch.allclose(x1, x2)
+    
+    # Center indices should be the same
+    assert torch.equal(center_indices1, center_indices2)
+
+
+def test_two_directions_noisy_dimensions():
+    """Test that noisy dimensions contain {-1, +1} values."""
+    from src.learned_dropout.data_generator import TwoDirections
+    
+    torch.manual_seed(789)
+    
+    # Test with noisy_d > 0
+    problem = TwoDirections(true_d=10, noisy_d=5, percent_correct=1.0, sigma=None, random_basis=False)
+    x, y, center_indices = problem.generate_dataset(n=50, shuffle=False)
+    
+    assert x.shape == (50, 15)
+    
+    # Check that noisy dimensions (last 5 dimensions) contain only {-1, +1} values
+    noisy_dims = x[:, 10:]  # Extract noisy dimensions
+    unique_values = torch.unique(noisy_dims)
+    assert len(unique_values) <= 2, f"Expected at most 2 unique values in noisy dims, got {len(unique_values)}"
+    assert torch.all((noisy_dims == -1.0) | (noisy_dims == 1.0)), \
+           f"Expected noisy dims to contain only {{-1, +1}}, got values: {unique_values}"
+    
+    # Check that true dimensions (first 10) are at mu or -mu (without sigma)
+    # For first 25 samples (center 0), true dims should be at mu
+    assert torch.allclose(x[0, :10], problem.mu, atol=1e-6)
+    # For last 25 samples (center 1), true dims should be at -mu
+    assert torch.allclose(x[25, :10], -problem.mu, atol=1e-6)
+
+
+def test_two_directions_with_sigma():
+    """Test TwoDirections with Gaussian noise."""
+    from src.learned_dropout.data_generator import TwoDirections
+    
+    torch.manual_seed(456)
+    
+    # Create problem with sigma
+    problem = TwoDirections(true_d=5, noisy_d=0, percent_correct=1.0, sigma=0.1)
+    
+    x, y, center_indices = problem.generate_dataset(n=100, shuffle=False)
+    
+    # With sigma, samples should not be exactly at mu or -mu
+    # Check first sample from center 0
+    assert not torch.allclose(x[0], problem.mu, atol=1e-3)
+    
+    # But they should be close (within a few sigmas)
+    for i in range(50):
+        dist_to_mu = torch.norm(x[i] - problem.mu).item()
+        assert dist_to_mu < 5 * 0.1 * torch.sqrt(torch.tensor(5.0)).item()  # 5 sigma * sqrt(d)
+
+
+def test_two_directions_with_random_basis():
+    """Test TwoDirections with random basis transformation."""
+    from src.learned_dropout.data_generator import TwoDirections
+    
+    torch.manual_seed(789)
+    
+    # Create problem with random_basis
+    problem = TwoDirections(true_d=5, noisy_d=0, percent_correct=1.0, random_basis=True)
+    
+    assert problem.basis is not None
+    assert problem.basis.shape == (5, 5)
+    
+    # Check that basis is orthonormal
+    product = problem.basis.T @ problem.basis
+    identity = torch.eye(5, device=problem.device)
+    assert torch.allclose(product, identity, atol=1e-5)
+    
+    x, y, center_indices = problem.generate_dataset(n=100, shuffle=False)
+    
+    # After transformation, samples should not be at mu or -mu in original space
+    # (they are rotated)
+    assert not torch.allclose(x[0], problem.mu, atol=1e-3)
+
+
+def test_two_directions_perfect_labels():
+    """Test that percent_correct=1.0 produces no label noise."""
+    from src.learned_dropout.data_generator import TwoDirections
+    
+    torch.manual_seed(111)
+    
+    problem = TwoDirections(true_d=8, percent_correct=1.0)
+    
+    x, y, center_indices = problem.generate_dataset(n=200, shuffle=False)
+    
+    # All labels should match center indices (no flipping)
+    assert torch.all(y == center_indices)
+
+
+def test_two_directions_label_noise_balanced():
+    """Test that label noise is balanced across classes."""
+    from src.learned_dropout.data_generator import TwoDirections
+    
+    torch.manual_seed(222)
+    
+    # Test with odd number of flips
+    problem = TwoDirections(true_d=5, percent_correct=0.85)  # 15% incorrect
+    
+    n = 100
+    x, y, center_indices = problem.generate_dataset(n=n, shuffle=False)
+    
+    num_incorrect = round(n * 0.15)  # 15
+    
+    # Count flipped labels
+    flipped_mask = (y != center_indices)
+    num_flipped = torch.sum(flipped_mask).item()
+    
+    assert num_flipped == num_incorrect
+    
+    # Check balance across classes (should be 7 or 8 per class)
+    flipped_from_center_0 = torch.sum((center_indices == 0) & flipped_mask).item()
+    flipped_from_center_1 = torch.sum((center_indices == 1) & flipped_mask).item()
+    
+    # Total should equal num_incorrect
+    assert flipped_from_center_0 + flipped_from_center_1 == num_incorrect
+    
+    # Balance: difference should be at most 1
+    assert abs(flipped_from_center_0 - flipped_from_center_1) <= 1
