@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from typing import Optional
 
 from src.learned_dropout.model_tracker import ResnetTracker
+from src.learned_dropout.model_tracker import MLPTracker
 from src.learned_dropout.config import Config
 
 
@@ -54,21 +55,27 @@ class MaskedRMSNorm(RMSNorm):
 
 
 class ResidualBlock(nn.Module):
-    def __init__(self, d, h):
+    def __init__(self, d, h, is_norm=True):
         """
         d: Dimension of the residual stream.
         h: Hidden dimension for the block.
+        is_norm: Whether to apply RMSNorm (default True).
         """
         super(ResidualBlock, self).__init__()
 
-        self.rms_norm = RMSNorm(d)
+        self.is_norm = is_norm
+        if is_norm:
+            self.rms_norm = RMSNorm(d)
+        else:
+            self.rms_norm = None
 
         self.weight_in = nn.Linear(d, h, bias=False)
         self.weight_out = nn.Linear(h, d, bias=False)
 
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):
         # Base ResidualBlock ignores width_mask
-        x = self.rms_norm(x)
+        if self.is_norm:
+            x = self.rms_norm(x)
         hidden = self.weight_in(x)
         hidden = F.relu(hidden)
         out = self.weight_out(hidden)
@@ -76,21 +83,27 @@ class ResidualBlock(nn.Module):
 
 
 class ResidualBlockH(nn.Module):
-    def __init__(self, d, h):
+    def __init__(self, d, h, is_norm=True):
         """
         ResidualBlockH that handles width_mask for the h parameter.
         
         d: Dimension of the residual stream.
         h: Hidden dimension for the block.
+        is_norm: Whether to apply RMSNorm (default True).
         """
         super(ResidualBlockH, self).__init__()
-        self.rms_norm = RMSNorm(d)
+        self.is_norm = is_norm
+        if is_norm:
+            self.rms_norm = RMSNorm(d)
+        else:
+            self.rms_norm = None
 
         self.weight_in = nn.Linear(d, h, bias=False)
         self.weight_out = nn.Linear(h, d, bias=False)
 
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):
-        x = self.rms_norm(x)
+        if self.is_norm:
+            x = self.rms_norm(x)
         hidden = self.weight_in(x)
         hidden = F.relu(hidden)
         
@@ -115,7 +128,6 @@ class Resnet(nn.Module):
         self.input_dim = c.d
         self.d_model = c.d if c.d_model is None else c.d_model
         self.down_rank_dim = c.down_rank_dim
-        self.l1_final = c.l1_final
 
         self.input_projection = None
         # Only use if a separate d_model is specified
@@ -126,7 +138,7 @@ class Resnet(nn.Module):
 
         # Residual blocks operate in d_model space
         self.blocks = nn.ModuleList([
-            block_class(self.d_model, c.h)
+            block_class(self.d_model, c.h, is_norm=c.is_norm)
             for _ in range(c.num_layers)
         ])
         
@@ -142,20 +154,15 @@ class Resnet(nn.Module):
         
         # Add final layer normalization (pre-logit) as in transformers
         # Applied after down-rank layer if it exists
-        self.final_rms_norm = RMSNorm(final_norm_dim, has_parameters=False)
+        self.is_norm = c.is_norm
+        if c.is_norm:
+            self.final_rms_norm = RMSNorm(final_norm_dim, has_parameters=False)
+        else:
+            self.final_rms_norm = None
 
     @staticmethod
     def get_tracker(track_weights):
         return ResnetTracker(track_weights)
-    
-    def get_l1_regularization_loss(self):
-        """
-        Compute L1 regularization loss for the final layer.
-        Returns 0 if l1_final is None, otherwise returns l1_final * L1_norm(final_layer_weights).
-        """
-        if self.l1_final is None:
-            return 0.0
-        return self.l1_final * torch.sum(torch.abs(self.final_layer.weight))
 
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):
         """
@@ -181,7 +188,8 @@ class Resnet(nn.Module):
             current = self.down_rank_layer(current)
         
         # Apply final layer normalization (pre-logit)
-        current = self.final_rms_norm(current)
+        if self.is_norm:
+            current = self.final_rms_norm(current)
             
         output = self.final_layer(current)
         return output.squeeze(1)
@@ -203,7 +211,10 @@ class ResnetDownRankDim(Resnet):
         The width_mask is applied to the down-ranking layer.
         """
         super(ResnetDownRankDim, self).__init__(c)
-        self.final_rms_norm = MaskedRMSNorm(self.down_rank_dim, has_parameters=False)
+        if c.is_norm:
+            self.final_rms_norm = MaskedRMSNorm(self.down_rank_dim, has_parameters=False)
+        else:
+            self.final_rms_norm = None
         
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):
         """
@@ -232,30 +243,39 @@ class ResnetDownRankDim(Resnet):
             current = current * width_mask.unsqueeze(0)  # Broadcast across batch dimension
         
         # Apply final layer normalization (pre-logit) using mask over down-rank dims
-        current = self.final_rms_norm(current, mask=width_mask)
+        if self.is_norm:
+            current = self.final_rms_norm(current, mask=width_mask)
             
         output = self.final_layer(current)
         return output.squeeze(1)
 
 
 class ResidualBlockDModel(nn.Module):
-    def __init__(self, d, h):
+    def __init__(self, d, h, is_norm=True):
         """
         Special ResidualBlock for ResnetDModel that can handle d_model width masking.
         
         d: Maximum dimension of the residual stream.
         h: Hidden dimension for the block.
+        is_norm: Whether to apply RMSNorm (default True).
         """
         super(ResidualBlockDModel, self).__init__()
         # Use MaskedRMSNorm to compute RMS over active d_model* only
-        self.masked_rms_norm = MaskedRMSNorm(d)
+        self.is_norm = is_norm
+        if is_norm:
+            self.masked_rms_norm = MaskedRMSNorm(d)
+        else:
+            self.masked_rms_norm = None
 
         self.weight_in = nn.Linear(d, h, bias=False)
         self.weight_out = nn.Linear(h, d, bias=False)
 
     def forward(self, x, d_model_mask: Optional[torch.Tensor] = None):
         # Normalize using only active d_model* dims; zero-out inactive dims
-        x_normed = self.masked_rms_norm(x, mask=d_model_mask)
+        if self.is_norm:
+            x_normed = self.masked_rms_norm(x, mask=d_model_mask)
+        else:
+            x_normed = x
 
         hidden = self.weight_in(x_normed)
         hidden = F.relu(hidden)
@@ -278,14 +298,13 @@ class ResnetDModel(Resnet):
         self.input_dim = c.d
         self.d_model = c.d if c.d_model is None else c.d_model
         self.down_rank_dim = c.down_rank_dim
-        self.l1_final = c.l1_final
 
         # We always create an input projection to the maximum d_model, so we can mask
         self.input_projection = nn.Linear(self.input_dim, self.d_model, bias=False)
 
         # Use special ResidualBlockDModel that can handle d_model masking
         self.blocks = nn.ModuleList([
-            ResidualBlockDModel(self.d_model, c.h)
+            ResidualBlockDModel(self.d_model, c.h, is_norm=c.is_norm)
             for _ in range(c.num_layers)
         ])
         
@@ -301,7 +320,11 @@ class ResnetDModel(Resnet):
         
         # Add final layer normalization (pre-logit) as in transformers
         # Applied after down-rank layer if it exists
-        self.final_rms_norm = MaskedRMSNorm(final_norm_dim, has_parameters=False)
+        self.is_norm = c.is_norm
+        if c.is_norm:
+            self.final_rms_norm = MaskedRMSNorm(final_norm_dim, has_parameters=False)
+        else:
+            self.final_rms_norm = None
         
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):
         """
@@ -328,11 +351,247 @@ class ResnetDModel(Resnet):
         
         # Apply final layer normalization (pre-logit)
         # Pass mask only if we are still in d_model space (no down-rank)
-        if self.down_rank_layer is None:
-            current = self.final_rms_norm(current, mask=width_mask)
-        else:
-            current = self.final_rms_norm(current)
+        if self.is_norm:
+            if self.down_rank_layer is None:
+                current = self.final_rms_norm(current, mask=width_mask)
+            else:
+                current = self.final_rms_norm(current)
             
+        output = self.final_layer(current)
+        return output.squeeze(1)
+
+
+class MLP(nn.Module):
+    def __init__(self, c: Config):
+        """
+        Multi-Layer Perceptron (MLP) without residual connections.
+        
+        Args:
+            c: Configuration object containing model parameters
+        """
+        super(MLP, self).__init__()
+        self.input_dim = c.d
+        self.d_model = c.d_model if c.d_model is not None else c.d
+        self.down_rank_dim = c.down_rank_dim
+        self.num_layers = c.num_layers
+        self.is_norm = c.is_norm
+        
+        # Build MLP layers
+        layers = []
+        
+        # Input layer (only add if num_layers > 0, otherwise just identity)
+        if self.num_layers > 0:
+            layers.append(nn.Linear(self.input_dim, self.d_model, bias=False))
+            if c.is_norm:
+                layers.append(RMSNorm(self.d_model))
+            layers.append(nn.ReLU())
+            
+            # Hidden layers
+            for _ in range(self.num_layers - 1):
+                layers.append(nn.Linear(self.d_model, self.d_model, bias=False))
+                if c.is_norm:
+                    layers.append(RMSNorm(self.d_model))
+                layers.append(nn.ReLU())
+        
+        self.layers = nn.Sequential(*layers) if layers else nn.Identity()
+        
+        # Optionally add the down-ranking layer
+        if c.down_rank_dim is not None:
+            # When num_layers=0, down_rank takes input directly from input_dim
+            down_rank_input = self.input_dim if self.num_layers == 0 else self.d_model
+            self.down_rank_layer = nn.Linear(down_rank_input, c.down_rank_dim, bias=False)
+            self.final_layer = nn.Linear(c.down_rank_dim, 1, bias=False)
+            final_norm_dim = c.down_rank_dim
+        else:
+            self.down_rank_layer = None
+            # When num_layers=0, final layer takes input directly from input_dim
+            final_input = self.input_dim if self.num_layers == 0 else self.d_model
+            self.final_layer = nn.Linear(final_input, 1, bias=False)
+            final_norm_dim = final_input
+        
+        # Add final layer normalization (pre-logit)
+        if c.is_norm:
+            self.final_rms_norm = RMSNorm(final_norm_dim, has_parameters=False)
+        else:
+            self.final_rms_norm = None
+    
+    @staticmethod
+    def get_tracker(track_weights):
+        return MLPTracker(track_weights)
+    
+    def forward(self, x, width_mask: Optional[torch.Tensor] = None):
+        """
+        Forward pass through MLP.
+        Base MLP ignores width_mask.
+        
+        Args:
+            x: Input tensor
+            width_mask: Optional mask tensor (ignored in base MLP)
+        """
+        current = self.layers(x)
+        
+        # Apply optional down-ranking layer
+        if self.down_rank_layer is not None:
+            current = self.down_rank_layer(current)
+        
+        # Apply final layer normalization (pre-logit)
+        if self.is_norm:
+            current = self.final_rms_norm(current)
+        
+        output = self.final_layer(current)
+        return output.squeeze(1)
+
+
+class MLPDownRankDim(nn.Module):
+    def __init__(self, c: Config):
+        """
+        MLP that uses width_mask to vary the down_rank_dim.
+        The width_mask is applied to the down-ranking layer.
+        """
+        super(MLPDownRankDim, self).__init__()
+        self.input_dim = c.d
+        self.d_model = c.d_model if c.d_model is not None else c.d
+        self.down_rank_dim = c.down_rank_dim
+        self.num_layers = c.num_layers
+        self.is_norm = c.is_norm
+        
+        # Build MLP layers
+        layers = []
+        
+        # Input layer
+        layers.append(nn.Linear(self.input_dim, self.d_model, bias=False))
+        if c.is_norm:
+            layers.append(RMSNorm(self.d_model))
+        layers.append(nn.ReLU())
+        
+        # Hidden layers
+        for _ in range(self.num_layers - 1):
+            layers.append(nn.Linear(self.d_model, self.d_model, bias=False))
+            if c.is_norm:
+                layers.append(RMSNorm(self.d_model))
+            layers.append(nn.ReLU())
+        
+        self.layers = nn.Sequential(*layers)
+        
+        # Down-ranking layer (must exist in this model)
+        self.down_rank_layer = nn.Linear(self.d_model, c.down_rank_dim, bias=False)
+        self.final_layer = nn.Linear(c.down_rank_dim, 1, bias=False)
+        
+        # Add final layer normalization (pre-logit) using mask
+        if c.is_norm:
+            self.final_rms_norm = MaskedRMSNorm(c.down_rank_dim, has_parameters=False)
+        else:
+            self.final_rms_norm = None
+    
+    def forward(self, x, width_mask: Optional[torch.Tensor] = None):
+        """
+        Forward pass with width_mask applied to the down-ranking layer.
+        
+        Args:
+            x: Input tensor
+            width_mask: Optional tensor of shape (down_rank_dim,) containing 0.0 or 1.0 values.
+                       Applied to the down-ranking layer output.
+        """
+        current = self.layers(x)
+        
+        # Apply down-ranking layer
+        current = self.down_rank_layer(current)
+        
+        # Apply width_mask to down-ranking layer output
+        if width_mask is not None:
+            current = current * width_mask.unsqueeze(0)  # Broadcast across batch dimension
+        
+        # Apply final layer normalization (pre-logit) using mask
+        if self.is_norm:
+            current = self.final_rms_norm(current, mask=width_mask)
+        
+        output = self.final_layer(current)
+        return output.squeeze(1)
+
+
+class MLPDModel(nn.Module):
+    def __init__(self, c: Config):
+        """
+        MLP that uses width_mask to vary the d_model dimension.
+        The width_mask is applied to the model dimension throughout the network.
+        """
+        super(MLPDModel, self).__init__()
+        self.input_dim = c.d
+        self.d_model = c.d_model if c.d_model is not None else c.d
+        self.down_rank_dim = c.down_rank_dim
+        self.num_layers = c.num_layers
+        self.is_norm = c.is_norm
+        
+        # Build MLP layers manually to support masking
+        self.input_layer = nn.Linear(self.input_dim, self.d_model, bias=False)
+        if c.is_norm:
+            self.input_norm = MaskedRMSNorm(self.d_model)
+        else:
+            self.input_norm = None
+        
+        # Hidden layers
+        self.hidden_layers = nn.ModuleList()
+        self.hidden_norms = nn.ModuleList()
+        for _ in range(self.num_layers - 1):
+            self.hidden_layers.append(nn.Linear(self.d_model, self.d_model, bias=False))
+            if c.is_norm:
+                self.hidden_norms.append(MaskedRMSNorm(self.d_model))
+            else:
+                self.hidden_norms.append(None)
+        
+        # Optionally add the down-ranking layer
+        if c.down_rank_dim is not None:
+            self.down_rank_layer = nn.Linear(self.d_model, c.down_rank_dim, bias=False)
+            self.final_layer = nn.Linear(c.down_rank_dim, 1, bias=False)
+            final_norm_dim = c.down_rank_dim
+        else:
+            self.down_rank_layer = None
+            self.final_layer = nn.Linear(self.d_model, 1, bias=False)
+            final_norm_dim = self.d_model
+        
+        # Add final layer normalization (pre-logit)
+        if c.is_norm:
+            self.final_rms_norm = MaskedRMSNorm(final_norm_dim, has_parameters=False)
+        else:
+            self.final_rms_norm = None
+    
+    def forward(self, x, width_mask: Optional[torch.Tensor] = None):
+        """
+        Forward pass with width_mask applied to d_model dimensions.
+        
+        Args:
+            x: Input tensor
+            width_mask: Optional tensor of shape (d_model,) containing 0.0 or 1.0 values.
+                       Applied to d_model dimensions throughout the network.
+        """
+        # Input layer with masking
+        current = self.input_layer(x)
+        if width_mask is not None:
+            current = current * width_mask.unsqueeze(0)
+        if self.is_norm:
+            current = self.input_norm(current, mask=width_mask)
+        current = F.relu(current)
+        
+        # Hidden layers with masking
+        for hidden_layer, hidden_norm in zip(self.hidden_layers, self.hidden_norms):
+            current = hidden_layer(current)
+            if width_mask is not None:
+                current = current * width_mask.unsqueeze(0)
+            if self.is_norm:
+                current = hidden_norm(current, mask=width_mask)
+            current = F.relu(current)
+        
+        # Apply optional down-ranking layer
+        if self.down_rank_layer is not None:
+            current = self.down_rank_layer(current)
+            # No mask after down-rank
+            if self.is_norm:
+                current = self.final_rms_norm(current)
+        else:
+            # Apply final layer normalization with mask if still in d_model space
+            if self.is_norm:
+                current = self.final_rms_norm(current, mask=width_mask)
+        
         output = self.final_layer(current)
         return output.squeeze(1)
 
@@ -360,3 +619,51 @@ def create_resnet(c: Config):
         return ResnetDModel(c)
     else:
         raise ValueError(f"Invalid width_varyer: {c.width_varyer}. Must be None, 'h', 'down_rank_dim', or 'd_model'.")
+
+
+def create_mlp(c: Config):
+    """
+    Factory function to create the appropriate MLP subclass based on the configuration.
+    
+    Args:
+        c: Configuration object containing model parameters including width_varyer
+        
+    Returns:
+        nn.Module: The appropriate MLP subclass instance
+        
+    Raises:
+        ValueError: If width_varyer is not a recognized value or if num_layers=0 with non-None width_varyer
+    """
+    # Validate that num_layers=0 is only supported with width_varyer=None
+    if c.num_layers == 0 and c.width_varyer is not None:
+        raise ValueError(f"num_layers=0 is only supported when width_varyer=None. Got width_varyer={c.width_varyer}")
+    
+    if c.width_varyer is None:
+        return MLP(c)
+    elif c.width_varyer == "down_rank_dim":
+        return MLPDownRankDim(c)
+    elif c.width_varyer == "d_model":
+        return MLPDModel(c)
+    else:
+        raise ValueError(f"Invalid width_varyer for MLP: {c.width_varyer}. Must be None, 'down_rank_dim', or 'd_model'.")
+
+
+def create_model(c: Config):
+    """
+    Factory function to create the appropriate model based on the configuration.
+    
+    Args:
+        c: Configuration object containing model parameters including model_type and width_varyer
+        
+    Returns:
+        nn.Module: The appropriate model instance (Resnet or MLP variant)
+        
+    Raises:
+        ValueError: If model_type or width_varyer is not a recognized value
+    """
+    if c.model_type == 'resnet':
+        return create_resnet(c)
+    elif c.model_type == 'mlp':
+        return create_mlp(c)
+    else:
+        raise ValueError(f"Invalid model_type: {c.model_type}. Must be 'resnet' or 'mlp'.")

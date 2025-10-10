@@ -3,13 +3,13 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
-from src.learned_dropout.models import Resnet
+from src.learned_dropout.models import create_model
 from src.learned_dropout.config import Config
 
 
 def train_once(device, problem, validation_set, c: Config, use_percent_correct: bool = True):
     """
-    Create and train a Resnet model with weight tracking for testing purposes.
+    Create and train a model (Resnet or MLP) with weight tracking for testing purposes.
     
     Parameters:
         device: torch.device to run computation on
@@ -17,18 +17,22 @@ def train_once(device, problem, validation_set, c: Config, use_percent_correct: 
         validation_set: Tuple of (x_val, y_val) tensors
         c: Config containing training and architecture parameters
     """
-    print(f"Starting training with Resnet: d={c.d}, d_model={c.d_model}, h={c.h}, num_layers={c.num_layers}")
+    model_desc = f"{c.model_type.upper()}: d={c.d}, d_model={c.d_model}"
+    if c.model_type == 'resnet':
+        model_desc += f", h={c.h}"
+    model_desc += f", num_layers={c.num_layers}"
+    print(f"Starting training with {model_desc}")
     
     # Generate training data
-    x_train, y_train, _ = problem.generate_dataset(c.n, shuffle=True, use_percent_correct=use_percent_correct)
-    x_train, y_train = x_train.to(device), y_train.to(device)
+    x_train, y_train, train_center_indices = problem.generate_dataset(c.n, shuffle=True, use_percent_correct=use_percent_correct)
+    x_train, y_train, train_center_indices = x_train.to(device), y_train.to(device), train_center_indices.to(device)
     
     # Create data loader for batch training
     train_dataset = TensorDataset(x_train, y_train)
     train_loader = DataLoader(train_dataset, batch_size=c.batch_size, shuffle=True)
     
-    # Create Resnet model
-    model = Resnet(c).to(device)
+    # Create model
+    model = create_model(c).to(device)
     
     # Create weight tracker with tracking enabled
     tracker = model.get_tracker(track_weights=c.is_weight_tracker)
@@ -62,11 +66,7 @@ def train_once(device, problem, validation_set, c: Config, use_percent_correct: 
             optimizer.zero_grad()
             logits = model(batch_x).squeeze()
             loss = criterion(logits, batch_y.float())
-            
-            # Add L1 regularization if specified
-            l1_reg_loss = model.get_l1_regularization_loss()
-            total_loss = loss + l1_reg_loss
-            train_loss = total_loss.item()
+            train_loss = loss.item()
             
             # Calculate training accuracy
             with torch.no_grad():
@@ -76,7 +76,7 @@ def train_once(device, problem, validation_set, c: Config, use_percent_correct: 
             # Update tracker with both accuracies and losses
             tracker.update(model, val_acc, train_acc, val_loss, train_loss)
             
-            total_loss.backward()
+            loss.backward()
             optimizer.step()
     
     # Final evaluation
@@ -99,4 +99,4 @@ def train_once(device, problem, validation_set, c: Config, use_percent_correct: 
     print("Generating weight evolution plots...")
     tracker.plot()
     
-    return model, tracker
+    return model, tracker, x_train, y_train, train_center_indices
