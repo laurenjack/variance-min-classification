@@ -4,7 +4,7 @@ import numpy as np
 
 from src.learned_dropout.data_generator import SubDirections
 from src.learned_dropout.config import Config
-from src.learned_dropout.sense_check import train_once
+from src.learned_dropout.single_runner import train_once
 
 
 def main() -> None:
@@ -62,13 +62,13 @@ def main() -> None:
     # Generate validation set with requested label noise
     x_val, y_val, center_indices = problem.generate_dataset(
         model_config.n_val,
-        use_percent_correct=False,
+        clean_mode=True,
         shuffle=True,
     )
 
-    # Train the model using sense_check (kept consistent with sub_direction.py)
+    # Train the model using single_runner (kept consistent with sub_direction.py)
     validation_set = x_val.to(device), y_val.to(device), center_indices.to(device)
-    model, _, _, _, _ = train_once(device, problem, validation_set, model_config, use_percent_correct=True)
+    model, _, _, _, _ = train_once(device, problem, validation_set, model_config, clean_mode=False)
 
     # Evaluate model predictions against the true center class (exclude label noise)
     model.eval()

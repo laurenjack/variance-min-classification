@@ -7,7 +7,7 @@ from src.learned_dropout.models import create_model
 from src.learned_dropout.config import Config
 
 
-def train_once(device, problem, validation_set, c: Config, use_percent_correct: bool = True):
+def train_once(device, problem, validation_set, c: Config, clean_mode: bool = False):
     """
     Create and train a model (Resnet or MLP) with weight tracking for testing purposes.
     
@@ -18,13 +18,10 @@ def train_once(device, problem, validation_set, c: Config, use_percent_correct: 
         c: Config containing training and architecture parameters
     """
     model_desc = f"{c.model_type.upper()}: d={c.d}, d_model={c.d_model}"
-    if c.model_type == 'resnet':
-        model_desc += f", h={c.h}"
-    model_desc += f", num_layers={c.num_layers}"
     print(f"Starting training with {model_desc}")
     
     # Generate training data
-    x_train, y_train, train_center_indices = problem.generate_dataset(c.n, shuffle=True, use_percent_correct=use_percent_correct)
+    x_train, y_train, train_center_indices = problem.generate_dataset(c.n, shuffle=True, clean_mode=clean_mode)
     x_train, y_train, train_center_indices = x_train.to(device), y_train.to(device), train_center_indices.to(device)
     
     # Create data loader for batch training
@@ -39,7 +36,7 @@ def train_once(device, problem, validation_set, c: Config, use_percent_correct: 
     
     # Set up loss function and optimizer
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=c.lr, weight_decay=c.weight_decay)
+    optimizer = optim.AdamW(model.parameters(), lr=c.lr, weight_decay=c.weight_decay, eps=c.adam_eps)
     
     # Get validation set
     x_val, y_val, center_indices = validation_set
@@ -66,6 +63,12 @@ def train_once(device, problem, validation_set, c: Config, use_percent_correct: 
             optimizer.zero_grad()
             logits = model(batch_x).squeeze()
             loss = criterion(logits, batch_y.float())
+            
+            # Add logit regularization if c is specified
+            if c.c is not None:
+                logit_reg = c.c * torch.mean(logits ** 2)
+                loss = loss + logit_reg
+            
             train_loss = loss.item()
             
             # Calculate training accuracy
@@ -88,15 +91,17 @@ def train_once(device, problem, validation_set, c: Config, use_percent_correct: 
         val_preds = (torch.sigmoid(val_logits) >= 0.5).float()
         val_acc = (val_preds == y_val).float().mean().item()
         
-        # Calculate final training accuracy
+        # Calculate final training accuracy and loss
         train_logits = model(x_train).squeeze()
+        train_loss = criterion(train_logits, y_train.float()).item()
         train_preds = (torch.sigmoid(train_logits) >= 0.5).float()
         train_acc = (train_preds == y_train).float().mean().item()
     
-    print(f"Final: Validation Loss = {val_loss:.6f}, Validation Accuracy = {val_acc:.4f}, Training Accuracy = {train_acc:.4f}")
+    print(f"Final: Validation Loss = {val_loss:.6f}, Validation Accuracy = {val_acc:.4f}, Training Loss = {train_loss:.6f}, Training Accuracy = {train_acc:.4f}")
     
     # Show plots
     print("Generating weight evolution plots...")
     tracker.plot()
     
     return model, tracker, x_train, y_train, train_center_indices
+

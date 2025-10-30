@@ -177,9 +177,9 @@ class ResnetTracker:
 
         # Plot validation accuracy.
         plt.figure()
-        plt.plot(training_steps, np.array(self.val_acc_history), label="Validation Accuracy")
         if self.train_acc_history:
-            plt.plot(training_steps[:len(self.train_acc_history)], np.array(self.train_acc_history), label="Training Accuracy")
+            plt.plot(training_steps[:len(self.train_acc_history)], np.array(self.train_acc_history), label="Training Accuracy", color='darkorange')
+        plt.plot(training_steps, np.array(self.val_acc_history), label="Validation Accuracy", color='steelblue')
         plt.xlabel("Training Step")
         plt.ylabel("Accuracy")
         plt.title("Training and Validation Accuracy")
@@ -189,10 +189,10 @@ class ResnetTracker:
         # Plot losses.
         if self.val_loss_history or self.train_loss_history:
             plt.figure()
-            if self.val_loss_history:
-                plt.plot(training_steps[:len(self.val_loss_history)], np.array(self.val_loss_history), label="Validation Loss")
             if self.train_loss_history:
-                plt.plot(training_steps[:len(self.train_loss_history)], np.array(self.train_loss_history), label="Training Loss")
+                plt.plot(training_steps[:len(self.train_loss_history)], np.array(self.train_loss_history), label="Training Loss", color='darkorange')
+            if self.val_loss_history:
+                plt.plot(training_steps[:len(self.val_loss_history)], np.array(self.val_loss_history), label="Validation Loss", color='steelblue')
             plt.xlabel("Training Step")
             plt.ylabel("Loss")
             plt.title("Training and Validation Loss")
@@ -388,9 +388,9 @@ class MLPTracker:
 
         # Plot validation accuracy.
         plt.figure()
-        plt.plot(training_steps, np.array(self.val_acc_history), label="Validation Accuracy")
         if self.train_acc_history:
-            plt.plot(training_steps[:len(self.train_acc_history)], np.array(self.train_acc_history), label="Training Accuracy")
+            plt.plot(training_steps[:len(self.train_acc_history)], np.array(self.train_acc_history), label="Training Accuracy", color='darkorange')
+        plt.plot(training_steps, np.array(self.val_acc_history), label="Validation Accuracy", color='steelblue')
         plt.xlabel("Training Step")
         plt.ylabel("Accuracy")
         plt.title("Training and Validation Accuracy")
@@ -400,12 +400,110 @@ class MLPTracker:
         # Plot losses.
         if self.val_loss_history or self.train_loss_history:
             plt.figure()
-            if self.val_loss_history:
-                plt.plot(training_steps[:len(self.val_loss_history)], np.array(self.val_loss_history), label="Validation Loss")
             if self.train_loss_history:
-                plt.plot(training_steps[:len(self.train_loss_history)], np.array(self.train_loss_history), label="Training Loss")
+                plt.plot(training_steps[:len(self.train_loss_history)], np.array(self.train_loss_history), label="Training Loss", color='darkorange')
+            if self.val_loss_history:
+                plt.plot(training_steps[:len(self.val_loss_history)], np.array(self.val_loss_history), label="Validation Loss", color='steelblue')
             plt.xlabel("Training Step")
             plt.ylabel("Loss")
             plt.title("Training and Validation Loss")
             plt.legend()
             plt.show()
+
+
+class PolynomialTracker:
+    def __init__(self, track_weights=True):
+        """
+        Parameters:
+            track_weights (bool): If True the coefficient matrix is tracked; if False only the
+                                  accuracy is tracked.
+        """
+        self.track_weights = track_weights
+        # Each element is a numpy array of the coefficient matrix at that training step.
+        self.weight_history = []
+        # Validation accuracy recorded at each training step.
+        self.val_acc_history = []
+        # Training accuracy recorded at each training step.
+        self.train_acc_history = []
+        # Validation loss recorded at each training step.
+        self.val_loss_history = []
+        # Training loss recorded at each training step.
+        self.train_loss_history = []
+
+    def update(self, model, val_acc, train_acc=None, val_loss=None, train_loss=None):
+        """
+        For a KPolynomial model, record:
+          - The coefficient matrix (shape: d x k)
+          - The validation accuracy.
+          - The training accuracy (if provided).
+          - The validation loss (if provided).
+          - The training loss (if provided).
+        """
+        if self.track_weights:
+            # Track the coefficient matrix
+            coeff_matrix = model.coefficients.detach().cpu().numpy().copy()
+            self.weight_history.append(coeff_matrix)
+        else:
+            self.weight_history.append(None)
+        
+        self.val_acc_history.append(val_acc)
+        if train_acc is not None:
+            self.train_acc_history.append(train_acc)
+        if val_loss is not None:
+            self.val_loss_history.append(val_loss)
+        if train_loss is not None:
+            self.train_loss_history.append(train_loss)
+
+    def _get_weight_titles(self):
+        """
+        Return title for the polynomial coefficient matrix.
+        """
+        if self.track_weights and self.weight_history and self.weight_history[0] is not None:
+            d, k = self.weight_history[0].shape
+            return [f"Polynomial Coefficients (d={d}, k={k})"]
+        return []
+
+    def plot(self):
+        """
+        Plot:
+          1. Validation and training accuracy vs training steps.
+          2. Validation and training loss vs training steps.
+          3. Evolution of polynomial coefficients (Frobenius norm) vs training steps.
+        """
+        training_steps = np.arange(len(self.val_acc_history))
+        
+        # Plot accuracies.
+        plt.figure()
+        plt.plot(training_steps, np.array(self.val_acc_history), label="Validation Accuracy", color='steelblue')
+        if self.train_acc_history:
+            plt.plot(training_steps[:len(self.train_acc_history)], np.array(self.train_acc_history), label="Training Accuracy", color='darkorange')
+        plt.xlabel("Training Step")
+        plt.ylabel("Accuracy")
+        plt.title("Training and Validation Accuracy")
+        plt.legend()
+        plt.show()
+        
+        # Plot losses.
+        if self.val_loss_history or self.train_loss_history:
+            plt.figure()
+            if self.train_loss_history:
+                plt.plot(training_steps[:len(self.train_loss_history)], np.array(self.train_loss_history), label="Training Loss", color='darkorange')
+            if self.val_loss_history:
+                plt.plot(training_steps[:len(self.val_loss_history)], np.array(self.val_loss_history), label="Validation Loss", color='steelblue')
+            plt.xlabel("Training Step")
+            plt.ylabel("Loss")
+            plt.title("Training and Validation Loss")
+            plt.legend()
+            plt.show()
+        
+        # Plot coefficient matrix evolution (Frobenius norm).
+        if self.track_weights and self.weight_history:
+            valid_history = [w for w in self.weight_history if w is not None]
+            if valid_history:
+                plt.figure()
+                frobenius_norms = [np.linalg.norm(w, 'fro') for w in valid_history]
+                plt.plot(training_steps[:len(frobenius_norms)], frobenius_norms, color='green')
+                plt.xlabel("Training Step")
+                plt.ylabel("Frobenius Norm")
+                plt.title("Polynomial Coefficient Matrix Frobenius Norm")
+                plt.show()

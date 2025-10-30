@@ -596,6 +596,58 @@ class MLPDModel(nn.Module):
         return output.squeeze(1)
 
 
+class KPolynomial(nn.Module):
+    def __init__(self, c: Config):
+        """
+        K-degree polynomial model with learned coefficients for independent polynomials per dimension.
+        
+        Computes: logit = Σᵢ Σⱼ₌₁ᵏ wᵢⱼ * xᵢʲ
+        
+        Args:
+            c: Configuration object containing model parameters
+        """
+        super(KPolynomial, self).__init__()
+        self.input_dim = c.d
+        self.k = c.k
+        
+        # Initialize coefficient matrix of shape (d, k) for learning wᵢⱼ coefficients
+        # Each row i contains coefficients for dimension i: [wᵢ₁, wᵢ₂, ..., wᵢₖ]
+        self.coefficients = nn.Parameter(torch.randn(self.input_dim, self.k) * 0.01)
+    
+    @staticmethod
+    def get_tracker(track_weights):
+        from src.learned_dropout.model_tracker import PolynomialTracker
+        return PolynomialTracker(track_weights)
+    
+    def forward(self, x, width_mask: Optional[torch.Tensor] = None):
+        """
+        Forward pass through polynomial model.
+        
+        Args:
+            x: Input tensor of shape (batch_size, d)
+            width_mask: Optional mask tensor (ignored in polynomial model)
+        
+        Returns:
+            Logits of shape (batch_size,)
+        """
+        # x has shape (batch_size, d)
+        batch_size, d = x.shape
+        
+        # Compute polynomial features: [x, x², x³, ..., xᵏ]
+        # powers will have shape (batch_size, d, k)
+        powers = torch.stack([x ** (j + 1) for j in range(self.k)], dim=2)
+        
+        # Apply learned coefficients: element-wise multiply and sum
+        # coefficients has shape (d, k), unsqueeze to (1, d, k) for broadcasting
+        # Result: (batch_size, d, k) * (1, d, k) -> (batch_size, d, k)
+        weighted = powers * self.coefficients.unsqueeze(0)
+        
+        # Sum over dimensions d and polynomial degrees k to get scalar logit per sample
+        logits = weighted.sum(dim=(1, 2))  # Shape: (batch_size,)
+        
+        return logits
+
+
 def create_resnet(c: Config):
     """
     Factory function to create the appropriate Resnet subclass based on the configuration.
@@ -656,7 +708,7 @@ def create_model(c: Config):
         c: Configuration object containing model parameters including model_type and width_varyer
         
     Returns:
-        nn.Module: The appropriate model instance (Resnet or MLP variant)
+        nn.Module: The appropriate model instance (Resnet, MLP, or KPolynomial variant)
         
     Raises:
         ValueError: If model_type or width_varyer is not a recognized value
@@ -665,5 +717,7 @@ def create_model(c: Config):
         return create_resnet(c)
     elif c.model_type == 'mlp':
         return create_mlp(c)
+    elif c.model_type == 'k-polynomial':
+        return KPolynomial(c)
     else:
-        raise ValueError(f"Invalid model_type: {c.model_type}. Must be 'resnet' or 'mlp'.")
+        raise ValueError(f"Invalid model_type: {c.model_type}. Must be 'resnet', 'mlp', or 'k-polynomial'.")

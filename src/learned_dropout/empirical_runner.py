@@ -14,7 +14,7 @@ def run_list_experiment(
     configs: list[Config],
     width_range: list[int],
     num_runs: int,
-    use_percent_correct: bool,
+    clean_mode: bool,
 ):
     """Train and compare models (Resnet or MLP) using parallel experiment."""
     
@@ -29,7 +29,7 @@ def run_list_experiment(
             c,
             width_range,
             num_runs,
-            use_percent_correct,
+            clean_mode,
         )
         results.append((vars_, losses, val_accuracies, val_losses))
         print()
@@ -88,6 +88,36 @@ def run_list_experiment(
     ax3.legend()
     
     config_names = " vs ".join([f"Config {i+1} ({configs[i].model_type})" for i in range(len(configs))])
-    plt.suptitle(f"Model Comparison: {config_names} (d = {configs[0].d}, n = {configs[0].n})")
+    
+    # Build comprehensive title with all config properties
+    c = configs[0]
+    title_parts = [
+        f"model_type={c.model_type}",
+        f"d={c.d}",
+        f"n_val={c.n_val}",
+        f"n={c.n}",
+        f"batch_size={c.batch_size}",
+        f"lr={c.lr}",
+        f"epochs={c.epochs}",
+        f"weight_decay={c.weight_decay}",
+        f"num_layers={c.num_layers}",
+    ]
+    
+    # Add optional parameters if they are not None
+    if c.h is not None:
+        title_parts.append(f"h={c.h}")
+    if c.d_model is not None:
+        title_parts.append(f"d_model={c.d_model}")
+    if c.down_rank_dim is not None:
+        title_parts.append(f"down_rank_dim={c.down_rank_dim}")
+    if c.width_varyer is not None:
+        title_parts.append(f"width_varyer={c.width_varyer}")
+    if c.c is not None:
+        title_parts.append(f"c={c.c}")
+    
+    title_parts.append(f"is_norm={c.is_norm}")
+    
+    title = " | ".join(title_parts)
+    plt.suptitle(title, fontsize=9)
     plt.tight_layout()
     plt.show()

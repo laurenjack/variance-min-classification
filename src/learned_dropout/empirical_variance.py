@@ -14,11 +14,11 @@ from src.learned_dropout.config import Config
 from src.learned_dropout.models import create_model
 
 
-def _generate_training_sets(problem, c: Config, num_runs: int, device: torch.device, use_percent_correct: bool) -> List[Tuple[Tensor, Tensor]]:
+def _generate_training_sets(problem, c: Config, num_runs: int, device: torch.device, clean_mode: bool) -> List[Tuple[Tensor, Tensor]]:
     # Generate all training sets once, outside the loops
     training_sets = []
     for _ in range(num_runs):
-        x_train, y_train, _ = problem.generate_dataset(c.n, shuffle=True, use_percent_correct=use_percent_correct)
+        x_train, y_train, _ = problem.generate_dataset(c.n, shuffle=True, clean_mode=clean_mode)
         x_train, y_train = x_train.to(device), y_train.to(device)
         training_sets.append((x_train, y_train))
     return training_sets
@@ -44,7 +44,7 @@ def run_experiment_parallel(
     c: Config,
     width_range: list[int],
     num_runs: int,
-    use_percent_correct: bool,
+    clean_mode: bool,
 ) -> tuple[list, list, list, list]:
     """
     Run num_widths * num_runs experiments in parallel for models (Resnet or MLP).
@@ -52,7 +52,7 @@ def run_experiment_parallel(
     We are running experiments at different neural network widths (e.g. h, d_model, or down_rank_dim values).
     """
     x_val, y_val, center_indices_val = validation_set
-    training_sets = _generate_training_sets(problem, c, num_runs, device, use_percent_correct)
+    training_sets = _generate_training_sets(problem, c, num_runs, device, clean_mode)
     model_lists = _build_models(c, width_range, num_runs, device)
     
     num_widths = len(width_range)
@@ -79,7 +79,14 @@ def run_experiment_parallel(
     # Define the functional model list (num_h * num_runs models combined)
     def all_loss(params, buffers, x, y, width_mask):
         z = functional_call(template, (params, buffers), (x, width_mask))
-        return F.binary_cross_entropy_with_logits(z, y)
+        loss = F.binary_cross_entropy_with_logits(z, y)
+        
+        # Add logit regularization if c is specified
+        if c.c is not None:
+            logit_reg = c.c * torch.mean(z ** 2)
+            loss = loss + logit_reg
+        
+        return loss
     loss_and_grad = grad_and_value(all_loss)
     vectorized_models = vmap(loss_and_grad, in_dims=(0, 0, 0, 0, 0))
     # Pure forward for evaluation (no grad computation)
@@ -107,7 +114,7 @@ def run_experiment_parallel(
     # Training
     x_full_list, y_full_list = zip(*training_sets)
     # Single optimizer for all parameters
-    opt = torch.optim.AdamW(params.values(), lr=c.lr, weight_decay=c.weight_decay)
+    opt = torch.optim.AdamW(params.values(), lr=c.lr, weight_decay=c.weight_decay, eps=c.adam_eps)
     # Ensure template is in training mode for the training loop
     template.train()
     for epoch in range(c.epochs):

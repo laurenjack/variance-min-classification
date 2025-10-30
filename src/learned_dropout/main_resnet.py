@@ -3,7 +3,7 @@ import torch
 
 from src.learned_dropout.config import Config
 from src.learned_dropout.empirical_runner import run_list_experiment
-from src.learned_dropout.sense_check import train_once
+from src.learned_dropout.single_runner import train_once
 from src.learned_dropout.data_generator import HyperXorNormal, Gaussian, SubDirections
 
 
@@ -11,7 +11,7 @@ def main():
     torch.manual_seed(38173)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     percent_correct = 0.8
-    use_percent_correct = True
+    clean_mode = False
     
     # Problem: HyperXorNormal with requested parameters
     true_d = 3
@@ -81,7 +81,7 @@ def main():
     x_val, y_val, center_indices = problem.generate_dataset(
         c.n_val, 
         shuffle=True, 
-        use_percent_correct=False
+        clean_mode=True
     )
     validation_set = x_val.to(device), y_val.to(device), center_indices.to(device)
     
@@ -98,7 +98,7 @@ def main():
         [c, c2, c3],
         width_range,
         num_runs,
-        use_percent_correct,
+        clean_mode,
     )
 
 

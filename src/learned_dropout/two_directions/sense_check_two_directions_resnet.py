@@ -1,45 +1,46 @@
 import torch
 
-from src.learned_dropout.data_generator import SubDirections
+from src.learned_dropout.data_generator import TwoDirections
 from src.learned_dropout.config import Config
 from src.learned_dropout.single_runner import train_once
 
 
 def main():
-    torch.manual_seed(4454)
+    torch.manual_seed(54291)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Problem: SubDirections with requested parameters
-    percent_correct = 0.8
-    clean_mode = True
-    problem = SubDirections(
-        true_d=16,
-        sub_d=4,
-        centers=8,
-        num_class=2,
+    # Problem: TwoDirections
+    clean_mode = False
+    problem = TwoDirections(
+        true_d=10,
+        noisy_d=15,
+        percent_correct=0.8,
         sigma=0.02,
-        noisy_d=0,
         random_basis=True,
-        percent_correct=percent_correct,
+        noise_type="mislabel",
         device=device
     )
 
-    # Model configuration
+    # Model configuration from main_two_directions_resnet
+    width_range = list(range(2, 103, 4))
+    h = max(width_range)
+    
     model_config = Config(
-        model_type='mlp',
+        model_type='resnet',
         d=problem.d,
         n_val=1000,
-        n=128,
-        batch_size=16,
+        n=256,
+        batch_size=32,
         lr=1e-3,
-        epochs=300,
+        epochs=3000,
         weight_decay=0.001,
-        num_layers=2,
-        h=None,
+        num_layers=1,
+        h=h,
+        d_model=10,
         is_weight_tracker=False,
-        d_model=20,
-        down_rank_dim=5,
-        is_norm=False
+        down_rank_dim=None,
+        is_norm=True,
+        adam_eps=1e-8
     )
 
     # Generate validation set with class-balanced sampling
@@ -51,8 +52,9 @@ def main():
     validation_set = x_val.to(device), y_val.to(device), center_indices.to(device)
 
     # Train the model using single_runner
-    train_once(device, problem, validation_set, model_config, clean_mode=False)
+    train_once(device, problem, validation_set, model_config, clean_mode=clean_mode)
 
 
 if __name__ == "__main__":
     main()
+
