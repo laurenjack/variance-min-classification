@@ -3,8 +3,7 @@ import torch
 
 from src.learned_dropout.config import Config
 from src.learned_dropout.empirical_runner import run_list_experiment
-from src.learned_dropout.single_runner import train_once
-from src.learned_dropout.data_generator import HyperXorNormal, Gaussian, SubDirections
+from src.learned_dropout.data_generator import SubDirections
 
 
 def main():

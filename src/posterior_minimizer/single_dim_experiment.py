@@ -1,6 +1,4 @@
-import torch
-import numpy as np
-from scipy.stats import binom, norm
+from scipy.stats import norm
 
 from src import hyper_parameters
 

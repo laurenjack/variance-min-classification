@@ -1,8 +1,6 @@
-import torch
-
 from src import hyper_parameters
 from src import dataset_creator, train
-from src.posterior_minimizer import weight_tracker as wt, runner
+from src.posterior_minimizer import runner
 
 # torch.manual_seed(3991)  # 3962
 
