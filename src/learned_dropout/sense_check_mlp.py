@@ -1,40 +1,31 @@
-from copy import deepcopy
 import torch
 
+from src.learned_dropout.data_generator import SubDirections
 from src.learned_dropout.config import Config
-from src.learned_dropout.empirical_runner import run_list_experiment
 from src.learned_dropout.single_runner import train_once
-from src.learned_dropout.data_generator import HyperXorNormal, Gaussian, SubDirections
 
 
 def main():
     torch.manual_seed(38173)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    percent_correct = 0.8
+
+    # Problem: SubDirections with parameters from main_mlp
+    percent_correct = 1.0
     clean_mode = False
-    
-    # Problem: SubDirections with requested parameters
     problem = SubDirections(
         true_d=12,
         sub_d=4,
         centers=24,
         num_class=2,
-        sigma=0.2,
+        sigma=0.02,
         noisy_d=0,
         random_basis=True,
         percent_correct=percent_correct,
         device=device
-    )   
+    )
 
-    # Experiment parameters for MLP
-    # For MLP, d_model represents the hidden dimension size
-    width_range = list(range(2, 51, 2))
-    d_model = max(width_range)
-    num_runs = 20
-    
-    
-    # Base configuration parameters for MLP
-    c = Config(
+    # Model configuration from main_mlp
+    model_config = Config(
         model_type='mlp',
         d=problem.d,
         n_val=1000,
@@ -44,34 +35,23 @@ def main():
         epochs=300,
         weight_decay=0.001,
         num_layers=1,
-        d_model=d_model,
+        h=None,
         is_weight_tracker=False,
+        d_model=50,
         down_rank_dim=None,
-        width_varyer="d_model",
         is_norm=True
     )
-    c2 = deepcopy(c)
-    c2.num_layer = 2
+
     # Generate validation set with class-balanced sampling
     x_val, y_val, center_indices = problem.generate_dataset(
-        c.n_val, 
+        model_config.n_val, 
         shuffle=True, 
-        clean_mode=True
+        clean_mode=False
     )
     validation_set = x_val.to(device), y_val.to(device), center_indices.to(device)
-    
 
-    
-    # Run MLP experiments
-    run_list_experiment(
-        device,
-        problem,
-        validation_set,
-        [c, c2],
-        width_range,
-        num_runs,
-        clean_mode,
-    )
+    # Train the model using single_runner
+    train_once(device, problem, validation_set, model_config, clean_mode=clean_mode)
 
 
 if __name__ == "__main__":

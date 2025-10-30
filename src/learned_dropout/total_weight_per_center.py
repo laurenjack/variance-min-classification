@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from src.learned_dropout.data_generator import SubDirections
 from src.learned_dropout.config import Config
-from src.learned_dropout.sense_check import train_once
+from src.learned_dropout.single_runner import train_once
 
 
 class TotalWeightBlock(nn.Module):
@@ -199,14 +199,14 @@ def main() -> None:
     # Generate validation set
     x_val, y_val, val_center_indices = problem.generate_dataset(
         model_config.n_val,
-        use_percent_correct=False,
+        clean_mode=True,
         shuffle=True,
     )
     
     # Train the model
     validation_set = x_val.to(device), y_val.to(device), val_center_indices.to(device)
     model, _, x_train, y_train, train_center_indices = train_once(
-        device, problem, validation_set, model_config, use_percent_correct=True
+        device, problem, validation_set, model_config, clean_mode=False
     )
     
     # Create TotalWeight module

@@ -2,7 +2,7 @@ import torch
 
 from src.learned_dropout.data_generator import TwoDirections
 from src.learned_dropout.config import Config
-from src.learned_dropout.sense_check import train_once
+from src.learned_dropout.single_runner import train_once
 
 
 def main(analyze_weights: bool = True):
@@ -34,20 +34,20 @@ def main(analyze_weights: bool = True):
         is_weight_tracker=False,
         d_model=100,
         down_rank_dim=None,
-        is_norm=True
+        is_norm=False
     )
 
-    # Generate validation set without label noise (use_percent_correct=False)
+    # Generate validation set without label noise (clean_mode=True)
     x_val, y_val, center_indices = problem.generate_dataset(
         model_config.n_val, 
-        use_percent_correct=False,
+        clean_mode=True,
         shuffle=True
     )
     validation_set = x_val.to(device), y_val.to(device), center_indices.to(device)
 
-    # Train the model using sense_check (with label noise in training)
+    # Train the model using single_runner (with label noise in training)
     model, tracker, x_train, y_train, train_center_indices = train_once(
-        device, problem, validation_set, model_config, use_percent_correct=True
+        device, problem, validation_set, model_config, clean_mode=False
     )
     
     # Stop here if analyze_weights is False

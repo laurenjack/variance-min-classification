@@ -4,25 +4,18 @@ import torch
 from src.learned_dropout.config import Config
 from src.learned_dropout.empirical_runner import run_list_experiment
 from src.learned_dropout.single_runner import train_once
-from src.learned_dropout.data_generator import HyperXorNormal, Gaussian, SubDirections
+from src.learned_dropout.data_generator import Gaussian
 
 
 def main():
     torch.manual_seed(38173)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    percent_correct = 0.8
     clean_mode = False
     
-    # Problem: SubDirections with requested parameters
-    problem = SubDirections(
-        true_d=12,
-        sub_d=4,
-        centers=24,
-        num_class=2,
-        sigma=0.2,
-        noisy_d=0,
-        random_basis=True,
-        percent_correct=percent_correct,
+    # Problem: Gaussian with pure noise
+    problem = Gaussian(
+        d=30,
+        perfect_class_balance=True,
         device=device
     )   
 
@@ -39,19 +32,23 @@ def main():
         d=problem.d,
         n_val=1000,
         n=128,
-        batch_size=32,
-        lr=1e-3,
+        batch_size=16,
+        lr=3*1e-3,
         epochs=300,
         weight_decay=0.001,
-        num_layers=1,
+        num_layers=2,
         d_model=d_model,
         is_weight_tracker=False,
         down_rank_dim=None,
         width_varyer="d_model",
         is_norm=True
     )
-    c2 = deepcopy(c)
-    c2.num_layer = 2
+    # c2 = deepcopy(c)
+    # c2.num_layers = 2
+    
+    # c3 = deepcopy(c)
+    # c3.num_layers = 3
+    
     # Generate validation set with class-balanced sampling
     x_val, y_val, center_indices = problem.generate_dataset(
         c.n_val, 
@@ -67,7 +64,7 @@ def main():
         device,
         problem,
         validation_set,
-        [c, c2],
+        [c],
         width_range,
         num_runs,
         clean_mode,
@@ -76,4 +73,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
