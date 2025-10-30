@@ -1,4 +1,4 @@
-from src.posterior_minimizer import data_generator
+from jl.posterior_minimizer import data_generator
 
 
 def test_uniform_one_true_dim():

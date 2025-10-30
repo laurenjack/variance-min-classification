@@ -1,6 +1,6 @@
 import torch
-from src import dataset_creator
-from src import helpers
+from jl.posterior_minimizer import dataset_creator
+from jl.posterior_minimizer import helpers
 
 
 def test_binary_random_assigned_large():

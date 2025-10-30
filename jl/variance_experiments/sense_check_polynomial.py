@@ -1,0 +1,56 @@
+import torch
+
+from jl.variance_experiments.data_generator import TwoDirections
+from jl.variance_experiments.config import Config
+from jl.variance_experiments.single_runner import train_once
+
+
+def main():
+    # torch.manual_seed(38173)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Problem: TwoDirections
+    clean_mode = False
+    problem = TwoDirections(
+        true_d=10,
+        noisy_d=20,
+        percent_correct=0.8,
+        sigma=0.02,
+        random_basis=True,
+        device=device
+    )
+
+    # Model configuration for k-polynomial
+    model_config = Config(
+        model_type='k-polynomial',
+        d=problem.d,
+        n_val=1000,
+        n=128,
+        batch_size=16,
+        lr=1e-3,
+        epochs=300,
+        weight_decay=0.001,
+        num_layers=0,
+        h=None,
+        is_weight_tracker=False,
+        d_model=None,
+        down_rank_dim=None,
+        is_norm=True,
+        k=10
+    )
+
+    # Generate validation set with class-balanced sampling
+    x_val, y_val, center_indices = problem.generate_dataset(
+        model_config.n_val, 
+        shuffle=True, 
+        clean_mode=True
+    )
+    validation_set = x_val.to(device), y_val.to(device), center_indices.to(device)
+
+    # Train the model using single_runner
+    train_once(device, problem, validation_set, model_config, clean_mode=clean_mode)
+
+
+if __name__ == "__main__":
+    main()
+

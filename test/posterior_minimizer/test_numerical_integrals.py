@@ -2,7 +2,7 @@ import math
 
 import numpy as np
 from scipy import integrate
-from src.posterior_minimizer import numeric_integrals
+from jl.posterior_minimizer import numeric_integrals
 
 def test_single_dim():
     def sigmoid(w):
