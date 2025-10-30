@@ -3,9 +3,9 @@ import torch
 import torch.nn.functional as F
 from typing import Optional
 
-from jl.variance_experiments.model_tracker import ResnetTracker
-from jl.variance_experiments.model_tracker import MLPTracker
-from jl.variance_experiments.config import Config
+from jl.model_tracker import ResnetTracker
+from jl.model_tracker import MLPTracker
+from jl.config import Config
 
 
 class RMSNorm(nn.Module):
@@ -616,7 +616,7 @@ class KPolynomial(nn.Module):
     
     @staticmethod
     def get_tracker(track_weights):
-        from jl.variance_experiments.model_tracker import PolynomialTracker
+        from jl.model_tracker import PolynomialTracker
         return PolynomialTracker(track_weights)
     
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):

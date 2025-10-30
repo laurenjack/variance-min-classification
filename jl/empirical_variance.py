@@ -6,8 +6,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.func import vmap, stack_module_state, functional_call, grad_and_value
 
-from jl.variance_experiments.config import Config
-from jl.variance_experiments.models import create_model
+from jl.config import Config
+from jl.models import create_model
 
 
 def _generate_training_sets(problem, c: Config, num_runs: int, device: torch.device, clean_mode: bool) -> List[Tuple[Tensor, Tensor]]:

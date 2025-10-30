@@ -4,8 +4,8 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 
 from jl.variance_experiments.data_generator import TwoGaussians
-from jl.variance_experiments.config import Config
-from jl.variance_experiments.single_runner import train_once
+from jl.config import Config
+from jl.single_runner import train_once
 
 def main(with_validation=False):
     torch.manual_seed(7752)

@@ -3,8 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from jl.variance_experiments.data_generator import SubDirections
-from jl.variance_experiments.config import Config
-from jl.variance_experiments.single_runner import train_once
+from jl.config import Config
+from jl.single_runner import train_once
 
 
 class TotalWeightBlock(nn.Module):

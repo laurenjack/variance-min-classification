@@ -7,11 +7,11 @@ corresponding parameter equal to the mask length, when weights are aligned.
 
 import torch
 
-from jl.variance_experiments.models import (
+from jl.models import (
     Resnet, ResnetH, ResnetDModel, ResnetDownRankDim,
     MLP, MLPDModel, MLPDownRankDim
 )
-from jl.variance_experiments.config import Config
+from jl.config import Config
 
 
 def test_h_mask_forward_pass():

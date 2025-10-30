@@ -1,7 +1,7 @@
 import torch
 
-from jl.variance_experiments.config import Config
-from jl.variance_experiments.empirical_runner import run_list_experiment
+from jl.config import Config
+from jl.empirical_runner import run_list_experiment
 from jl.variance_experiments.data_generator import TwoDirections
 
 
