@@ -1,7 +1,7 @@
 import math
 import numpy as np
 
-from src import d_dim_problem
+from jl.posterior_minimizer import d_dim_problem
 
 def test_count_segmentations():
     # x = np.array([[-1.0, -1.0], [-0.9, 1.0], [1.0, -1.0], [0.9, 1.0]])

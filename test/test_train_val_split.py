@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import TensorDataset, DataLoader
 
-from src import train_val_split
+from jl.posterior_minimizer import train_val_split
 
 
 def test_class_balanced_sample(dataset):

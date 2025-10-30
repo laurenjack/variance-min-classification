@@ -2,8 +2,8 @@ import torch
 import numpy as np
 
 
-from src.posterior_minimizer import variance
-from src import dataset_creator, custom_modules as cm
+from jl.posterior_minimizer import variance
+from jl.posterior_minimizer import dataset_creator, custom_modules as cm
 
 def test_relu_mlp():
     n = 10000
