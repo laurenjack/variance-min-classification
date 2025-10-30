@@ -3,8 +3,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
-from jl.variance_experiments.models import create_model
-from jl.variance_experiments.config import Config
+from jl.models import create_model
+from jl.config import Config
 
 
 def train_once(device, problem, validation_set, c: Config, clean_mode: bool = False):

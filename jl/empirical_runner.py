@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 
-import jl.variance_experiments.empirical_variance as ev
-from jl.variance_experiments.config import Config
+import jl.empirical_variance as ev
+from jl.config import Config
 
 
 

@@ -236,7 +236,7 @@ class MLPTracker:
         """
         if self.track_weights:
             # Import here to avoid circular dependency
-            from jl.variance_experiments.models import RMSNorm, MaskedRMSNorm
+            from jl.models import RMSNorm, MaskedRMSNorm
             
             # Track linear layer weights
             linear_weights = []
