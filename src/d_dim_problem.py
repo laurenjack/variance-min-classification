@@ -2,7 +2,7 @@ import itertools
 import math
 from itertools import combinations
 import numpy as np
-from scipy import special, integrate, optimize
+from scipy import special
 
 from src import helpers
 

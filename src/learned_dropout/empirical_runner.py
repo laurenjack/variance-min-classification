@@ -1,7 +1,5 @@
-import torch
 import matplotlib.pyplot as plt
 
-from src import dataset_creator
 import src.learned_dropout.empirical_variance as ev
 from src.learned_dropout.config import Config
 

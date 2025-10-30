@@ -3,7 +3,7 @@ import torch
 from torch import nn
 from src import dataset_creator, train_val_split
 from torchmetrics import AveragePrecision
-from models import MultiMlp, ResNet
+from models import MultiMlp
 
 
 # Set the seed for reproduce-ability

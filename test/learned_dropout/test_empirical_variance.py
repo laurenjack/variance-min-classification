@@ -6,7 +6,6 @@ corresponding parameter equal to the mask length, when weights are aligned.
 """
 
 import torch
-import pytest
 
 from src.learned_dropout.models import (
     Resnet, ResnetH, ResnetDModel, ResnetDownRankDim,

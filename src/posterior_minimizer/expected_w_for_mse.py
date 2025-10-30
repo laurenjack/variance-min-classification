@@ -1,7 +1,5 @@
 import torch
 
-from src import dataset_creator
-
 runs = 10000
 n = 100
 d = 10

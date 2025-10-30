@@ -1,5 +1,4 @@
-import math
-from scipy.stats import norm, chi, chi2
+from scipy.stats import norm, chi2
 
 import torch
 from torch import nn

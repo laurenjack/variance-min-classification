@@ -1,9 +1,6 @@
-from __future__ import annotations
-
 from abc import ABC, abstractmethod
 from typing import Tuple, List, Optional, Union
 
-import math
 import torch
 from scipy.stats import norm
 

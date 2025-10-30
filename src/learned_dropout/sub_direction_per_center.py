@@ -1,6 +1,5 @@
 import torch
 import matplotlib.pyplot as plt
-import numpy as np
 
 from src.learned_dropout.data_generator import SubDirections
 from src.learned_dropout.config import Config

@@ -1,15 +1,11 @@
-from typing import Tuple, List, Union
+from typing import Tuple, List
 
 import torch
 from torch import Tensor
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.optim as optim
-import matplotlib.pyplot as plt
-from torch.utils.data import DataLoader, TensorDataset
 from torch.func import vmap, stack_module_state, functional_call, grad_and_value
 
-from src import dataset_creator
 from src.learned_dropout.config import Config
 from src.learned_dropout.models import create_model
 

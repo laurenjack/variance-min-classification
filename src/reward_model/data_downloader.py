@@ -1,7 +1,6 @@
 from datasets import load_dataset
 from transformers import AutoTokenizer
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
 
 
