@@ -47,6 +47,9 @@ def run_experiment_parallel(
 
     We are running experiments at different neural network widths (e.g. h, d_model, or down_rank_dim values).
     """
+    if c.num_class != 2:
+        raise ValueError("run_experiment_parallel currently only supports binary classification. Multi-class support is not yet implemented.")
+    
     x_val, y_val, center_indices_val = validation_set
     training_sets = _generate_training_sets(problem, c, num_runs, device, clean_mode)
     model_lists = _build_models(c, width_range, num_runs, device)
@@ -110,7 +113,10 @@ def run_experiment_parallel(
     # Training
     x_full_list, y_full_list = zip(*training_sets)
     # Single optimizer for all parameters
-    opt = torch.optim.AdamW(params.values(), lr=c.lr, weight_decay=c.weight_decay, eps=c.adam_eps)
+    if c.is_adam_w:
+        opt = torch.optim.AdamW(params.values(), lr=c.lr, weight_decay=c.weight_decay, eps=c.adam_eps)
+    else:
+        opt = torch.optim.SGD(params.values(), lr=c.lr, weight_decay=c.weight_decay)
     # Ensure template is in training mode for the training loop
     template.train()
     for epoch in range(c.epochs):

@@ -1,0 +1,7 @@
+---
+description: Rules for running things in the terminal, such as tests
+globs: ["*"]
+---
+
+- Whenever you run tests or code, start the venv as part of the same command i.e. source /Users/jlaurenson/PycharmProjects/variance-min-classification/venv/bin/activate
+- When you make a change to a test or a code module, you should run ALL tests affected by that change.

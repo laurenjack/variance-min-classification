@@ -246,7 +246,7 @@ class MLPTracker:
                 for layer in model.layers:
                     if isinstance(layer, nn.Linear):
                         linear_weights.append(layer.weight.detach().cpu().numpy().copy())
-            # Or extract from input_layer + hidden_layers (MLPDModel)
+            # Or extract from input_layer + hidden_layers (MLPH)
             elif hasattr(model, 'input_layer'):
                 linear_weights.append(model.input_layer.weight.detach().cpu().numpy().copy())
                 if hasattr(model, 'hidden_layers'):
@@ -271,7 +271,7 @@ class MLPTracker:
                 for layer in model.layers:
                     if isinstance(layer, (RMSNorm, MaskedRMSNorm)):
                         norm_weights.append(layer.weight.detach().cpu().numpy().copy())
-            # Or extract from input_norm + hidden_norms (MLPDModel)
+            # Or extract from input_norm + hidden_norms (MLPH)
             elif hasattr(model, 'input_norm'):
                 norm_weights.append(model.input_norm.weight.detach().cpu().numpy().copy())
                 if hasattr(model, 'hidden_norms'):

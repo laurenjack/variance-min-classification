@@ -128,6 +128,10 @@ class Resnet(nn.Module):
         self.input_dim = c.d
         self.d_model = c.d if c.d_model is None else c.d_model
         self.down_rank_dim = c.down_rank_dim
+        self.num_class = c.num_class
+        
+        # Determine output dimension: 1 for binary, num_class for multi-class
+        output_dim = 1 if c.num_class == 2 else c.num_class
 
         self.input_projection = None
         # Only use if a separate d_model is specified
@@ -145,11 +149,11 @@ class Resnet(nn.Module):
         # Optionally add the down-ranking layer (in d_model space)
         if c.down_rank_dim is not None:
             self.down_rank_layer = nn.Linear(self.d_model, c.down_rank_dim, bias=False)
-            self.final_layer = nn.Linear(c.down_rank_dim, 1, bias=False)
+            self.final_layer = nn.Linear(c.down_rank_dim, output_dim, bias=False)
             final_norm_dim = c.down_rank_dim
         else:
             self.down_rank_layer = None
-            self.final_layer = nn.Linear(self.d_model, 1, bias=False)
+            self.final_layer = nn.Linear(self.d_model, output_dim, bias=False)
             final_norm_dim = self.d_model
         
         # Add final layer normalization (pre-logit) as in transformers
@@ -192,7 +196,10 @@ class Resnet(nn.Module):
             current = self.final_rms_norm(current)
             
         output = self.final_layer(current)
-        return output.squeeze(1)
+        # Squeeze only for binary classification (output dim is 1)
+        if self.num_class == 2:
+            output = output.squeeze(1)
+        return output
 
 
 class ResnetH(Resnet):
@@ -247,7 +254,10 @@ class ResnetDownRankDim(Resnet):
             current = self.final_rms_norm(current, mask=width_mask)
             
         output = self.final_layer(current)
-        return output.squeeze(1)
+        # Squeeze only for binary classification (output dim is 1)
+        if self.num_class == 2:
+            output = output.squeeze(1)
+        return output
 
 
 class ResidualBlockDModel(nn.Module):
@@ -298,6 +308,10 @@ class ResnetDModel(Resnet):
         self.input_dim = c.d
         self.d_model = c.d if c.d_model is None else c.d_model
         self.down_rank_dim = c.down_rank_dim
+        self.num_class = c.num_class
+        
+        # Determine output dimension: 1 for binary, num_class for multi-class
+        output_dim = 1 if c.num_class == 2 else c.num_class
 
         # We always create an input projection to the maximum d_model, so we can mask
         self.input_projection = nn.Linear(self.input_dim, self.d_model, bias=False)
@@ -311,11 +325,11 @@ class ResnetDModel(Resnet):
         # Optionally add the down-ranking layer (in d_model space)
         if c.down_rank_dim is not None:
             self.down_rank_layer = nn.Linear(self.d_model, c.down_rank_dim, bias=False)
-            self.final_layer = nn.Linear(c.down_rank_dim, 1, bias=False)
+            self.final_layer = nn.Linear(c.down_rank_dim, output_dim, bias=False)
             final_norm_dim = c.down_rank_dim
         else:
             self.down_rank_layer = None
-            self.final_layer = nn.Linear(self.d_model, 1, bias=False)
+            self.final_layer = nn.Linear(self.d_model, output_dim, bias=False)
             final_norm_dim = self.d_model
         
         # Add final layer normalization (pre-logit) as in transformers
@@ -358,7 +372,10 @@ class ResnetDModel(Resnet):
                 current = self.final_rms_norm(current)
             
         output = self.final_layer(current)
-        return output.squeeze(1)
+        # Squeeze only for binary classification (output dim is 1)
+        if self.num_class == 2:
+            output = output.squeeze(1)
+        return output
 
 
 class MLP(nn.Module):
@@ -371,26 +388,30 @@ class MLP(nn.Module):
         """
         super(MLP, self).__init__()
         self.input_dim = c.d
-        self.d_model = c.d_model if c.d_model is not None else c.d
+        self.h = c.h if c.h is not None else c.d
         self.down_rank_dim = c.down_rank_dim
         self.num_layers = c.num_layers
         self.is_norm = c.is_norm
+        self.num_class = c.num_class
+        
+        # Determine output dimension: 1 for binary, num_class for multi-class
+        output_dim = 1 if c.num_class == 2 else c.num_class
         
         # Build MLP layers
         layers = []
         
         # Input layer (only add if num_layers > 0, otherwise just identity)
         if self.num_layers > 0:
-            layers.append(nn.Linear(self.input_dim, self.d_model, bias=False))
+            layers.append(nn.Linear(self.input_dim, self.h, bias=False))
             if c.is_norm:
-                layers.append(RMSNorm(self.d_model))
+                layers.append(RMSNorm(self.h))
             layers.append(nn.ReLU())
             
             # Hidden layers
             for _ in range(self.num_layers - 1):
-                layers.append(nn.Linear(self.d_model, self.d_model, bias=False))
+                layers.append(nn.Linear(self.h, self.h, bias=False))
                 if c.is_norm:
-                    layers.append(RMSNorm(self.d_model))
+                    layers.append(RMSNorm(self.h))
                 layers.append(nn.ReLU())
         
         self.layers = nn.Sequential(*layers) if layers else nn.Identity()
@@ -398,15 +419,15 @@ class MLP(nn.Module):
         # Optionally add the down-ranking layer
         if c.down_rank_dim is not None:
             # When num_layers=0, down_rank takes input directly from input_dim
-            down_rank_input = self.input_dim if self.num_layers == 0 else self.d_model
+            down_rank_input = self.input_dim if self.num_layers == 0 else self.h
             self.down_rank_layer = nn.Linear(down_rank_input, c.down_rank_dim, bias=False)
-            self.final_layer = nn.Linear(c.down_rank_dim, 1, bias=False)
+            self.final_layer = nn.Linear(c.down_rank_dim, output_dim, bias=False)
             final_norm_dim = c.down_rank_dim
         else:
             self.down_rank_layer = None
             # When num_layers=0, final layer takes input directly from input_dim
-            final_input = self.input_dim if self.num_layers == 0 else self.d_model
-            self.final_layer = nn.Linear(final_input, 1, bias=False)
+            final_input = self.input_dim if self.num_layers == 0 else self.h
+            self.final_layer = nn.Linear(final_input, output_dim, bias=False)
             final_norm_dim = final_input
         
         # Add final layer normalization (pre-logit)
@@ -439,7 +460,10 @@ class MLP(nn.Module):
             current = self.final_rms_norm(current)
         
         output = self.final_layer(current)
-        return output.squeeze(1)
+        # Squeeze only for binary classification (output dim is 1)
+        if self.num_class == 2:
+            output = output.squeeze(1)
+        return output
 
 
 class MLPDownRankDim(nn.Module):
@@ -450,32 +474,36 @@ class MLPDownRankDim(nn.Module):
         """
         super(MLPDownRankDim, self).__init__()
         self.input_dim = c.d
-        self.d_model = c.d_model if c.d_model is not None else c.d
+        self.h = c.h if c.h is not None else c.d
         self.down_rank_dim = c.down_rank_dim
         self.num_layers = c.num_layers
         self.is_norm = c.is_norm
+        self.num_class = c.num_class
+        
+        # Determine output dimension: 1 for binary, num_class for multi-class
+        output_dim = 1 if c.num_class == 2 else c.num_class
         
         # Build MLP layers
         layers = []
         
         # Input layer
-        layers.append(nn.Linear(self.input_dim, self.d_model, bias=False))
+        layers.append(nn.Linear(self.input_dim, self.h, bias=False))
         if c.is_norm:
-            layers.append(RMSNorm(self.d_model))
+            layers.append(RMSNorm(self.h))
         layers.append(nn.ReLU())
         
         # Hidden layers
         for _ in range(self.num_layers - 1):
-            layers.append(nn.Linear(self.d_model, self.d_model, bias=False))
+            layers.append(nn.Linear(self.h, self.h, bias=False))
             if c.is_norm:
-                layers.append(RMSNorm(self.d_model))
+                layers.append(RMSNorm(self.h))
             layers.append(nn.ReLU())
         
         self.layers = nn.Sequential(*layers)
         
         # Down-ranking layer (must exist in this model)
-        self.down_rank_layer = nn.Linear(self.d_model, c.down_rank_dim, bias=False)
-        self.final_layer = nn.Linear(c.down_rank_dim, 1, bias=False)
+        self.down_rank_layer = nn.Linear(self.h, c.down_rank_dim, bias=False)
+        self.final_layer = nn.Linear(c.down_rank_dim, output_dim, bias=False)
         
         # Add final layer normalization (pre-logit) using mask
         if c.is_norm:
@@ -506,26 +534,33 @@ class MLPDownRankDim(nn.Module):
             current = self.final_rms_norm(current, mask=width_mask)
         
         output = self.final_layer(current)
-        return output.squeeze(1)
+        # Squeeze only for binary classification (output dim is 1)
+        if self.num_class == 2:
+            output = output.squeeze(1)
+        return output
 
 
-class MLPDModel(nn.Module):
+class MLPH(nn.Module):
     def __init__(self, c: Config):
         """
-        MLP that uses width_mask to vary the d_model dimension.
-        The width_mask is applied to the model dimension throughout the network.
+        MLP that uses width_mask to vary the h dimension.
+        The width_mask is applied to the hidden dimension throughout the network.
         """
-        super(MLPDModel, self).__init__()
+        super(MLPH, self).__init__()
         self.input_dim = c.d
-        self.d_model = c.d_model if c.d_model is not None else c.d
+        self.h = c.h if c.h is not None else c.d
         self.down_rank_dim = c.down_rank_dim
         self.num_layers = c.num_layers
         self.is_norm = c.is_norm
+        self.num_class = c.num_class
+        
+        # Determine output dimension: 1 for binary, num_class for multi-class
+        output_dim = 1 if c.num_class == 2 else c.num_class
         
         # Build MLP layers manually to support masking
-        self.input_layer = nn.Linear(self.input_dim, self.d_model, bias=False)
+        self.input_layer = nn.Linear(self.input_dim, self.h, bias=False)
         if c.is_norm:
-            self.input_norm = MaskedRMSNorm(self.d_model)
+            self.input_norm = MaskedRMSNorm(self.h)
         else:
             self.input_norm = None
         
@@ -533,21 +568,21 @@ class MLPDModel(nn.Module):
         self.hidden_layers = nn.ModuleList()
         self.hidden_norms = nn.ModuleList()
         for _ in range(self.num_layers - 1):
-            self.hidden_layers.append(nn.Linear(self.d_model, self.d_model, bias=False))
+            self.hidden_layers.append(nn.Linear(self.h, self.h, bias=False))
             if c.is_norm:
-                self.hidden_norms.append(MaskedRMSNorm(self.d_model))
+                self.hidden_norms.append(MaskedRMSNorm(self.h))
             else:
                 self.hidden_norms.append(None)
         
         # Optionally add the down-ranking layer
         if c.down_rank_dim is not None:
-            self.down_rank_layer = nn.Linear(self.d_model, c.down_rank_dim, bias=False)
-            self.final_layer = nn.Linear(c.down_rank_dim, 1, bias=False)
+            self.down_rank_layer = nn.Linear(self.h, c.down_rank_dim, bias=False)
+            self.final_layer = nn.Linear(c.down_rank_dim, output_dim, bias=False)
             final_norm_dim = c.down_rank_dim
         else:
             self.down_rank_layer = None
-            self.final_layer = nn.Linear(self.d_model, 1, bias=False)
-            final_norm_dim = self.d_model
+            self.final_layer = nn.Linear(self.h, output_dim, bias=False)
+            final_norm_dim = self.h
         
         # Add final layer normalization (pre-logit)
         if c.is_norm:
@@ -557,12 +592,12 @@ class MLPDModel(nn.Module):
     
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):
         """
-        Forward pass with width_mask applied to d_model dimensions.
+        Forward pass with width_mask applied to h dimensions.
         
         Args:
             x: Input tensor
-            width_mask: Optional tensor of shape (d_model,) containing 0.0 or 1.0 values.
-                       Applied to d_model dimensions throughout the network.
+            width_mask: Optional tensor of shape (h,) containing 0.0 or 1.0 values.
+                       Applied to h dimensions throughout the network.
         """
         # Input layer with masking
         current = self.input_layer(x)
@@ -588,12 +623,102 @@ class MLPDModel(nn.Module):
             if self.is_norm:
                 current = self.final_rms_norm(current)
         else:
-            # Apply final layer normalization with mask if still in d_model space
+            # Apply final layer normalization with mask if still in h space
             if self.is_norm:
                 current = self.final_rms_norm(current, mask=width_mask)
         
         output = self.final_layer(current)
-        return output.squeeze(1)
+        # Squeeze only for binary classification (output dim is 1)
+        if self.num_class == 2:
+            output = output.squeeze(1)
+        return output
+
+
+class MultiLinear(nn.Module):
+    def __init__(self, c: Config):
+        """
+        Multi-Linear model without activations (no ReLU).
+        Just a stack of linear layers with optional normalization.
+        
+        Args:
+            c: Configuration object containing model parameters
+        """
+        super(MultiLinear, self).__init__()
+        self.input_dim = c.d
+        self.h = c.h if c.h is not None else c.d
+        self.down_rank_dim = c.down_rank_dim
+        self.num_layers = c.num_layers
+        self.is_norm = c.is_norm
+        self.num_class = c.num_class
+        
+        # Determine output dimension: 1 for binary, num_class for multi-class
+        output_dim = 1 if c.num_class == 2 else c.num_class
+        
+        # Build MultiLinear layers (no activations)
+        layers = []
+        
+        # Input layer (only add if num_layers > 0, otherwise just identity)
+        if self.num_layers > 0:
+            layers.append(nn.Linear(self.input_dim, self.h, bias=False))
+            if c.is_norm:
+                layers.append(RMSNorm(self.h))
+            
+            # Hidden layers (no ReLU)
+            for _ in range(self.num_layers - 1):
+                layers.append(nn.Linear(self.h, self.h, bias=False))
+                if c.is_norm:
+                    layers.append(RMSNorm(self.h))
+        
+        self.layers = nn.Sequential(*layers) if layers else nn.Identity()
+        
+        # Optionally add the down-ranking layer
+        if c.down_rank_dim is not None:
+            # When num_layers=0, down_rank takes input directly from input_dim
+            down_rank_input = self.input_dim if self.num_layers == 0 else self.h
+            self.down_rank_layer = nn.Linear(down_rank_input, c.down_rank_dim, bias=False)
+            self.final_layer = nn.Linear(c.down_rank_dim, output_dim, bias=False)
+            final_norm_dim = c.down_rank_dim
+        else:
+            self.down_rank_layer = None
+            # When num_layers=0, final layer takes input directly from input_dim
+            final_input = self.input_dim if self.num_layers == 0 else self.h
+            self.final_layer = nn.Linear(final_input, output_dim, bias=False)
+            final_norm_dim = final_input
+        
+        # Add final layer normalization (pre-logit)
+        if c.is_norm:
+            self.final_rms_norm = RMSNorm(final_norm_dim, has_parameters=False)
+        else:
+            self.final_rms_norm = None
+    
+    @staticmethod
+    def get_tracker(track_weights):
+        return MLPTracker(track_weights)  # Reuse MLPTracker
+    
+    def forward(self, x, width_mask: Optional[torch.Tensor] = None):
+        """
+        Forward pass through MultiLinear model.
+        Base MultiLinear ignores width_mask.
+        
+        Args:
+            x: Input tensor
+            width_mask: Optional mask tensor (ignored in base MultiLinear)
+        """
+        current = self.layers(x)
+        
+        # Apply optional down-ranking layer
+        if self.down_rank_layer is not None:
+            current = self.down_rank_layer(current)
+        
+        # Apply final layer normalization (pre-logit)
+        if self.is_norm:
+            current = self.final_rms_norm(current)
+        
+        output = self.final_layer(current)
+        # Squeeze only for binary classification (output dim is 1)
+        if self.num_class == 2:
+            output = output.squeeze(1)
+        return output
 
 
 class KPolynomial(nn.Module):
@@ -694,10 +819,10 @@ def create_mlp(c: Config):
         return MLP(c)
     elif c.width_varyer == "down_rank_dim":
         return MLPDownRankDim(c)
-    elif c.width_varyer == "d_model":
-        return MLPDModel(c)
+    elif c.width_varyer == "h":
+        return MLPH(c)
     else:
-        raise ValueError(f"Invalid width_varyer for MLP: {c.width_varyer}. Must be None, 'down_rank_dim', or 'd_model'.")
+        raise ValueError(f"Invalid width_varyer for MLP: {c.width_varyer}. Must be None, 'down_rank_dim', or 'h'.")
 
 
 def create_model(c: Config):
@@ -708,7 +833,7 @@ def create_model(c: Config):
         c: Configuration object containing model parameters including model_type and width_varyer
         
     Returns:
-        nn.Module: The appropriate model instance (Resnet, MLP, or KPolynomial variant)
+        nn.Module: The appropriate model instance (Resnet, MLP, MultiLinear, or KPolynomial variant)
         
     Raises:
         ValueError: If model_type or width_varyer is not a recognized value
@@ -717,7 +842,9 @@ def create_model(c: Config):
         return create_resnet(c)
     elif c.model_type == 'mlp':
         return create_mlp(c)
+    elif c.model_type == 'multi-linear':
+        return MultiLinear(c)
     elif c.model_type == 'k-polynomial':
         return KPolynomial(c)
     else:
-        raise ValueError(f"Invalid model_type: {c.model_type}. Must be 'resnet', 'mlp', or 'k-polynomial'.")
+        raise ValueError(f"Invalid model_type: {c.model_type}. Must be 'resnet', 'mlp', 'multi-linear', or 'k-polynomial'.")

@@ -39,6 +39,7 @@ def main():
         epochs=300,
         weight_decay=0.0,
         num_layers=1,
+        num_class=problem.num_classes(),
         h=h,
         d_model=10,
         is_weight_tracker=False,

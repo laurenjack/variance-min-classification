@@ -23,6 +23,16 @@ class Problem(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def num_classes(self) -> int:
+        """
+        Returns the number of classes for this classification problem.
+        
+        Returns:
+            int: Number of classes (>= 2)
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def generate_dataset(
         self,
         n: int,

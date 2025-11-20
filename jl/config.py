@@ -7,18 +7,25 @@ class Config:
     def __init__(self, model_type: str, d: int, n_val: int, n: int, batch_size: int, 
                  lr: float, epochs: int, weight_decay: float,
                  num_layers: int,
+                 num_class: int,
                  h: Optional[int] = None,
                  d_model: Optional[int] = None,
                  is_weight_tracker: bool = False, down_rank_dim: Optional[int] = None,
                  width_varyer: Optional[str] = None, is_norm: bool = True, c: Optional[float] = None,
-                 k: Optional[int] = None, adam_eps: float = 1e-8):
+                 k: Optional[int] = None, adam_eps: float = 1e-8, is_adam_w: bool = True):
         # Validate model_type
-        if model_type not in ['resnet', 'mlp', 'k-polynomial']:
-            raise ValueError(f"model_type must be either 'resnet', 'mlp', or 'k-polynomial', got '{model_type}'")
+        if model_type not in ['resnet', 'mlp', 'k-polynomial', 'multi-linear']:
+            raise ValueError(f"model_type must be either 'resnet', 'mlp', 'k-polynomial', or 'multi-linear', got '{model_type}'")
+        
+        # Validate num_class
+        if num_class < 2:
+            raise ValueError(f"num_class must be >= 2, got {num_class}")
         
         # Validate h parameter based on model_type
-        if model_type == 'mlp' and h is not None:
-            raise ValueError("h parameter cannot be set for 'mlp' model_type. Use d_model for hidden dimension size.")
+        if model_type == 'mlp' and d_model is not None:
+            raise ValueError("d_model parameter cannot be set for 'mlp' model_type. Use h for hidden dimension size.")
+        if model_type == 'multi-linear' and d_model is not None:
+            raise ValueError("d_model parameter cannot be set for 'multi-linear' model_type. Use h for hidden dimension size.")
         if model_type == 'k-polynomial' and h is not None:
             raise ValueError("h parameter cannot be set for 'k-polynomial' model_type.")
         if model_type == 'resnet' and h is None:
@@ -35,8 +42,10 @@ class Config:
                 raise ValueError(f"k parameter can only be set for 'k-polynomial' model_type, not '{model_type}'")
         
         # Validate width_varyer based on model_type
-        if model_type == 'mlp' and width_varyer == 'h':
-            raise ValueError("width_varyer cannot be 'h' for 'mlp' model_type")
+        if model_type == 'mlp' and width_varyer == 'd_model':
+            raise ValueError("width_varyer cannot be 'd_model' for 'mlp' model_type. Use 'h' instead.")
+        if model_type == 'multi-linear' and width_varyer is not None:
+            raise ValueError("width_varyer must be None for 'multi-linear' model_type")
         
         self.model_type = model_type
         self.d = d
@@ -46,6 +55,7 @@ class Config:
         self.lr = lr
         self.epochs = epochs
         self.weight_decay = weight_decay
+        self.num_class = num_class
         self.h = h
         self.num_layers = num_layers
         self.d_model = d_model
@@ -56,3 +66,4 @@ class Config:
         self.c = c
         self.k = k
         self.adam_eps = adam_eps
+        self.is_adam_w = is_adam_w

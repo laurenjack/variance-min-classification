@@ -208,6 +208,15 @@ class SubDirections(Problem):
         """
         return self._d
 
+    def num_classes(self) -> int:
+        """
+        Returns the number of classes for this classification problem.
+        
+        Returns:
+            int: Number of classes
+        """
+        return self.num_class
+
     def _enumerate_sign_patterns(self, k: int) -> torch.Tensor:
         """Return tensor of shape (2^k, k) with all +/-1 sign patterns."""
         total = 1 << k
@@ -376,6 +385,15 @@ class Gaussian(Problem):
             int: Total number of dimensions in generated features
         """
         return self._d
+
+    def num_classes(self) -> int:
+        """
+        Returns the number of classes for this classification problem.
+        
+        Returns:
+            int: Number of classes (always 2 for Gaussian)
+        """
+        return 2
     
     def generate_dataset(
         self,
@@ -536,6 +554,15 @@ class TwoGaussians(Problem):
             int: Total number of dimensions in generated features
         """
         return self._d
+
+    def num_classes(self) -> int:
+        """
+        Returns the number of classes for this classification problem.
+        
+        Returns:
+            int: Number of classes (always 2 for TwoGaussians)
+        """
+        return 2
     
     def generate_dataset(
         self,
@@ -777,6 +804,15 @@ class TwoDirections(Problem):
             int: Total number of dimensions in generated features
         """
         return self._d
+
+    def num_classes(self) -> int:
+        """
+        Returns the number of classes for this classification problem.
+        
+        Returns:
+            int: Number of classes (always 2 for TwoDirections)
+        """
+        return 2
     
     def generate_dataset(
         self,

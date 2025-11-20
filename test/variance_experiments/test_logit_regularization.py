@@ -17,7 +17,8 @@ def test_c_parameter_in_config():
         epochs=10,
         weight_decay=0.01,
         num_layers=2,
-        d_model=20
+        num_class=2,
+        h=20
     )
     assert config1.c is None
     
@@ -32,7 +33,8 @@ def test_c_parameter_in_config():
         epochs=10,
         weight_decay=0.01,
         num_layers=2,
-        d_model=20,
+        num_class=2,
+        h=20,
         c=0.1
     )
     assert config2.c == 0.1
@@ -55,7 +57,8 @@ def test_logit_regularization_loss():
         epochs=1,
         weight_decay=0.01,
         num_layers=1,
-        d_model=10,
+        num_class=2,
+        h=10,
         c=0.5
     )
     

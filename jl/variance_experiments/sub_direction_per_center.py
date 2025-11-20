@@ -52,6 +52,7 @@ def main() -> None:
         epochs=300,
         weight_decay=0.001,
         num_layers=2,
+        num_class=problem.num_classes(),
         h=80,
         is_weight_tracker=False,
         d_model=40,
