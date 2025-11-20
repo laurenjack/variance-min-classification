@@ -19,9 +19,9 @@ def main():
     )   
 
     # Experiment parameters for MLP
-    # For MLP, d_model represents the hidden dimension size
+    # For MLP, h represents the hidden dimension size
     width_range = list(range(4, 81, 4))
-    d_model = max(width_range)
+    h = max(width_range)
     num_runs = 20
     
     
@@ -36,10 +36,11 @@ def main():
         epochs=300,
         weight_decay=0.001,
         num_layers=2,
-        d_model=d_model,
+        num_class=problem.num_classes(),
+        h=h,
         is_weight_tracker=False,
         down_rank_dim=None,
-        width_varyer="d_model",
+        width_varyer="h",
         is_norm=True
     )
     # c2 = deepcopy(c)

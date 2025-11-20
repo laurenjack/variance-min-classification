@@ -1,8 +1,0 @@
----
-description: Rules for running things in the terminal, such as tests
-globs:
-alwaysApply: true
----
-
-- Whenever you run tests or code, start the venv as part of the same command i.e. source venv/bin/activate
-- When you make a change to a test or a code module, you should run ALL tests affected by that change.

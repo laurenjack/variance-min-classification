@@ -9,7 +9,7 @@ import torch
 
 from jl.models import (
     Resnet, ResnetH, ResnetDModel, ResnetDownRankDim,
-    MLP, MLPDModel, MLPDownRankDim
+    MLP, MLPH, MLPDownRankDim
 )
 from jl.config import Config
 
@@ -20,9 +20,9 @@ def test_h_mask_forward_pass():
     h_max = 8
     h_star = 4
     c_full = Config(model_type='resnet', d=d, n_val=100, n=1000, batch_size=32, lr=0.001, epochs=1, weight_decay=0.0,
-                    h=h_max, num_layers=2, d_model=None, width_varyer="h")
+                    num_layers=2, num_class=2, h=h_max, d_model=None, width_varyer="h")
     c_reduced = Config(model_type='resnet', d=d, n_val=100, n=1000, batch_size=32, lr=0.001, epochs=1, weight_decay=0.0,
-                       h=h_star, num_layers=2, d_model=None)
+                       num_layers=2, num_class=2, h=h_star, d_model=None)
 
     model_masked = ResnetH(c_full)
     model_reduced = Resnet(c_reduced)
@@ -49,9 +49,9 @@ def test_h_mask_gradients():
     h_max = 6
     h_star = 3
     c_full = Config(model_type='resnet', d=d, n_val=100, n=1000, batch_size=32, lr=0.001, epochs=1, weight_decay=0.0,
-                    h=h_max, num_layers=1, d_model=None, width_varyer="h")
+                    num_layers=1, num_class=2, h=h_max, d_model=None, width_varyer="h")
     c_reduced = Config(model_type='resnet', d=d, n_val=100, n=1000, batch_size=32, lr=0.001, epochs=1, weight_decay=0.0,
-                       h=h_star, num_layers=1, d_model=None)
+                       num_layers=1, num_class=2, h=h_star, d_model=None)
 
     model_masked = ResnetH(c_full)
     model_reduced = Resnet(c_reduced)
@@ -98,9 +98,9 @@ def test_d_model_mask_forward_pass():
     d_model_star = 7
     h = 6
     c_masked = Config(model_type='resnet', d=d, n_val=10, n=10, batch_size=2, lr=1e-3, epochs=1, weight_decay=0.0,
-                      h=h, num_layers=2, d_model=d_model_max, width_varyer="d_model")
+                      num_layers=2, num_class=2, h=h, d_model=d_model_max, width_varyer="d_model")
     c_reduced = Config(model_type='resnet', d=d, n_val=10, n=10, batch_size=2, lr=1e-3, epochs=1, weight_decay=0.0,
-                       h=h, num_layers=2, d_model=d_model_star)
+                       num_layers=2, num_class=2, h=h, d_model=d_model_star)
 
     model_masked = ResnetDModel(c_masked)
     model_reduced = Resnet(c_reduced)
@@ -132,9 +132,9 @@ def test_down_rank_dim_mask_forward_pass():
     dr_max = 8
     dr_star = 5
     c_masked = Config(model_type='resnet', d=d, n_val=10, n=10, batch_size=2, lr=1e-3, epochs=1, weight_decay=0.0,
-                      h=h, num_layers=2, d_model=d_model, down_rank_dim=dr_max, width_varyer="down_rank_dim")
+                      num_layers=2, num_class=2, h=h, d_model=d_model, down_rank_dim=dr_max, width_varyer="down_rank_dim")
     c_reduced = Config(model_type='resnet', d=d, n_val=10, n=10, batch_size=2, lr=1e-3, epochs=1, weight_decay=0.0,
-                       h=h, num_layers=2, d_model=d_model, down_rank_dim=dr_star)
+                       num_layers=2, num_class=2, h=h, d_model=d_model, down_rank_dim=dr_star)
 
     model_masked = ResnetDownRankDim(c_masked)
     model_reduced = Resnet(c_reduced)
@@ -157,42 +157,42 @@ def test_down_rank_dim_mask_forward_pass():
     assert torch.allclose(out_masked, out_reduced, atol=1e-5)
 
 
-def test_d_model_mask_forward_pass_mlp():
-    """d_model mask simulates a base MLP with d_model* (no down-rank)."""
+def test_h_mask_forward_pass_mlp():
+    """h mask simulates a base MLP with h* (no down-rank)."""
     d = 5
-    d_model_max = 12
-    d_model_star = 7
+    h_max = 12
+    h_star = 7
     c_masked = Config(model_type='mlp', d=d, n_val=10, n=10, batch_size=2, lr=1e-3, epochs=1, weight_decay=0.0,
-                      num_layers=2, d_model=d_model_max, width_varyer="d_model")
+                      num_layers=2, num_class=2, h=h_max, width_varyer="h")
     c_reduced = Config(model_type='mlp', d=d, n_val=10, n=10, batch_size=2, lr=1e-3, epochs=1, weight_decay=0.0,
-                       num_layers=2, d_model=d_model_star)
+                       num_layers=2, num_class=2, h=h_star)
 
-    model_masked = MLPDModel(c_masked)
+    model_masked = MLPH(c_masked)
     model_reduced = MLP(c_reduced)
 
     with torch.no_grad():
         # Align input layer
-        model_reduced.layers[0].weight.data = model_masked.input_layer.weight.data[:d_model_star, :]
+        model_reduced.layers[0].weight.data = model_masked.input_layer.weight.data[:h_star, :]
         
         # Align first norm (after input layer)
-        model_reduced.layers[1].weight.data = model_masked.input_norm.weight.data[:d_model_star]
+        model_reduced.layers[1].weight.data = model_masked.input_norm.weight.data[:h_star]
         
         # Align hidden layers
         # model_reduced has Sequential with pattern: Linear, RMSNorm, ReLU for each layer
         # For num_layers=2: [Linear(input), RMSNorm, ReLU, Linear(hidden), RMSNorm, ReLU]
         # So hidden layer starts at index 3
         if len(model_masked.hidden_layers) > 0:
-            model_reduced.layers[3].weight.data = model_masked.hidden_layers[0].weight.data[:d_model_star, :d_model_star]
-            model_reduced.layers[4].weight.data = model_masked.hidden_norms[0].weight.data[:d_model_star]
+            model_reduced.layers[3].weight.data = model_masked.hidden_layers[0].weight.data[:h_star, :h_star]
+            model_reduced.layers[4].weight.data = model_masked.hidden_norms[0].weight.data[:h_star]
         
-        # Align final layer (first d_model* columns)
-        model_reduced.final_layer.weight.data = model_masked.final_layer.weight.data[:, :d_model_star]
+        # Align final layer (first h* columns)
+        model_reduced.final_layer.weight.data = model_masked.final_layer.weight.data[:, :h_star]
 
-    d_mask = torch.zeros(d_model_max)
-    d_mask[:d_model_star] = 1.0
+    h_mask = torch.zeros(h_max)
+    h_mask[:h_star] = 1.0
 
     x = torch.randn(3, d)
-    out_masked = model_masked(x, width_mask=d_mask)
+    out_masked = model_masked(x, width_mask=h_mask)
     out_reduced = model_reduced(x)
     assert torch.allclose(out_masked, out_reduced, atol=1e-5)
 
@@ -200,13 +200,13 @@ def test_d_model_mask_forward_pass_mlp():
 def test_down_rank_dim_mask_forward_pass_mlp():
     """down_rank_dim mask simulates base MLP with down_rank_dim*."""
     d = 4
-    d_model = 8
+    h = 8
     dr_max = 10
     dr_star = 6
     c_masked = Config(model_type='mlp', d=d, n_val=10, n=10, batch_size=2, lr=1e-3, epochs=1, weight_decay=0.0,
-                      num_layers=2, d_model=d_model, down_rank_dim=dr_max, width_varyer="down_rank_dim")
+                      num_layers=2, num_class=2, h=h, down_rank_dim=dr_max, width_varyer="down_rank_dim")
     c_reduced = Config(model_type='mlp', d=d, n_val=10, n=10, batch_size=2, lr=1e-3, epochs=1, weight_decay=0.0,
-                       num_layers=2, d_model=d_model, down_rank_dim=dr_star)
+                       num_layers=2, num_class=2, h=h, down_rank_dim=dr_star)
 
     model_masked = MLPDownRankDim(c_masked)
     model_reduced = MLP(c_reduced)
