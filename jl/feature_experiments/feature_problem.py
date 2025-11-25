@@ -167,51 +167,6 @@ class SingleFeatures(Problem):
                 generator=self.generator,
                 device=self.device,
             )
-        
-        # Compute covariance matrix
-        self._covariance: torch.Tensor = self._compute_covariance()
-    
-    def _compute_covariance(self) -> torch.Tensor:
-        """
-        Compute the covariance matrix of the features.
-        
-        If n_per_f is specified, features have relative frequencies n_per_f[i].
-        Otherwise, all features are equally likely with probability 1/f.
-        
-        The covariance matrix is:
-            Cov = E[x x^T] - E[x] E[x]^T
-        where:
-            E[x] = sum_i p_i * Q[i]
-            E[x x^T] = sum_i p_i * Q[i] Q[i]^T
-        
-        Returns:
-            Covariance matrix of shape (d, d)
-        """
-        # Compute feature probabilities
-        if self.n_per_f is not None:
-            total_freq = sum(self.n_per_f)
-            probs = torch.tensor(
-                [freq / total_freq for freq in self.n_per_f],
-                device=self.device,
-                dtype=torch.float32
-            )
-        else:
-            # Uniform distribution
-            probs = torch.ones(self.f, device=self.device, dtype=torch.float32) / self.f
-        
-        # Compute E[x] = sum_i p_i * Q[i]
-        mean = torch.sum(probs.unsqueeze(1) * self.Q, dim=0)  # shape (d,)
-        
-        # Compute E[x x^T] = sum_i p_i * Q[i] Q[i]^T
-        E_xx = torch.zeros(self._d, self._d, device=self.device, dtype=torch.float32)
-        for i in range(self.f):
-            qi = self.Q[i]  # shape (d,)
-            E_xx += probs[i] * torch.outer(qi, qi)
-        
-        # Cov = E[x x^T] - E[x] E[x]^T
-        cov = E_xx - torch.outer(mean, mean)
-        
-        return cov
     
     def _construct_untf(self) -> torch.Tensor:
         """
@@ -266,20 +221,6 @@ class SingleFeatures(Problem):
             int: Total number of dimensions in generated features
         """
         return self._d
-    
-    @property
-    def covariance(self) -> torch.Tensor:
-        """
-        The covariance matrix of the features.
-        
-        This is computed based on the feature frequencies (n_per_f if specified,
-        otherwise uniform). The covariance matrix is:
-            Cov = E[x x^T] - E[x] E[x]^T
-        
-        Returns:
-            torch.Tensor: Covariance matrix of shape (d, d)
-        """
-        return self._covariance
     
     def num_classes(self) -> int:
         """

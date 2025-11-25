@@ -128,55 +128,6 @@ class TestFrobeniusReg(unittest.TestCase):
         expected_sum = 4.0
         
         self.assertAlmostEqual(squared_sums.sum().item(), expected_sum)
-    
-    def test_covariance_weighted_frobenius_norm(self):
-        """Test that covariance-weighted Frobenius norm is computed correctly."""
-        # Create a simple linear model
-        W = torch.tensor([[1.0, 2.0], [3.0, 4.0]])  # 2x2 matrix
-        
-        # Create a covariance matrix
-        Sigma = torch.tensor([[2.0, 0.5], [0.5, 3.0]])
-        
-        # Compute covariance-weighted Frobenius norm: trace(W @ Sigma @ W^T)
-        result = torch.trace(W @ Sigma @ W.T)
-        
-        # Manual computation:
-        # W @ Sigma = [[1, 2], [3, 4]] @ [[2, 0.5], [0.5, 3]]
-        #           = [[1*2 + 2*0.5, 1*0.5 + 2*3], [3*2 + 4*0.5, 3*0.5 + 4*3]]
-        #           = [[3, 6.5], [8, 13.5]]
-        # (W @ Sigma) @ W^T = [[3, 6.5], [8, 13.5]] @ [[1, 3], [2, 4]]
-        #                   = [[3*1 + 6.5*2, 3*3 + 6.5*4], [8*1 + 13.5*2, 8*3 + 13.5*4]]
-        #                   = [[16, 35], [35, 78]]
-        # trace = 16 + 78 = 94
-        
-        expected = 94.0
-        self.assertAlmostEqual(result.item(), expected, places=5)
-        
-        # Also verify that it equals trace(Sigma @ W^T @ W)
-        alternative = torch.trace(Sigma @ W.T @ W)
-        self.assertAlmostEqual(result.item(), alternative.item(), places=5)
-    
-    def test_use_covariance_flag_validation(self):
-        """Test that use_covariance flag is validated correctly."""
-        # Should raise error when use_covariance=True but frobenius_reg_k is None
-        with self.assertRaises(ValueError) as context:
-            Config(
-                model_type='mlp', d=2, n_val=10, n=10, batch_size=5, lr=0.01, 
-                epochs=1, weight_decay=0.0, num_layers=2, num_class=2, h=2, 
-                is_norm=False, use_covariance=True
-            )
-        self.assertIn("use_covariance can only be True when frobenius_reg_k is specified", 
-                     str(context.exception))
-        
-        # Should work when both are specified
-        c = Config(
-            model_type='mlp', d=2, n_val=10, n=10, batch_size=5, lr=0.01, 
-            epochs=1, weight_decay=0.0, num_layers=2, num_class=2, h=2, 
-            is_norm=False, frobenius_reg_k=0.1, use_covariance=True
-        )
-        self.assertTrue(c.use_covariance)
-        self.assertEqual(c.frobenius_reg_k, 0.1)
-
 
 if __name__ == '__main__':
     unittest.main()

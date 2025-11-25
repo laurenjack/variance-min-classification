@@ -751,19 +751,20 @@ class MultiLinear(nn.Module):
         output_dim = 1 if c.num_class == 2 else c.num_class
         
         # Build MultiLinear layers (no activations)
+        # Using pre-norm architecture: Norm → Linear → Norm → Linear → ...
         layers = []
         
         # Input layer (only add if num_layers > 0, otherwise just identity)
         if self.num_layers > 0:
-            layers.append(nn.Linear(self.input_dim, self.h, bias=False))
             if c.is_norm:
-                layers.append(RMSNorm(self.h))
+                layers.append(RMSNorm(self.input_dim))
+            layers.append(nn.Linear(self.input_dim, self.h, bias=False))
             
             # Hidden layers (no ReLU)
             for _ in range(self.num_layers - 1):
-                layers.append(nn.Linear(self.h, self.h, bias=False))
                 if c.is_norm:
                     layers.append(RMSNorm(self.h))
+                layers.append(nn.Linear(self.h, self.h, bias=False))
         
         self.layers = nn.Sequential(*layers) if layers else nn.Identity()
         

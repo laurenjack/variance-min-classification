@@ -33,7 +33,7 @@ def main():
         batch_size=n // 4,
         lr=0.1,
         epochs=1000,
-        weight_decay=0.003,
+        weight_decay=0.01,
         num_layers=1,
         num_class=problem.num_classes(),
         h=problem.f,
@@ -42,8 +42,6 @@ def main():
         width_varyer=None,  # Must be None for multi-linear
         is_norm=True,
         is_adam_w=False,
-        frobenius_reg_k=None,
-        use_covariance=False,  # Use covariance-weighted Frobenius regularization
     )
 
     # Generate validation set with class-balanced sampling
@@ -53,12 +51,6 @@ def main():
         clean_mode=True
     )
     validation_set = x_val.to(device), y_val.to(device), center_indices.to(device)
-
-    # Print covariance matrix if using covariance-weighted regularization
-    if model_config.use_covariance:
-        print("\nInput feature covariance matrix:")
-        print(problem.covariance)
-        print()
 
     # Train the model using single_runner
     model, tracker, x_train, y_train, train_center_indices = train_once(
