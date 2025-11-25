@@ -95,21 +95,6 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
             if c.c is not None:
                 logit_reg = c.c * torch.mean(logits ** 2)
                 loss = loss + logit_reg
-            
-            # Add Frobenius regularization if specified
-            if c.frobenius_reg_k is not None:
-                linear_equiv = model.get_linear_equivalent(device)
-                if c.use_covariance:
-                    # Use covariance-weighted Frobenius norm: trace(W @ Sigma @ W^T)
-                    # Get covariance from problem
-                    input_covariance = problem.covariance.to(device)
-                    W = linear_equiv  # shape (num_class, d)
-                    # Compute W @ Sigma @ W^T
-                    frob_reg = c.frobenius_reg_k * torch.trace(W @ input_covariance @ W.T)
-                else:
-                    # Standard Frobenius norm: trace(W^T @ W)
-                    frob_reg = c.frobenius_reg_k * (linear_equiv ** 2).sum()
-                loss = loss + frob_reg
 
             train_loss = loss.item()
             
