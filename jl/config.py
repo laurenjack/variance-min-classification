@@ -12,10 +12,25 @@ class Config:
                  d_model: Optional[int] = None,
                  is_weight_tracker: bool = False, down_rank_dim: Optional[int] = None,
                  width_varyer: Optional[str] = None, is_norm: bool = True, c: Optional[float] = None,
-                 k: Optional[int] = None, adam_eps: float = 1e-8, is_adam_w: bool = True):
+                 k: Optional[int] = None, adam_eps: float = 1e-8, is_adam_w: bool = True,
+                 frobenius_reg_k: Optional[float] = None, use_covariance: bool = False):
         # Validate model_type
         if model_type not in ['resnet', 'mlp', 'k-polynomial', 'multi-linear']:
             raise ValueError(f"model_type must be either 'resnet', 'mlp', 'k-polynomial', or 'multi-linear', got '{model_type}'")
+        
+        # Validate frobenius_reg_k
+        if frobenius_reg_k is not None:
+            if frobenius_reg_k <= 0:
+                raise ValueError(f"frobenius_reg_k must be > 0, got {frobenius_reg_k}")
+            if is_norm and model_type != "multi-linear":
+                raise ValueError("frobenius_reg_k can only be specified when is_norm=False, or 'multi-linear'")
+            if model_type == 'k-polynomial':
+                raise ValueError("frobenius_reg_k cannot be used with 'k-polynomial' model_type")
+        
+        # Validate use_covariance
+        if use_covariance:
+            if frobenius_reg_k is None:
+                raise ValueError("use_covariance can only be True when frobenius_reg_k is specified")
         
         # Validate num_class
         if num_class < 2:
@@ -67,3 +82,5 @@ class Config:
         self.k = k
         self.adam_eps = adam_eps
         self.is_adam_w = is_adam_w
+        self.frobenius_reg_k = frobenius_reg_k
+        self.use_covariance = use_covariance

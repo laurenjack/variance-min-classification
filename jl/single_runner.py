@@ -13,9 +13,11 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
     
     Parameters:
         device: torch.device to run computation on
-        problem: Dataset generator with generate_dataset method
+        problem: Dataset generator with generate_dataset method. If c.use_covariance is True,
+                 problem must have a 'covariance' property.
         validation_set: Tuple of (x_val, y_val) tensors
         c: Config containing training and architecture parameters
+        clean_mode: Whether to generate clean data (no noise)
     """
     if c.model_type == 'mlp':
         model_desc = f"{c.model_type.upper()}: d={c.d}, h={c.h}"
@@ -94,6 +96,21 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
                 logit_reg = c.c * torch.mean(logits ** 2)
                 loss = loss + logit_reg
             
+            # Add Frobenius regularization if specified
+            if c.frobenius_reg_k is not None:
+                linear_equiv = model.get_linear_equivalent(device)
+                if c.use_covariance:
+                    # Use covariance-weighted Frobenius norm: trace(W @ Sigma @ W^T)
+                    # Get covariance from problem
+                    input_covariance = problem.covariance.to(device)
+                    W = linear_equiv  # shape (num_class, d)
+                    # Compute W @ Sigma @ W^T
+                    frob_reg = c.frobenius_reg_k * torch.trace(W @ input_covariance @ W.T)
+                else:
+                    # Standard Frobenius norm: trace(W^T @ W)
+                    frob_reg = c.frobenius_reg_k * (linear_equiv ** 2).sum()
+                loss = loss + frob_reg
+
             train_loss = loss.item()
             
             # Calculate training accuracy

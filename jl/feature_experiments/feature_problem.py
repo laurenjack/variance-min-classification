@@ -57,7 +57,7 @@ def _construct_random_features(
     Construct random unit-norm features with rejection sampling to avoid
     vectors that are too close (cosine similarity threshold cosine(2π/d)).
     """
-    threshold = math.cos(2 * math.pi / dimension)
+    threshold = math.cos(math.pi /(2 * dimension))
     max_attempts_per_feature = 100
 
     features: List[torch.Tensor] = []
@@ -115,7 +115,8 @@ class SingleFeatures(Problem):
         d: int,
         f: int,
         orthogonal_as_possible: bool = True,
-        device: torch.device | None = None,
+        n_per_f: Optional[List[int]] = None,
+        device: Optional[torch.device] = None,
         generator: Optional[torch.Generator] = None,
     ) -> None:
         """
@@ -125,6 +126,7 @@ class SingleFeatures(Problem):
             orthogonal_as_possible: If True, generate orthonormal features (f <= d) or UNTF (f > d).
                                     If False, generate random unit-norm features with rejection sampling
                                     to avoid features that are too close (dot product > cos(2π/d)).
+            n_per_f: The frequency of each feature in the dataset. If None, all features are equally frequent.
             device: torch device to use for tensors
             generator: optional random generator for reproducibility
         """
@@ -134,6 +136,14 @@ class SingleFeatures(Problem):
         self.orthogonal_as_possible: bool = orthogonal_as_possible
         self.device: torch.device = device if device is not None else torch.device("cpu")
         self.generator: Optional[torch.Generator] = generator
+        
+        # Validate and store n_per_f
+        if n_per_f is not None:
+            if len(n_per_f) != self.f:
+                raise ValueError(f"n_per_f must have length f={self.f}, got length {len(n_per_f)}")
+            if any(x <= 0 for x in n_per_f):
+                raise ValueError("All elements of n_per_f must be positive")
+        self.n_per_f = n_per_f
         
         # Generate Q ∈ R^(f×d)
         if self.orthogonal_as_possible:
@@ -145,6 +155,7 @@ class SingleFeatures(Problem):
                     device=self.device,
                 )
             else:
+                print("WARNING: This is not a harmonic UNTF, so the points are not equally distributed on the sphere.")
                 # Case 2: f > d - construct Unit Norm Tight Frame (UNTF)
                 # A UNTF satisfies: Q.T @ Q = (f/d) * I_d and each row has unit norm
                 self.Q = self._construct_untf()
@@ -156,6 +167,51 @@ class SingleFeatures(Problem):
                 generator=self.generator,
                 device=self.device,
             )
+        
+        # Compute covariance matrix
+        self._covariance: torch.Tensor = self._compute_covariance()
+    
+    def _compute_covariance(self) -> torch.Tensor:
+        """
+        Compute the covariance matrix of the features.
+        
+        If n_per_f is specified, features have relative frequencies n_per_f[i].
+        Otherwise, all features are equally likely with probability 1/f.
+        
+        The covariance matrix is:
+            Cov = E[x x^T] - E[x] E[x]^T
+        where:
+            E[x] = sum_i p_i * Q[i]
+            E[x x^T] = sum_i p_i * Q[i] Q[i]^T
+        
+        Returns:
+            Covariance matrix of shape (d, d)
+        """
+        # Compute feature probabilities
+        if self.n_per_f is not None:
+            total_freq = sum(self.n_per_f)
+            probs = torch.tensor(
+                [freq / total_freq for freq in self.n_per_f],
+                device=self.device,
+                dtype=torch.float32
+            )
+        else:
+            # Uniform distribution
+            probs = torch.ones(self.f, device=self.device, dtype=torch.float32) / self.f
+        
+        # Compute E[x] = sum_i p_i * Q[i]
+        mean = torch.sum(probs.unsqueeze(1) * self.Q, dim=0)  # shape (d,)
+        
+        # Compute E[x x^T] = sum_i p_i * Q[i] Q[i]^T
+        E_xx = torch.zeros(self._d, self._d, device=self.device, dtype=torch.float32)
+        for i in range(self.f):
+            qi = self.Q[i]  # shape (d,)
+            E_xx += probs[i] * torch.outer(qi, qi)
+        
+        # Cov = E[x x^T] - E[x] E[x]^T
+        cov = E_xx - torch.outer(mean, mean)
+        
+        return cov
     
     def _construct_untf(self) -> torch.Tensor:
         """
@@ -211,6 +267,20 @@ class SingleFeatures(Problem):
         """
         return self._d
     
+    @property
+    def covariance(self) -> torch.Tensor:
+        """
+        The covariance matrix of the features.
+        
+        This is computed based on the feature frequencies (n_per_f if specified,
+        otherwise uniform). The covariance matrix is:
+            Cov = E[x x^T] - E[x] E[x]^T
+        
+        Returns:
+            torch.Tensor: Covariance matrix of shape (d, d)
+        """
+        return self._covariance
+    
     def num_classes(self) -> int:
         """
         Returns the number of classes for this classification problem.
@@ -230,7 +300,13 @@ class SingleFeatures(Problem):
         Generate a dataset of size n.
         
         Each sample has exactly one active feature, corresponding to one class.
-        Samples are class-balanced (each class gets approximately n/f samples).
+        
+        If n_per_f is None (default):
+            Samples are class-balanced (each class gets approximately n/f samples).
+        
+        If n_per_f is specified:
+            Feature i appears with relative frequency n_per_f[i].
+            n must be a multiple of sum(n_per_f), otherwise an error is raised.
         
         Args:
             n: Number of samples to generate.
@@ -246,24 +322,55 @@ class SingleFeatures(Problem):
         if n <= 0:
             raise ValueError("n must be positive")
         
-        # Stack ceiling(n/f) identity matrices vertically
-        num_repeats = math.ceil(n / self.f)
-        
-        # Create I_f identity matrix
-        I_f = torch.eye(self.f, device=self.device, dtype=torch.float32)
-        
-        # Stack num_repeats copies vertically
-        x_standard = I_f.repeat(num_repeats, 1)  # shape (f * num_repeats, f)
-        
-        # Truncate to first n rows
-        x_standard = x_standard[:n]  # shape (n, f)
+        if self.n_per_f is not None:
+            # Validate that n is a multiple of sum(n_per_f)
+            total_freq = sum(self.n_per_f)
+            if n % total_freq != 0:
+                raise ValueError(
+                    f"When n_per_f is specified, n must be a multiple of sum(n_per_f)={total_freq}. "
+                    f"Got n={n}."
+                )
+            
+            # Generate samples according to specified frequencies
+            multiplier = n // total_freq
+            
+            # Build x_standard by stacking one-hot vectors according to frequencies
+            x_standard_list: List[torch.Tensor] = []
+            y_list: List[torch.Tensor] = []
+            
+            for feature_idx in range(self.f):
+                num_samples = self.n_per_f[feature_idx] * multiplier
+                # Create one-hot vectors for this feature
+                one_hot = torch.zeros(num_samples, self.f, device=self.device, dtype=torch.float32)
+                one_hot[:, feature_idx] = 1.0
+                x_standard_list.append(one_hot)
+                
+                # Create labels for this feature
+                labels = torch.full((num_samples,), feature_idx, device=self.device, dtype=torch.int64)
+                y_list.append(labels)
+            
+            x_standard = torch.cat(x_standard_list, dim=0)  # shape (n, f)
+            y = torch.cat(y_list, dim=0)  # shape (n,)
+        else:
+            # Default behavior: approximately balanced classes
+            # Stack ceiling(n/f) identity matrices vertically
+            num_repeats = math.ceil(n / self.f)
+            
+            # Create I_f identity matrix
+            I_f = torch.eye(self.f, device=self.device, dtype=torch.float32)
+            
+            # Stack num_repeats copies vertically
+            x_standard = I_f.repeat(num_repeats, 1)  # shape (f * num_repeats, f)
+            
+            # Truncate to first n rows
+            x_standard = x_standard[:n]  # shape (n, f)
+            
+            # Labels: y[i] = argmax(x_standard[i]) = i mod f
+            # Since x_standard[i] is a one-hot vector, argmax gives us the column index
+            y = torch.arange(n, device=self.device, dtype=torch.int64) % self.f
         
         # Compute x = x_standard @ Q
         x = x_standard @ self.Q  # shape (n, d)
-        
-        # Labels: y[i] = argmax(x_standard[i]) = i mod f
-        # Since x_standard[i] is a one-hot vector, argmax gives us the column index
-        y = torch.arange(n, device=self.device, dtype=torch.int64) % self.f
         
         # center_indices is the same as y for this problem
         center_indices = y.clone()

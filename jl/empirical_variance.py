@@ -50,6 +50,9 @@ def run_experiment_parallel(
     if c.num_class != 2:
         raise ValueError("run_experiment_parallel currently only supports binary classification. Multi-class support is not yet implemented.")
     
+    if c.frobenius_reg_k is not None:
+        raise ValueError("frobenius_reg_k is not supported in empirical_variance runner. Please use standard training or implement support for parallel execution.")
+    
     x_val, y_val, center_indices_val = validation_set
     training_sets = _generate_training_sets(problem, c, num_runs, device, clean_mode)
     model_lists = _build_models(c, width_range, num_runs, device)
