@@ -201,6 +201,61 @@ class Resnet(nn.Module):
             output = output.squeeze(1)
         return output
 
+    def get_linear_equivalent(self, device: torch.device):
+        """
+        Returns the matrix corresponding to the linear transformation of the network
+        ignoring all non-linearities (ReLU, Norms).
+        Computes the product of all linear layers.
+        """
+        
+        # Start with Identity matrix of size (input_dim, input_dim)
+        # This represents passing basis vectors. 
+        current = torch.eye(self.input_dim, device=device)
+        
+        if self.input_projection is not None:
+            current = self.input_projection(current)
+            
+        for block in self.blocks:
+            # Linear part of block: x + W_out(W_in(x))
+            hidden = block.weight_in(current)
+            out = block.weight_out(hidden)
+            current = current + out
+            
+        if self.down_rank_layer is not None:
+            current = self.down_rank_layer(current)
+            
+        output = self.final_layer(current)
+        return output
+
+    def get_squared_path_sums(self, device: torch.device):
+        """
+        Returns the matrix corresponding to the sum of squared paths through the network.
+        Each weight matrix is squared element-wise before being applied as a linear transformation.
+        This is used for Frobenius-style regularization of network paths.
+        """
+        current = torch.eye(self.input_dim, device=device)
+        
+        if self.input_projection is not None:
+            # Apply squared weights: F.linear(x, W^2) where ^2 is element-wise
+            W_proj_sq = self.input_projection.weight ** 2
+            current = F.linear(current, W_proj_sq)
+            
+        for block in self.blocks:
+            # For residual block: x + W_out(W_in(x)) becomes x + (W_out^2)((W_in^2)(x))
+            W_in_sq = block.weight_in.weight ** 2
+            W_out_sq = block.weight_out.weight ** 2
+            hidden = F.linear(current, W_in_sq)
+            out = F.linear(hidden, W_out_sq)
+            current = current + out
+            
+        if self.down_rank_layer is not None:
+            W_down_sq = self.down_rank_layer.weight ** 2
+            current = F.linear(current, W_down_sq)
+            
+        W_final_sq = self.final_layer.weight ** 2
+        output = F.linear(current, W_final_sq)
+        return output
+
 
 class ResnetH(Resnet):
     def __init__(self, c: Config):
@@ -465,6 +520,47 @@ class MLP(nn.Module):
             output = output.squeeze(1)
         return output
 
+    def get_linear_equivalent(self, device: torch.device):
+        """
+        Returns the matrix corresponding to the linear transformation of the network
+        ignoring all non-linearities (ReLU, Norms).
+        Computes the product of all linear layers.
+        """
+        current = torch.eye(self.input_dim, device=device)
+        
+        # self.layers is nn.Sequential
+        for layer in self.layers:
+            if isinstance(layer, nn.Linear):
+                current = layer(current)
+                
+        if self.down_rank_layer is not None:
+            current = self.down_rank_layer(current)
+            
+        output = self.final_layer(current)
+        return output
+
+    def get_squared_path_sums(self, device: torch.device):
+        """
+        Returns the matrix corresponding to the sum of squared paths through the network.
+        Each weight matrix is squared element-wise before being applied as a linear transformation.
+        This is used for Frobenius-style regularization of network paths.
+        """
+        current = torch.eye(self.input_dim, device=device)
+        
+        # self.layers is nn.Sequential
+        for layer in self.layers:
+            if isinstance(layer, nn.Linear):
+                W_sq = layer.weight ** 2
+                current = F.linear(current, W_sq)
+                
+        if self.down_rank_layer is not None:
+            W_down_sq = self.down_rank_layer.weight ** 2
+            current = F.linear(current, W_down_sq)
+            
+        W_final_sq = self.final_layer.weight ** 2
+        output = F.linear(current, W_final_sq)
+        return output
+
 
 class MLPDownRankDim(nn.Module):
     def __init__(self, c: Config):
@@ -718,6 +814,48 @@ class MultiLinear(nn.Module):
         # Squeeze only for binary classification (output dim is 1)
         if self.num_class == 2:
             output = output.squeeze(1)
+        return output
+
+    def get_linear_equivalent(self, device: torch.device):
+        """
+        Returns the matrix corresponding to the linear transformation of the network
+        ignoring all non-linearities (ReLU, Norms).
+        Computes the product of all linear layers.
+        """
+        current = torch.eye(self.input_dim, device=device)
+        
+        if self.num_layers > 0:
+            for layer in self.layers:
+                if isinstance(layer, nn.Linear) or isinstance(layer, RMSNorm):
+                    current = layer(current)       
+                
+        if self.down_rank_layer is not None:
+            current = self.down_rank_layer(current)
+            
+        if self.is_norm:
+            current = self.final_rms_norm(current)
+        output = self.final_layer(current)
+        return output
+
+    def get_squared_path_sums(self, device: torch.device):
+        """
+        Returns the matrix corresponding to the sum of squared paths through the network.
+        Each weight matrix is squared element-wise before being applied as a linear transformation.
+        This is used for Frobenius-style regularization of network paths.
+        """
+        current = torch.eye(self.input_dim, device=device)
+        
+        for layer in self.layers:
+            if isinstance(layer, nn.Linear):
+                W_sq = layer.weight ** 2
+                current = F.linear(current, W_sq)
+                
+        if self.down_rank_layer is not None:
+            W_down_sq = self.down_rank_layer.weight ** 2
+            current = F.linear(current, W_down_sq)
+            
+        W_final_sq = self.final_layer.weight ** 2
+        output = F.linear(current, W_final_sq)
         return output
 
 
