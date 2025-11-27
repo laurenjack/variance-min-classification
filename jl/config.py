@@ -12,7 +12,8 @@ class Config:
                  d_model: Optional[int] = None,
                  is_weight_tracker: bool = False, down_rank_dim: Optional[int] = None,
                  width_varyer: Optional[str] = None, is_norm: bool = True, c: Optional[float] = None,
-                 k: Optional[int] = None, adam_eps: float = 1e-8, is_adam_w: bool = True):
+                 k: Optional[int] = None, adam_eps: float = 1e-8, is_adam_w: bool = True,
+                 learnable_norm_parameters: bool = True):
         # Validate model_type
         if model_type not in ['resnet', 'mlp', 'k-polynomial', 'multi-linear']:
             raise ValueError(f"model_type must be either 'resnet', 'mlp', 'k-polynomial', or 'multi-linear', got '{model_type}'")
@@ -67,3 +68,4 @@ class Config:
         self.k = k
         self.adam_eps = adam_eps
         self.is_adam_w = is_adam_w
+        self.learnable_norm_parameters = learnable_norm_parameters
