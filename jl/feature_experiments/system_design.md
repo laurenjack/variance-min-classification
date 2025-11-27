@@ -21,9 +21,15 @@ Now for the sampling. We shall iterate over the l centers, summing those. Specif
 
 x_i= Q_0[c_{0i}] + \sum_{l=1}^{L-1}(2^{-l}Q_l[c_{li}])  Where c_{li} is the randomly chosen center for point i at layer l chosen uniformly over the integers: 0<= c_{li} < C_l, that is the selected direction. The c_{(L-1)i} corresponds to the class label y_i. Ideally we can generate the entire matrix of data points at once, as opposed to constructing each vector individually.
 
+### Class Balance
+
+For a given problem layer, the samples should be balanced across centers as possible. However, it is important that from layer to layer there is no correlation of centers.
+
+### Center Indices 
+
+The Kaleidoscope problem needs to return a list of center indices, one for each layer of the problem. Each element should be of shape [n,] and the elements of that tensor should correspond to center index at that layer for the given data point. 
+
 ### Additional details
 
-- For now just return None for the center indices.
-- We don't class balance here, uniform random is OK
 - Let's make sure we refactor things such that the problems share common logic
 

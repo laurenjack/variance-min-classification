@@ -384,39 +384,43 @@ class Kaleidoscope(Problem):
         n: int,
         clean_mode: bool = False,
         shuffle: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor]]:
         del clean_mode  # not used for this problem (no noise yet)
 
         n = _validate_positive(n, "n")
         x = torch.zeros(n, self._d, device=self.device, dtype=torch.float32)
-        last_layer_indices = None
+        center_indices_list: List[torch.Tensor] = []
 
         for layer_idx, (Q_l, c) in enumerate(zip(self.Q_layers, self.centers)):
-            indices = torch.randint(
-                low=0,
-                high=c,
-                size=(n,),
-                generator=self.generator,
-                device=self.device,
-                dtype=torch.int64,
-            )
+            # Generate balanced center assignments for this layer
+            # Stack identity-like pattern: [0, 1, 2, ..., c-1, 0, 1, 2, ..., c-1, ...]
+            num_repeats = math.ceil(n / c)
+            indices = torch.arange(c, device=self.device, dtype=torch.int64).repeat(num_repeats)
+            indices = indices[:n]  # Truncate to exactly n samples
+            
+            # Shuffle this layer independently to remove correlation with other layers
+            layer_perm = torch.randperm(n, generator=self.generator, device=self.device)
+            indices = indices[layer_perm]
+            
+            center_indices_list.append(indices)
 
             if layer_idx == 0:
                 scale = 1.0
             else:
                 scale = math.pow(2.0, - layer_idx)
             x = x + scale * Q_l[indices]
-            last_layer_indices = indices
 
-        if last_layer_indices is None:
+        if not center_indices_list:
             raise RuntimeError("No layers defined; centers must be non-empty.")
 
-        y = last_layer_indices.clone()
+        # The label is the center index of the last layer
+        y = center_indices_list[-1].clone()
 
         if shuffle:
             perm = torch.randperm(n, generator=self.generator, device=self.device)
             x = x[perm]
             y = y[perm]
+            # Apply the same permutation to all center indices
+            center_indices_list = [indices[perm] for indices in center_indices_list]
 
-        center_indices = None
-        return x, y, center_indices
+        return x, y, center_indices_list
