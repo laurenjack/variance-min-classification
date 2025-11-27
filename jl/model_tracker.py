@@ -5,13 +5,17 @@ import torch.nn as nn
 
 
 class ResnetTracker:
-    def __init__(self, track_weights=True):
+    def __init__(self, track_weights=True, num_layers=0, has_down_rank_layer=False):
         """
         Parameters:
             track_weights (bool): If True the weight matrices are tracked; if False only the
                                   accuracy is tracked.
+            num_layers (int): Number of residual blocks in the model.
+            has_down_rank_layer (bool): Whether the model has a down-rank layer.
         """
         self.track_weights = track_weights
+        self.num_layers = num_layers
+        self.has_down_rank_layer = has_down_rank_layer
         # Each element is a list (one per training step) of lists of numpy arrays for the linear layer weight matrices.
         self.weight_history = []
         # Each element is a list (one per training step) of lists of numpy arrays for the layer norm weight vectors.
@@ -82,35 +86,21 @@ class ResnetTracker:
         """
         Return titles for the linear layer weight matrices in a Resnet.
         Distinguishes between hidden layers (blocks) and final layers (down-rank + output).
+        Uses stored model structure information to correctly label layers.
         """
         titles = []
         if self.track_weights and self.weight_history and self.weight_history[0]:
-            num_weights = len(self.weight_history[0])
+            # Each residual block has weight_in and weight_out (hidden layers)
+            for i in range(self.num_layers):
+                titles.append(f"Hidden Layer: Block {i + 1} Weight_in (d→h)")
+                titles.append(f"Hidden Layer: Block {i + 1} Weight_out (h→d)")
             
-            # Look at the weight shapes to determine structure
-            weight_shapes = [w.shape for w in self.weight_history[0]]
-            
-            # Process in pairs for blocks (these are hidden layers)
-            weight_idx = 0
-            block_count = 0
-            
-            # Each block has weight_in and weight_out (hidden layers)
-            while weight_idx < len(weight_shapes) - 2:  # Leave room for potential down_rank + final
-                if len(weight_shapes[weight_idx]) == 2 and len(weight_shapes[weight_idx + 1]) == 2:
-                    titles.append(f"Hidden Layer: Block {block_count + 1} Weight_in (d→h)")
-                    titles.append(f"Hidden Layer: Block {block_count + 1} Weight_out (h→d)")
-                    block_count += 1
-                    weight_idx += 2
-                else:
-                    break
-            
-            # Handle remaining weights (final layers)
-            remaining = len(weight_shapes) - weight_idx
-            if remaining == 2:  # down_rank + final
+            # Down-rank layer (if exists)
+            if self.has_down_rank_layer:
                 titles.append("Final Layer: Down-rank (d→down_rank)")
-                titles.append("Final Layer: Output (down_rank→1)")
-            elif remaining == 1:  # just final
-                titles.append("Final Layer: Output (d→1)")
+            
+            # Final output layer (always exists)
+            titles.append("Final Layer: Output")
                 
         return titles
 
@@ -201,13 +191,17 @@ class ResnetTracker:
 
 
 class MLPTracker:
-    def __init__(self, track_weights=True):
+    def __init__(self, track_weights=True, num_layers=0, has_down_rank_layer=False):
         """
         Parameters:
             track_weights (bool): If True the weight matrices are tracked; if False only the
                                   accuracy is tracked.
+            num_layers (int): Number of hidden layers in the model.
+            has_down_rank_layer (bool): Whether the model has a down-rank layer.
         """
         self.track_weights = track_weights
+        self.num_layers = num_layers
+        self.has_down_rank_layer = has_down_rank_layer
         # Each element is a list (one per training step) of lists of numpy arrays for the linear layer weight matrices.
         self.weight_history = []
         # Each element is a list (one per training step) of lists of numpy arrays for the layer norm weight vectors.
@@ -224,7 +218,7 @@ class MLPTracker:
     def update(self, model, val_acc, train_acc=None, val_loss=None, train_loss=None):
         """
         For an MLP, record:
-          - The weight matrices from the layers (extracted from Sequential if needed)
+          - The weight matrices from hidden layers (two linear layers per hidden layer)
           - The weight matrix from the down-rank layer (if it exists)
           - The weight matrix from the final linear layer (model.final_layer)
           - The layer norm weights from each layer
@@ -235,51 +229,33 @@ class MLPTracker:
           - The training loss (if provided).
         """
         if self.track_weights:
-            # Import here to avoid circular dependency
-            from jl.models import RMSNorm, MaskedRMSNorm
-            
             # Track linear layer weights
             linear_weights = []
             
-            # Extract linear layers from the Sequential module (MLP, MLPDownRankDim)
-            if hasattr(model, 'layers') and isinstance(model.layers, nn.Sequential):
-                for layer in model.layers:
-                    if isinstance(layer, nn.Linear):
-                        linear_weights.append(layer.weight.detach().cpu().numpy().copy())
-            # Or extract from input_layer + hidden_layers (MLPH)
-            elif hasattr(model, 'input_layer'):
-                linear_weights.append(model.input_layer.weight.detach().cpu().numpy().copy())
-                if hasattr(model, 'hidden_layers'):
-                    for layer in model.hidden_layers:
-                        linear_weights.append(layer.weight.detach().cpu().numpy().copy())
+            # Extract linear layers from hidden_linear1 and hidden_linear2
+            for i in range(len(model.hidden_linear1)):
+                linear_weights.append(model.hidden_linear1[i].weight.detach().cpu().numpy().copy())
+                linear_weights.append(model.hidden_linear2[i].weight.detach().cpu().numpy().copy())
             
             # Track down-rank layer if it exists
-            if hasattr(model, 'down_rank_layer') and model.down_rank_layer is not None:
+            if model.down_rank_layer is not None:
                 linear_weights.append(model.down_rank_layer.weight.detach().cpu().numpy().copy())
             
             # Track final layer weights
-            if hasattr(model, 'final_layer'):
-                linear_weights.append(model.final_layer.weight.detach().cpu().numpy().copy())
+            linear_weights.append(model.final_layer.weight.detach().cpu().numpy().copy())
             
             self.weight_history.append(linear_weights)
             
             # Track RMS norm weights
             norm_weights = []
             
-            # Extract norm layers from the Sequential module (MLP, MLPDownRankDim)
-            if hasattr(model, 'layers') and isinstance(model.layers, nn.Sequential):
-                for layer in model.layers:
-                    if isinstance(layer, (RMSNorm, MaskedRMSNorm)):
-                        norm_weights.append(layer.weight.detach().cpu().numpy().copy())
-            # Or extract from input_norm + hidden_norms (MLPH)
-            elif hasattr(model, 'input_norm'):
-                norm_weights.append(model.input_norm.weight.detach().cpu().numpy().copy())
-                if hasattr(model, 'hidden_norms'):
-                    for norm in model.hidden_norms:
-                        norm_weights.append(norm.weight.detach().cpu().numpy().copy())
+            # Extract norm layers from hidden_norms
+            for norm in model.hidden_norms:
+                if norm is not None:
+                    norm_weights.append(norm.weight.detach().cpu().numpy().copy())
             
-            # Track final RMS norm weights
-            if hasattr(model, 'final_rms_norm'):
+            # Track final RMS norm weights if it exists
+            if model.final_rms_norm is not None:
                 norm_weights.append(model.final_rms_norm.weight.detach().cpu().numpy().copy())
             
             self.norm_history.append(norm_weights)
@@ -298,37 +274,28 @@ class MLPTracker:
     def _get_weight_titles(self):
         """
         Return titles for the linear layer weight matrices in an MLP.
+        Uses stored model structure information to correctly label layers.
         """
         titles = []
         if self.track_weights and self.weight_history and self.weight_history[0]:
-            num_weights = len(self.weight_history[0])
+            # Hidden layers - each has 2 linear layers (Linear1 and Linear2)
+            for i in range(self.num_layers):
+                titles.append(f"Hidden Layer {i + 1} - Linear 1")
+                titles.append(f"Hidden Layer {i + 1} - Linear 2")
             
-            # Look at the weight shapes to determine structure
-            weight_shapes = [w.shape for w in self.weight_history[0]]
-            
-            # Most layers except the last few are hidden layers
-            weight_idx = 0
-            layer_count = 0
-            
-            # Process layers until we hit the final layers
-            while weight_idx < len(weight_shapes) - 2:  # Leave room for potential down_rank + final
-                titles.append(f"Hidden Layer {layer_count + 1}")
-                layer_count += 1
-                weight_idx += 1
-            
-            # Handle remaining weights (final layers)
-            remaining = len(weight_shapes) - weight_idx
-            if remaining == 2:  # down_rank + final
+            # Down-rank layer (if exists)
+            if self.has_down_rank_layer:
                 titles.append("Final Layer: Down-rank")
-                titles.append("Final Layer: Output")
-            elif remaining == 1:  # just final
-                titles.append("Final Layer: Output")
+            
+            # Final output layer (always exists)
+            titles.append("Final Layer: Output")
                 
         return titles
 
     def _get_norm_titles(self):
         """
         Return titles for the layer norm weight vectors in an MLP.
+        Uses stored model structure information to correctly label norms.
         """
         titles = []
         if self.track_weights and self.norm_history and self.norm_history[0]:
@@ -337,12 +304,13 @@ class MLPTracker:
             if num_norms == 0:
                 return titles
             
-            # All norms except the last are from hidden layers
-            for i in range(num_norms - 1):
-                titles.append(f"Hidden Layer Norm {i + 1}")
+            # Norms for hidden layers (one per hidden layer)
+            for i in range(self.num_layers):
+                titles.append(f"Hidden Layer {i + 1} Norm")
             
-            # The last norm is the final layer norm
-            titles.append("Final Layer Norm")
+            # The last norm is the final layer norm (if it exists)
+            if num_norms > self.num_layers:
+                titles.append("Final Layer Norm")
                 
         return titles
 
@@ -383,6 +351,140 @@ class MLPTracker:
                 plt.xlabel("Training Step")
                 plt.ylabel("Norm Weight Value")
                 plt.title(norm_titles[i] if i < len(norm_titles) else f"Norm {i}")
+                plt.legend()
+                plt.show()
+
+        # Plot validation accuracy.
+        plt.figure()
+        if self.train_acc_history:
+            plt.plot(training_steps[:len(self.train_acc_history)], np.array(self.train_acc_history), label="Training Accuracy", color='darkorange')
+        plt.plot(training_steps, np.array(self.val_acc_history), label="Validation Accuracy", color='steelblue')
+        plt.xlabel("Training Step")
+        plt.ylabel("Accuracy")
+        plt.title("Training and Validation Accuracy")
+        plt.legend()
+        plt.show()
+
+        # Plot losses.
+        if self.val_loss_history or self.train_loss_history:
+            plt.figure()
+            if self.train_loss_history:
+                plt.plot(training_steps[:len(self.train_loss_history)], np.array(self.train_loss_history), label="Training Loss", color='darkorange')
+            if self.val_loss_history:
+                plt.plot(training_steps[:len(self.val_loss_history)], np.array(self.val_loss_history), label="Validation Loss", color='steelblue')
+            plt.xlabel("Training Step")
+            plt.ylabel("Loss")
+            plt.title("Training and Validation Loss")
+            plt.legend()
+            plt.show()
+
+
+class MultiLinearTracker:
+    def __init__(self, track_weights=True, num_layers=0, has_down_rank_layer=False):
+        """
+        Tracker for MultiLinear model that tracks only linear layer weights.
+        Since MultiLinear uses RMSNorm with has_parameters=False (constant weights),
+        we only track the trainable linear weights.
+        
+        Parameters:
+            track_weights (bool): If True the weight matrices are tracked; if False only the
+                                  accuracy is tracked.
+            num_layers (int): Number of hidden layers in the model.
+            has_down_rank_layer (bool): Whether the model has a down-rank layer.
+        """
+        self.track_weights = track_weights
+        self.num_layers = num_layers
+        self.has_down_rank_layer = has_down_rank_layer
+        # Each element is a list (one per training step) of lists of numpy arrays for the linear layer weight matrices.
+        self.weight_history = []
+        # Validation accuracy recorded at each training step.
+        self.val_acc_history = []
+        # Training accuracy recorded at each training step.
+        self.train_acc_history = []
+        # Validation loss recorded at each training step.
+        self.val_loss_history = []
+        # Training loss recorded at each training step.
+        self.train_loss_history = []
+
+    def update(self, model, val_acc, train_acc=None, val_loss=None, train_loss=None):
+        """
+        For a MultiLinear model, record:
+          - The weight matrices from the layers (linear layers only, skip norms)
+          - The weight matrix from the down-rank layer (if it exists)
+          - The weight matrix from the final linear layer (model.final_layer)
+          - The validation accuracy.
+          - The training accuracy (if provided).
+          - The validation loss (if provided).
+          - The training loss (if provided).
+        """
+        if self.track_weights:
+            # Track linear layer weights only (skip RMSNorm layers which have constant weights)
+            linear_weights = []
+            
+            # Extract linear layers from the Sequential module
+            for layer in model.layers:
+                if isinstance(layer, nn.Linear):
+                    linear_weights.append(layer.weight.detach().cpu().numpy().copy())
+            
+            # Track down-rank layer if it exists
+            if model.down_rank_layer is not None:
+                linear_weights.append(model.down_rank_layer.weight.detach().cpu().numpy().copy())
+            
+            # Track final layer weights
+            linear_weights.append(model.final_layer.weight.detach().cpu().numpy().copy())
+            
+            self.weight_history.append(linear_weights)
+        else:
+            self.weight_history.append([])
+        
+        self.val_acc_history.append(val_acc)
+        if train_acc is not None:
+            self.train_acc_history.append(train_acc)
+        if val_loss is not None:
+            self.val_loss_history.append(val_loss)
+        if train_loss is not None:
+            self.train_loss_history.append(train_loss)
+
+    def _get_weight_titles(self):
+        """
+        Return titles for the linear layer weight matrices in a MultiLinear model.
+        Uses stored model structure information to correctly label layers.
+        """
+        titles = []
+        if self.track_weights and self.weight_history and self.weight_history[0]:
+            # Hidden layers (from self.layers Sequential)
+            for i in range(self.num_layers):
+                titles.append(f"Hidden Layer {i + 1}")
+            
+            # Down-rank layer (if exists)
+            if self.has_down_rank_layer:
+                titles.append("Final Layer: Down-rank")
+            
+            # Final output layer (always exists)
+            titles.append("Final Layer: Output")
+                
+        return titles
+
+    def plot(self):
+        """Generate plots for weight evolution (if tracked) and validation accuracy."""
+        training_steps = range(len(self.val_acc_history))
+
+        # Plot linear layer weights if weight tracking is enabled.
+        if self.track_weights and self.weight_history and self.weight_history[0]:
+            weight_titles = self._get_weight_titles()
+            for i in range(len(self.weight_history[0])):
+                plt.figure()
+                # Extract the history for the i-th weight matrix.
+                weight_array = np.array([step_weights[i] for step_weights in self.weight_history])
+                # weight_array has shape (num_training_steps, output_dim, input_dim)
+                out_dim, in_dim = weight_array.shape[1], weight_array.shape[2]
+                for row in range(out_dim):
+                    for col in range(in_dim):
+                        plt.plot(training_steps, weight_array[:, row, col],
+                                 label=f"w[{row},{col}]")
+                plt.xlabel("Training Step")
+                plt.ylabel("Weight Value")
+                plt.title(weight_titles[i] if i < len(weight_titles) else f"Weight Matrix {i}")
                 plt.legend()
                 plt.show()
 

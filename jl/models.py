@@ -5,6 +5,8 @@ from typing import Optional
 
 from jl.model_tracker import ResnetTracker
 from jl.model_tracker import MLPTracker
+from jl.model_tracker import MultiLinearTracker
+from jl.model_tracker import PolynomialTracker
 from jl.config import Config
 
 
@@ -13,11 +15,11 @@ class RMSNorm(nn.Module):
     Custom implementation of RMSNorm
     Root Mean Square Layer Normalization: https://arxiv.org/abs/1910.07467
     """
-    def __init__(self, dim, eps=1e-6, has_parameters=True):
+    def __init__(self, dim, eps=1e-6, learnable_norm_parameters=True):
         super().__init__()
         self.eps = eps
-        self.has_parameters = has_parameters
-        if has_parameters:
+        self.learnable_norm_parameters = learnable_norm_parameters
+        if learnable_norm_parameters:
             self.weight = nn.Parameter(torch.ones(dim))
         else:
             self.register_buffer('weight', torch.ones(dim))
@@ -35,8 +37,8 @@ class MaskedRMSNorm(RMSNorm):
     If a mask is provided, the RMS is computed only over active (mask==1) dims,
     and the output is zeroed over inactive dims to simulate an effective width.
     """
-    def __init__(self, dim, eps=1e-6, has_parameters=True):
-        super().__init__(dim, eps=eps, has_parameters=has_parameters)
+    def __init__(self, dim, eps=1e-6, learnable_norm_parameters=True):
+        super().__init__(dim, eps=eps, learnable_norm_parameters=learnable_norm_parameters)
 
     def forward(self, x, mask: Optional[torch.Tensor] = None):
         if mask is None:
@@ -55,17 +57,18 @@ class MaskedRMSNorm(RMSNorm):
 
 
 class ResidualBlock(nn.Module):
-    def __init__(self, d, h, is_norm=True):
+    def __init__(self, d, h, is_norm=True, learnable_norm_parameters=True):
         """
         d: Dimension of the residual stream.
         h: Hidden dimension for the block.
         is_norm: Whether to apply RMSNorm (default True).
+        learnable_norm_parameters: Whether RMSNorm weights are learnable.
         """
         super(ResidualBlock, self).__init__()
 
         self.is_norm = is_norm
         if is_norm:
-            self.rms_norm = RMSNorm(d)
+            self.rms_norm = RMSNorm(d, learnable_norm_parameters=learnable_norm_parameters)
         else:
             self.rms_norm = None
 
@@ -83,18 +86,19 @@ class ResidualBlock(nn.Module):
 
 
 class ResidualBlockH(nn.Module):
-    def __init__(self, d, h, is_norm=True):
+    def __init__(self, d, h, is_norm=True, learnable_norm_parameters=True):
         """
         ResidualBlockH that handles width_mask for the h parameter.
         
         d: Dimension of the residual stream.
         h: Hidden dimension for the block.
         is_norm: Whether to apply RMSNorm (default True).
+        learnable_norm_parameters: Whether RMSNorm weights are learnable.
         """
         super(ResidualBlockH, self).__init__()
         self.is_norm = is_norm
         if is_norm:
-            self.rms_norm = RMSNorm(d)
+            self.rms_norm = RMSNorm(d, learnable_norm_parameters=learnable_norm_parameters)
         else:
             self.rms_norm = None
 
@@ -142,7 +146,7 @@ class Resnet(nn.Module):
 
         # Residual blocks operate in d_model space
         self.blocks = nn.ModuleList([
-            block_class(self.d_model, c.h, is_norm=c.is_norm)
+            block_class(self.d_model, c.h, is_norm=c.is_norm, learnable_norm_parameters=c.learnable_norm_parameters)
             for _ in range(c.num_layers)
         ])
         
@@ -160,13 +164,16 @@ class Resnet(nn.Module):
         # Applied after down-rank layer if it exists
         self.is_norm = c.is_norm
         if c.is_norm:
-            self.final_rms_norm = RMSNorm(final_norm_dim, has_parameters=False)
+            self.final_rms_norm = RMSNorm(final_norm_dim, learnable_norm_parameters=c.learnable_norm_parameters)
         else:
             self.final_rms_norm = None
 
-    @staticmethod
-    def get_tracker(track_weights):
-        return ResnetTracker(track_weights)
+    def get_tracker(self, track_weights):
+        return ResnetTracker(
+            track_weights=track_weights,
+            num_layers=len(self.blocks),
+            has_down_rank_layer=self.down_rank_layer is not None
+        )
 
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):
         """
@@ -201,60 +208,6 @@ class Resnet(nn.Module):
             output = output.squeeze(1)
         return output
 
-    def get_linear_equivalent(self, device: torch.device):
-        """
-        Returns the matrix corresponding to the linear transformation of the network
-        ignoring all non-linearities (ReLU, Norms).
-        Computes the product of all linear layers.
-        """
-        
-        # Start with Identity matrix of size (input_dim, input_dim)
-        # This represents passing basis vectors. 
-        current = torch.eye(self.input_dim, device=device)
-        
-        if self.input_projection is not None:
-            current = self.input_projection(current)
-            
-        for block in self.blocks:
-            # Linear part of block: x + W_out(W_in(x))
-            hidden = block.weight_in(current)
-            out = block.weight_out(hidden)
-            current = current + out
-            
-        if self.down_rank_layer is not None:
-            current = self.down_rank_layer(current)
-            
-        output = self.final_layer(current)
-        return output
-
-    def get_squared_path_sums(self, device: torch.device):
-        """
-        Returns the matrix corresponding to the sum of squared paths through the network.
-        Each weight matrix is squared element-wise before being applied as a linear transformation.
-        This is used for Frobenius-style regularization of network paths.
-        """
-        current = torch.eye(self.input_dim, device=device)
-        
-        if self.input_projection is not None:
-            # Apply squared weights: F.linear(x, W^2) where ^2 is element-wise
-            W_proj_sq = self.input_projection.weight ** 2
-            current = F.linear(current, W_proj_sq)
-            
-        for block in self.blocks:
-            # For residual block: x + W_out(W_in(x)) becomes x + (W_out^2)((W_in^2)(x))
-            W_in_sq = block.weight_in.weight ** 2
-            W_out_sq = block.weight_out.weight ** 2
-            hidden = F.linear(current, W_in_sq)
-            out = F.linear(hidden, W_out_sq)
-            current = current + out
-            
-        if self.down_rank_layer is not None:
-            W_down_sq = self.down_rank_layer.weight ** 2
-            current = F.linear(current, W_down_sq)
-            
-        W_final_sq = self.final_layer.weight ** 2
-        output = F.linear(current, W_final_sq)
-        return output
 
 
 class ResnetH(Resnet):
@@ -274,7 +227,7 @@ class ResnetDownRankDim(Resnet):
         """
         super(ResnetDownRankDim, self).__init__(c)
         if c.is_norm:
-            self.final_rms_norm = MaskedRMSNorm(self.down_rank_dim, has_parameters=False)
+            self.final_rms_norm = MaskedRMSNorm(self.down_rank_dim, learnable_norm_parameters=c.learnable_norm_parameters)
         else:
             self.final_rms_norm = None
         
@@ -316,19 +269,20 @@ class ResnetDownRankDim(Resnet):
 
 
 class ResidualBlockDModel(nn.Module):
-    def __init__(self, d, h, is_norm=True):
+    def __init__(self, d, h, is_norm=True, learnable_norm_parameters=True):
         """
         Special ResidualBlock for ResnetDModel that can handle d_model width masking.
         
         d: Maximum dimension of the residual stream.
         h: Hidden dimension for the block.
         is_norm: Whether to apply RMSNorm (default True).
+        learnable_norm_parameters: Whether RMSNorm weights are learnable.
         """
         super(ResidualBlockDModel, self).__init__()
         # Use MaskedRMSNorm to compute RMS over active d_model* only
         self.is_norm = is_norm
         if is_norm:
-            self.masked_rms_norm = MaskedRMSNorm(d)
+            self.masked_rms_norm = MaskedRMSNorm(d, learnable_norm_parameters=learnable_norm_parameters)
         else:
             self.masked_rms_norm = None
 
@@ -373,7 +327,7 @@ class ResnetDModel(Resnet):
 
         # Use special ResidualBlockDModel that can handle d_model masking
         self.blocks = nn.ModuleList([
-            ResidualBlockDModel(self.d_model, c.h, is_norm=c.is_norm)
+            ResidualBlockDModel(self.d_model, c.h, is_norm=c.is_norm, learnable_norm_parameters=c.learnable_norm_parameters)
             for _ in range(c.num_layers)
         ])
         
@@ -391,7 +345,7 @@ class ResnetDModel(Resnet):
         # Applied after down-rank layer if it exists
         self.is_norm = c.is_norm
         if c.is_norm:
-            self.final_rms_norm = MaskedRMSNorm(final_norm_dim, has_parameters=False)
+            self.final_rms_norm = MaskedRMSNorm(final_norm_dim, learnable_norm_parameters=c.learnable_norm_parameters)
         else:
             self.final_rms_norm = None
         
@@ -437,6 +391,7 @@ class MLP(nn.Module):
     def __init__(self, c: Config):
         """
         Multi-Layer Perceptron (MLP) without residual connections.
+        Uses pre-norm architecture: Norm → Linear → ReLU → Linear per hidden layer.
         
         Args:
             c: Configuration object containing model parameters
@@ -452,24 +407,28 @@ class MLP(nn.Module):
         # Determine output dimension: 1 for binary, num_class for multi-class
         output_dim = 1 if c.num_class == 2 else c.num_class
         
-        # Build MLP layers
-        layers = []
+        # Build MLP hidden layers manually to track each component
+        # Each hidden layer: Norm → Linear → ReLU → Linear
+        self.hidden_norms = nn.ModuleList()
+        self.hidden_linear1 = nn.ModuleList()
+        self.hidden_linear2 = nn.ModuleList()
         
-        # Input layer (only add if num_layers > 0, otherwise just identity)
-        if self.num_layers > 0:
-            layers.append(nn.Linear(self.input_dim, self.h, bias=False))
+        for i in range(self.num_layers):
+            # Norm
             if c.is_norm:
-                layers.append(RMSNorm(self.h))
-            layers.append(nn.ReLU())
+                norm_dim = self.input_dim if i == 0 else self.h
+                self.hidden_norms.append(RMSNorm(norm_dim, learnable_norm_parameters=c.learnable_norm_parameters))
+            else:
+                self.hidden_norms.append(None)
             
-            # Hidden layers
-            for _ in range(self.num_layers - 1):
-                layers.append(nn.Linear(self.h, self.h, bias=False))
-                if c.is_norm:
-                    layers.append(RMSNorm(self.h))
-                layers.append(nn.ReLU())
-        
-        self.layers = nn.Sequential(*layers) if layers else nn.Identity()
+            # Linear 1: input_dim→h for first layer, h→h for rest
+            if i == 0:
+                self.hidden_linear1.append(nn.Linear(self.input_dim, self.h, bias=False))
+            else:
+                self.hidden_linear1.append(nn.Linear(self.h, self.h, bias=False))
+            
+            # Linear 2: h→h
+            self.hidden_linear2.append(nn.Linear(self.h, self.h, bias=False))
         
         # Optionally add the down-ranking layer
         if c.down_rank_dim is not None:
@@ -487,13 +446,16 @@ class MLP(nn.Module):
         
         # Add final layer normalization (pre-logit)
         if c.is_norm:
-            self.final_rms_norm = RMSNorm(final_norm_dim, has_parameters=False)
+            self.final_rms_norm = RMSNorm(final_norm_dim, learnable_norm_parameters=c.learnable_norm_parameters)
         else:
             self.final_rms_norm = None
     
-    @staticmethod
-    def get_tracker(track_weights):
-        return MLPTracker(track_weights)
+    def get_tracker(self, track_weights):
+        return MLPTracker(
+            track_weights=track_weights,
+            num_layers=self.num_layers,
+            has_down_rank_layer=self.down_rank_layer is not None
+        )
     
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):
         """
@@ -504,14 +466,29 @@ class MLP(nn.Module):
             x: Input tensor
             width_mask: Optional mask tensor (ignored in base MLP)
         """
-        current = self.layers(x)
+        current = x
         
-        # Apply optional down-ranking layer
+        # Process hidden layers: Norm → Linear → ReLU → Linear
+        for i in range(self.num_layers):
+            # Apply norm
+            if self.is_norm and self.hidden_norms[i] is not None:
+                current = self.hidden_norms[i](current)
+            
+            # Apply first linear
+            current = self.hidden_linear1[i](current)
+            
+            # Apply ReLU
+            current = F.relu(current)
+            
+            # Apply second linear
+            current = self.hidden_linear2[i](current)
+        
+        # Apply optional down-ranking layer before final norm
         if self.down_rank_layer is not None:
             current = self.down_rank_layer(current)
         
-        # Apply final layer normalization (pre-logit)
-        if self.is_norm:
+        # Apply final norm
+        if self.is_norm and self.final_rms_norm is not None:
             current = self.final_rms_norm(current)
         
         output = self.final_layer(current)
@@ -520,46 +497,6 @@ class MLP(nn.Module):
             output = output.squeeze(1)
         return output
 
-    def get_linear_equivalent(self, device: torch.device):
-        """
-        Returns the matrix corresponding to the linear transformation of the network
-        ignoring all non-linearities (ReLU, Norms).
-        Computes the product of all linear layers.
-        """
-        current = torch.eye(self.input_dim, device=device)
-        
-        # self.layers is nn.Sequential
-        for layer in self.layers:
-            if isinstance(layer, nn.Linear):
-                current = layer(current)
-                
-        if self.down_rank_layer is not None:
-            current = self.down_rank_layer(current)
-            
-        output = self.final_layer(current)
-        return output
-
-    def get_squared_path_sums(self, device: torch.device):
-        """
-        Returns the matrix corresponding to the sum of squared paths through the network.
-        Each weight matrix is squared element-wise before being applied as a linear transformation.
-        This is used for Frobenius-style regularization of network paths.
-        """
-        current = torch.eye(self.input_dim, device=device)
-        
-        # self.layers is nn.Sequential
-        for layer in self.layers:
-            if isinstance(layer, nn.Linear):
-                W_sq = layer.weight ** 2
-                current = F.linear(current, W_sq)
-                
-        if self.down_rank_layer is not None:
-            W_down_sq = self.down_rank_layer.weight ** 2
-            current = F.linear(current, W_down_sq)
-            
-        W_final_sq = self.final_layer.weight ** 2
-        output = F.linear(current, W_final_sq)
-        return output
 
 
 class MLPDownRankDim(nn.Module):
@@ -585,14 +522,14 @@ class MLPDownRankDim(nn.Module):
         # Input layer
         layers.append(nn.Linear(self.input_dim, self.h, bias=False))
         if c.is_norm:
-            layers.append(RMSNorm(self.h))
+            layers.append(RMSNorm(self.h, learnable_norm_parameters=c.learnable_norm_parameters))
         layers.append(nn.ReLU())
         
         # Hidden layers
         for _ in range(self.num_layers - 1):
             layers.append(nn.Linear(self.h, self.h, bias=False))
             if c.is_norm:
-                layers.append(RMSNorm(self.h))
+                layers.append(RMSNorm(self.h, learnable_norm_parameters=c.learnable_norm_parameters))
             layers.append(nn.ReLU())
         
         self.layers = nn.Sequential(*layers)
@@ -603,9 +540,12 @@ class MLPDownRankDim(nn.Module):
         
         # Add final layer normalization (pre-logit) using mask
         if c.is_norm:
-            self.final_rms_norm = MaskedRMSNorm(c.down_rank_dim, has_parameters=False)
+            self.final_rms_norm = MaskedRMSNorm(c.down_rank_dim, learnable_norm_parameters=c.learnable_norm_parameters)
         else:
             self.final_rms_norm = None
+    
+    def get_tracker(self, track_weights):
+        raise NotImplementedError("Weight tracking is not supported for MLPDownRankDim. Use base MLP instead.")
     
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):
         """
@@ -656,7 +596,7 @@ class MLPH(nn.Module):
         # Build MLP layers manually to support masking
         self.input_layer = nn.Linear(self.input_dim, self.h, bias=False)
         if c.is_norm:
-            self.input_norm = MaskedRMSNorm(self.h)
+            self.input_norm = MaskedRMSNorm(self.h, learnable_norm_parameters=c.learnable_norm_parameters)
         else:
             self.input_norm = None
         
@@ -666,7 +606,7 @@ class MLPH(nn.Module):
         for _ in range(self.num_layers - 1):
             self.hidden_layers.append(nn.Linear(self.h, self.h, bias=False))
             if c.is_norm:
-                self.hidden_norms.append(MaskedRMSNorm(self.h))
+                self.hidden_norms.append(MaskedRMSNorm(self.h, learnable_norm_parameters=c.learnable_norm_parameters))
             else:
                 self.hidden_norms.append(None)
         
@@ -682,9 +622,12 @@ class MLPH(nn.Module):
         
         # Add final layer normalization (pre-logit)
         if c.is_norm:
-            self.final_rms_norm = MaskedRMSNorm(final_norm_dim, has_parameters=False)
+            self.final_rms_norm = MaskedRMSNorm(final_norm_dim, learnable_norm_parameters=c.learnable_norm_parameters)
         else:
             self.final_rms_norm = None
+    
+    def get_tracker(self, track_weights):
+        raise NotImplementedError("Weight tracking is not supported for MLPH. Use base MLP instead.")
     
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):
         """
@@ -757,13 +700,13 @@ class MultiLinear(nn.Module):
         # Input layer (only add if num_layers > 0, otherwise just identity)
         if self.num_layers > 0:
             if c.is_norm:
-                layers.append(RMSNorm(self.input_dim))
+                layers.append(RMSNorm(self.input_dim, learnable_norm_parameters=c.learnable_norm_parameters))
             layers.append(nn.Linear(self.input_dim, self.h, bias=False))
             
             # Hidden layers (no ReLU)
             for _ in range(self.num_layers - 1):
                 if c.is_norm:
-                    layers.append(RMSNorm(self.h))
+                    layers.append(RMSNorm(self.h, learnable_norm_parameters=c.learnable_norm_parameters))
                 layers.append(nn.Linear(self.h, self.h, bias=False))
         
         self.layers = nn.Sequential(*layers) if layers else nn.Identity()
@@ -784,13 +727,16 @@ class MultiLinear(nn.Module):
         
         # Add final layer normalization (pre-logit)
         if c.is_norm:
-            self.final_rms_norm = RMSNorm(final_norm_dim, has_parameters=False)
+            self.final_rms_norm = RMSNorm(final_norm_dim, learnable_norm_parameters=c.learnable_norm_parameters)
         else:
             self.final_rms_norm = None
     
-    @staticmethod
-    def get_tracker(track_weights):
-        return MLPTracker(track_weights)  # Reuse MLPTracker
+    def get_tracker(self, track_weights):
+        return MultiLinearTracker(
+            track_weights=track_weights,
+            num_layers=self.num_layers,
+            has_down_rank_layer=self.down_rank_layer is not None
+        )
     
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):
         """
@@ -817,47 +763,6 @@ class MultiLinear(nn.Module):
             output = output.squeeze(1)
         return output
 
-    def get_linear_equivalent(self, device: torch.device):
-        """
-        Returns the matrix corresponding to the linear transformation of the network
-        ignoring all non-linearities (ReLU, Norms).
-        Computes the product of all linear layers.
-        """
-        current = torch.eye(self.input_dim, device=device)
-        
-        if self.num_layers > 0:
-            for layer in self.layers:
-                if isinstance(layer, nn.Linear) or isinstance(layer, RMSNorm):
-                    current = layer(current)       
-                
-        if self.down_rank_layer is not None:
-            current = self.down_rank_layer(current)
-            
-        if self.is_norm:
-            current = self.final_rms_norm(current)
-        output = self.final_layer(current)
-        return output
-
-    def get_squared_path_sums(self, device: torch.device):
-        """
-        Returns the matrix corresponding to the sum of squared paths through the network.
-        Each weight matrix is squared element-wise before being applied as a linear transformation.
-        This is used for Frobenius-style regularization of network paths.
-        """
-        current = torch.eye(self.input_dim, device=device)
-        
-        for layer in self.layers:
-            if isinstance(layer, nn.Linear):
-                W_sq = layer.weight ** 2
-                current = F.linear(current, W_sq)
-                
-        if self.down_rank_layer is not None:
-            W_down_sq = self.down_rank_layer.weight ** 2
-            current = F.linear(current, W_down_sq)
-            
-        W_final_sq = self.final_layer.weight ** 2
-        output = F.linear(current, W_final_sq)
-        return output
 
 
 class KPolynomial(nn.Module):
@@ -878,9 +783,7 @@ class KPolynomial(nn.Module):
         # Each row i contains coefficients for dimension i: [wᵢ₁, wᵢ₂, ..., wᵢₖ]
         self.coefficients = nn.Parameter(torch.randn(self.input_dim, self.k) * 0.01)
     
-    @staticmethod
-    def get_tracker(track_weights):
-        from jl.model_tracker import PolynomialTracker
+    def get_tracker(self, track_weights):
         return PolynomialTracker(track_weights)
     
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):

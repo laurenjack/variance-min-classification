@@ -16,10 +16,11 @@ def main():
     clean_mode = False
     problem = SingleFeatures(
         d=4,
-        f=4, 
+        f=8, 
         device=device,
-        orthogonal_as_possible=True,
-        n_per_f=[32, 16, 8, 4]
+        orthogonal_as_possible=False,
+        # n_per_f=[32, 16, 8, 4],
+        n_per_f=[2, 4, 8, 16, 2, 4, 8, 16]
     )
     # n = 64
     n = sum(problem.n_per_f)
@@ -31,17 +32,18 @@ def main():
         n_val=n,
         n=n,
         batch_size=n // 4,
-        lr=0.1,
+        lr=0.01,
         epochs=1000,
         weight_decay=0.01,
         num_layers=1,
         num_class=problem.num_classes(),
-        h=problem.f,
+        h= problem.f,
         is_weight_tracker=False,
         down_rank_dim=None,
-        width_varyer=None,  # Must be None for multi-linear
+        width_varyer=None,
         is_norm=True,
         is_adam_w=False,
+        learnable_norm_parameters=False,
     )
 
     # Generate validation set with class-balanced sampling
