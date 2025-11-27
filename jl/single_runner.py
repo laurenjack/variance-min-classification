@@ -29,9 +29,6 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
     
     # Generate training data
     x_train, y_train, train_center_indices = problem.generate_dataset(c.n, shuffle=True, clean_mode=clean_mode)
-    x_train, y_train = x_train.to(device), y_train.to(device)
-    if train_center_indices is not None:
-        train_center_indices = train_center_indices.to(device)
     
     # Create data loader for batch training
     train_dataset = TensorDataset(x_train, y_train)
