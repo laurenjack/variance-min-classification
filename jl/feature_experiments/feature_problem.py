@@ -424,3 +424,211 @@ class Kaleidoscope(Problem):
             center_indices_list = [indices[perm] for indices in center_indices_list]
 
         return x, y, center_indices_list
+
+
+class TiltedKaleidoscope(Problem):
+    """
+    Binary classification variant of Kaleidoscope with probabilistic center selection.
+
+    Unlike Kaleidoscope where the last layer's center determines the class, here we
+    have a fixed binary classification (2 classes). Each layer's centers are split
+    50/50 into two groups: those "tilted" toward class 0 and those toward class 1.
+
+    The tilt per layer increases with layer index:
+        tilt = 0.5 + tilt_increment * (layer_index + 1)
+    where tilt_increment = 0.5 / len(centers).
+
+    This means:
+    - Earlier layers have tilt closer to 0.5 (more uniform selection)
+    - The last layer always has tilt = 1.0 (deterministic assignment)
+
+    Points of class 0 select centers tilted toward class 0 with probability
+    tilt / (num_centers / 2), and centers tilted toward class 1 with probability
+    (1 - tilt) / (num_centers / 2). Vice versa for class 1 points.
+    """
+
+    def __init__(
+        self,
+        d: int,
+        centers: Sequence[int],
+        device: torch.device | None = None,
+        generator: Optional[torch.Generator] = None,
+        is_standard_basis: bool = False,
+    ) -> None:
+        """
+        Args:
+            d: Dimensionality of the input space
+            centers: Sequence of center counts per layer. Each must be divisible by 2.
+            device: torch device to use for tensors
+            generator: optional random generator for reproducibility
+            is_standard_basis: If True, use standard basis vectors instead of random
+                               orthonormal directions.
+        """
+        self._d: int = _validate_positive(d, "d")
+        if not centers:
+            raise ValueError("centers must be a non-empty sequence")
+
+        self.centers: List[int] = []
+        for idx, c in enumerate(centers):
+            c = _validate_positive(c, f"C_{idx}")
+            if c > self._d:
+                raise ValueError(f"C_{idx} must be <= d (got {c} > {self._d})")
+            if c % 2 != 0:
+                raise ValueError(f"C_{idx} must be divisible by 2 (got {c})")
+            self.centers.append(c)
+
+        self.num_class = 2  # Always binary classification
+        self.device = device if device is not None else torch.device("cpu")
+        self.generator = generator
+        self.is_standard_basis = is_standard_basis
+
+        # Compute tilt_increment: ensures last layer has tilt = 1.0
+        self.tilt_increment = 0.5 / len(self.centers)
+
+        # Build Q_layers and tilt assignments
+        self.Q_layers: List[torch.Tensor] = []
+        self.tilt_assignments: List[torch.Tensor] = []  # 0 or 1 for each center
+
+        for c in self.centers:
+            if self.is_standard_basis:
+                Q_l = _standard_basis_rows(c, self._d, self.generator, self.device)
+            else:
+                Q_l = _orthonormal_rows(c, self._d, self.generator, self.device)
+            self.Q_layers.append(Q_l.to(dtype=torch.float32))
+
+            # Randomly assign 50% of centers to class 0, 50% to class 1
+            # Create [0, 0, ..., 1, 1, ...] and shuffle
+            half = c // 2
+            assignment = torch.cat([
+                torch.zeros(half, device=self.device, dtype=torch.int64),
+                torch.ones(half, device=self.device, dtype=torch.int64),
+            ])
+            perm = torch.randperm(c, generator=self.generator, device=self.device)
+            assignment = assignment[perm]
+            self.tilt_assignments.append(assignment)
+
+    @property
+    def d(self) -> int:
+        return self._d
+
+    def num_classes(self) -> int:
+        return self.num_class
+
+    def generate_dataset(
+        self,
+        n: int,
+        clean_mode: bool = False,
+        shuffle: bool = True,
+    ) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor]]:
+        """
+        Generate a dataset of size n with exactly 50/50 class balance.
+
+        Args:
+            n: Number of samples to generate. Must be even for exact 50/50 balance.
+            clean_mode: Unused, kept for API compatibility.
+            shuffle: If True, randomly permute the resulting dataset.
+
+        Returns:
+            (x, y, center_indices_list):
+              - x: shape (n, d) float32 tensor of features
+              - y: shape (n,) int64 tensor of class labels (0 or 1)
+              - center_indices_list: List of tensors, one per layer, each shape (n,)
+        """
+        del clean_mode  # unused
+        n = _validate_positive(n, "n")
+        if n % 2 != 0:
+            raise ValueError(f"n must be even for 50/50 class balance, got {n}")
+
+        # Generate class labels: first half class 0, second half class 1
+        y = torch.cat([
+            torch.zeros(n // 2, device=self.device, dtype=torch.int64),
+            torch.ones(n // 2, device=self.device, dtype=torch.int64),
+        ])
+
+        L = len(self.centers)
+        x = torch.zeros(n, self._d, device=self.device, dtype=torch.float32)
+        center_indices_list: List[torch.Tensor] = []
+
+        for layer_idx, (Q_l, c, assignment) in enumerate(
+            zip(self.Q_layers, self.centers, self.tilt_assignments)
+        ):
+            half_c = c // 2
+
+            # Compute per-layer tilt: increases from ~0.5 at layer 0 to 1.0 at last layer
+            layer_tilt = 0.5 + self.tilt_increment * (layer_idx + 1)
+
+            # Get indices of centers tilted to class 0 and class 1
+            centers_tilted_0 = (assignment == 0).nonzero(as_tuple=True)[0]  # shape (half_c,)
+            centers_tilted_1 = (assignment == 1).nonzero(as_tuple=True)[0]  # shape (half_c,)
+
+            if layer_idx == L - 1:
+                # Last layer: deterministic assignment (tilt = 1.0)
+                # Class 0 points get centers tilted to 0, class 1 points get centers tilted to 1
+                indices_class0 = centers_tilted_0[
+                    torch.randint(
+                        half_c,
+                        (n // 2,),
+                        generator=self.generator,
+                        device=self.device,
+                    )
+                ]
+                indices_class1 = centers_tilted_1[
+                    torch.randint(
+                        half_c,
+                        (n // 2,),
+                        generator=self.generator,
+                        device=self.device,
+                    )
+                ]
+                indices = torch.cat([indices_class0, indices_class1])
+            else:
+                # Probabilistic sampling based on layer_tilt
+                p_same = layer_tilt / half_c
+                p_diff = (1.0 - layer_tilt) / half_c
+
+                # For class 0: higher probability for centers tilted to 0
+                probs_class0 = torch.where(
+                    assignment == 0,
+                    torch.tensor(p_same, device=self.device),
+                    torch.tensor(p_diff, device=self.device),
+                )
+
+                # For class 1: higher probability for centers tilted to 1
+                probs_class1 = torch.where(
+                    assignment == 1,
+                    torch.tensor(p_same, device=self.device),
+                    torch.tensor(p_diff, device=self.device),
+                )
+
+                indices_class0 = torch.multinomial(
+                    probs_class0.unsqueeze(0).expand(n // 2, -1),
+                    num_samples=1,
+                    replacement=True,
+                    generator=self.generator,
+                ).squeeze(-1)
+
+                indices_class1 = torch.multinomial(
+                    probs_class1.unsqueeze(0).expand(n // 2, -1),
+                    num_samples=1,
+                    replacement=True,
+                    generator=self.generator,
+                ).squeeze(-1)
+
+                indices = torch.cat([indices_class0, indices_class1])
+
+            center_indices_list.append(indices)
+
+            # Compute contribution to x
+            if layer_idx == 0:
+                scale = 1.0
+            else:
+                scale = math.pow(2.0, -layer_idx)
+            x = x + scale * Q_l[indices]
+
+        if shuffle:
+            perm = torch.randperm(n, generator=self.generator, device=self.device)
+            x = x[perm]
+            y = y[perm]
+            center_indices_list = [indices[perm] for indices in center_indices_list]
+
+        return x, y, center_indices_list
