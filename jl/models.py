@@ -1,14 +1,13 @@
 from torch import nn
 import torch
 import torch.nn.functional as F
-from typing import Optional, Type
+from typing import Optional
 
 from jl.model_tracker import ResnetTracker
 from jl.model_tracker import MLPTracker
 from jl.model_tracker import MultiLinearTracker
 from jl.model_tracker import PolynomialTracker
 from jl.config import Config
-from jl.feature_experiments.logit_prior import LinearLP, RMSNormLP
 
 
 class RMSNorm(nn.Module):
@@ -58,30 +57,23 @@ class MaskedRMSNorm(RMSNorm):
 
 
 class ResidualBlock(nn.Module):
-    def __init__(self, d, h, is_norm=True, learnable_norm_parameters=True, linear=nn.Linear, rms_norm_class=None):
+    def __init__(self, d, h, is_norm=True, learnable_norm_parameters=True):
         """
         d: Dimension of the residual stream.
         h: Hidden dimension for the block.
         is_norm: Whether to apply RMSNorm (default True).
         learnable_norm_parameters: Whether RMSNorm weights are learnable.
-        linear: Linear layer constructor (default nn.Linear).
-        rms_norm_class: RMSNorm class to use (default RMSNorm, or RMSNormLP for logit prior).
         """
         super(ResidualBlock, self).__init__()
-        if rms_norm_class is None:
-            rms_norm_class = RMSNorm
 
         self.is_norm = is_norm
         if is_norm:
-            if rms_norm_class == RMSNormLP:
-                self.rms_norm = rms_norm_class(d)
-            else:
-                self.rms_norm = rms_norm_class(d, learnable_norm_parameters=learnable_norm_parameters)
+            self.rms_norm = RMSNorm(d, learnable_norm_parameters=learnable_norm_parameters)
         else:
             self.rms_norm = None
 
-        self.weight_in = linear(d, h, bias=False)
-        self.weight_out = linear(h, d, bias=False)
+        self.weight_in = nn.Linear(d, h, bias=False)
+        self.weight_out = nn.Linear(h, d, bias=False)
 
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):
         # Base ResidualBlock ignores width_mask
@@ -128,18 +120,14 @@ class ResidualBlockH(nn.Module):
 
 
 class Resnet(nn.Module):
-    def __init__(self, c: Config, block_class=None, linear=nn.Linear, rms_norm_class=None):
+    def __init__(self, c: Config, block_class=None):
         """
         Base Resnet class that can use different residual block types.
         c: Configuration object containing all model parameters
         block_class: Class to use for residual blocks (defaults to ResidualBlock)
-        linear: Linear layer constructor (default nn.Linear)
-        rms_norm_class: RMSNorm class to use (default RMSNorm, or RMSNormLP for logit prior)
         """
         if block_class is None:
             block_class = ResidualBlock
-        if rms_norm_class is None:
-            rms_norm_class = RMSNorm
         super(Resnet, self).__init__()
         self.input_dim = c.d
         self.d_model = c.d if c.d_model is None else c.d_model
@@ -153,33 +141,30 @@ class Resnet(nn.Module):
         # Only use if a separate d_model is specified
         if c.d_model is not None:
             # First, project inputs from d -> d_model
-            self.input_projection = linear(self.input_dim, self.d_model, bias=False)
+            self.input_projection = nn.Linear(self.input_dim, self.d_model, bias=False)
             
 
         # Residual blocks operate in d_model space
         self.blocks = nn.ModuleList([
-            block_class(self.d_model, c.h, is_norm=c.is_norm, learnable_norm_parameters=c.learnable_norm_parameters, linear=linear, rms_norm_class=rms_norm_class)
+            block_class(self.d_model, c.h, is_norm=c.is_norm, learnable_norm_parameters=c.learnable_norm_parameters)
             for _ in range(c.num_layers)
         ])
         
         # Optionally add the down-ranking layer (in d_model space)
         if c.down_rank_dim is not None:
-            self.down_rank_layer = linear(self.d_model, c.down_rank_dim, bias=False)
-            self.final_layer = linear(c.down_rank_dim, output_dim, bias=False)
+            self.down_rank_layer = nn.Linear(self.d_model, c.down_rank_dim, bias=False)
+            self.final_layer = nn.Linear(c.down_rank_dim, output_dim, bias=False)
             final_norm_dim = c.down_rank_dim
         else:
             self.down_rank_layer = None
-            self.final_layer = linear(self.d_model, output_dim, bias=False)
+            self.final_layer = nn.Linear(self.d_model, output_dim, bias=False)
             final_norm_dim = self.d_model
         
         # Add final layer normalization (pre-logit) as in transformers
         # Applied after down-rank layer if it exists
         self.is_norm = c.is_norm
         if c.is_norm:
-            if rms_norm_class == RMSNormLP:
-                self.final_rms_norm = rms_norm_class(final_norm_dim)
-            else:
-                self.final_rms_norm = rms_norm_class(final_norm_dim, learnable_norm_parameters=c.learnable_norm_parameters)
+            self.final_rms_norm = RMSNorm(final_norm_dim, learnable_norm_parameters=c.learnable_norm_parameters)
         else:
             self.final_rms_norm = None
 
@@ -403,19 +388,15 @@ class ResnetDModel(Resnet):
 
 
 class MLP(nn.Module):
-    def __init__(self, c: Config, linear=nn.Linear, rms_norm_class=None):
+    def __init__(self, c: Config):
         """
         Multi-Layer Perceptron (MLP) without residual connections.
         Uses pre-norm architecture: Norm → Linear → ReLU → Linear per hidden layer.
         
         Args:
             c: Configuration object containing model parameters
-            linear: Linear layer constructor (default nn.Linear)
-            rms_norm_class: RMSNorm class to use (default RMSNorm, or RMSNormLP for logit prior)
         """
         super(MLP, self).__init__()
-        if rms_norm_class is None:
-            rms_norm_class = RMSNorm
         self.input_dim = c.d
         self.h = c.h if c.h is not None else c.d
         self.down_rank_dim = c.down_rank_dim
@@ -436,42 +417,36 @@ class MLP(nn.Module):
             # Norm
             if c.is_norm:
                 norm_dim = self.input_dim if i == 0 else self.h
-                if rms_norm_class == RMSNormLP:
-                    self.hidden_norms.append(rms_norm_class(norm_dim))
-                else:
-                    self.hidden_norms.append(rms_norm_class(norm_dim, learnable_norm_parameters=c.learnable_norm_parameters))
+                self.hidden_norms.append(RMSNorm(norm_dim, learnable_norm_parameters=c.learnable_norm_parameters))
             else:
                 self.hidden_norms.append(None)
             
             # Linear 1: input_dim→h for first layer, h→h for rest
             if i == 0:
-                self.hidden_linear1.append(linear(self.input_dim, self.h, bias=False))
+                self.hidden_linear1.append(nn.Linear(self.input_dim, self.h, bias=False))
             else:
-                self.hidden_linear1.append(linear(self.h, self.h, bias=False))
+                self.hidden_linear1.append(nn.Linear(self.h, self.h, bias=False))
             
             # Linear 2: h→h
-            self.hidden_linear2.append(linear(self.h, self.h, bias=False))
+            self.hidden_linear2.append(nn.Linear(self.h, self.h, bias=False))
         
         # Optionally add the down-ranking layer
         if c.down_rank_dim is not None:
             # When num_layers=0, down_rank takes input directly from input_dim
             down_rank_input = self.input_dim if self.num_layers == 0 else self.h
-            self.down_rank_layer = linear(down_rank_input, c.down_rank_dim, bias=False)
-            self.final_layer = linear(c.down_rank_dim, output_dim, bias=False)
+            self.down_rank_layer = nn.Linear(down_rank_input, c.down_rank_dim, bias=False)
+            self.final_layer = nn.Linear(c.down_rank_dim, output_dim, bias=False)
             final_norm_dim = c.down_rank_dim
         else:
             self.down_rank_layer = None
             # When num_layers=0, final layer takes input directly from input_dim
             final_input = self.input_dim if self.num_layers == 0 else self.h
-            self.final_layer = linear(final_input, output_dim, bias=False)
+            self.final_layer = nn.Linear(final_input, output_dim, bias=False)
             final_norm_dim = final_input
         
         # Add final layer normalization (pre-logit)
         if c.is_norm:
-            if rms_norm_class == RMSNormLP:
-                self.final_rms_norm = rms_norm_class(final_norm_dim)
-            else:
-                self.final_rms_norm = rms_norm_class(final_norm_dim, learnable_norm_parameters=c.learnable_norm_parameters)
+            self.final_rms_norm = RMSNorm(final_norm_dim, learnable_norm_parameters=c.learnable_norm_parameters)
         else:
             self.final_rms_norm = None
     
@@ -699,32 +674,21 @@ class MLPH(nn.Module):
 
 
 class MultiLinear(nn.Module):
-    def __init__(self, c: Config, linear=nn.Linear, rms_norm_class=None):
+    def __init__(self, c: Config):
         """
         Multi-Linear model without activations (no ReLU).
         Just a stack of linear layers with optional normalization.
         
         Args:
             c: Configuration object containing model parameters
-            linear: Linear layer constructor (default nn.Linear)
-            rms_norm_class: RMSNorm class to use (default RMSNorm, or RMSNormLP for logit prior)
         """
         super(MultiLinear, self).__init__()
-        if rms_norm_class is None:
-            rms_norm_class = RMSNorm
         self.input_dim = c.d
         self.h = c.h if c.h is not None else c.d
         self.down_rank_dim = c.down_rank_dim
         self.num_layers = c.num_layers
         self.is_norm = c.is_norm
         self.num_class = c.num_class
-        
-        # Helper to create RMSNorm with correct arguments
-        def make_norm(dim):
-            if rms_norm_class == RMSNormLP:
-                return rms_norm_class(dim)
-            else:
-                return rms_norm_class(dim, learnable_norm_parameters=c.learnable_norm_parameters)
         
         # Determine output dimension: 1 for binary, num_class for multi-class
         output_dim = 1 if c.num_class == 2 else c.num_class
@@ -736,14 +700,14 @@ class MultiLinear(nn.Module):
         # Input layer (only add if num_layers > 0, otherwise just identity)
         if self.num_layers > 0:
             if c.is_norm:
-                layers.append(make_norm(self.input_dim))
-            layers.append(linear(self.input_dim, self.h, bias=False))
+                layers.append(RMSNorm(self.input_dim, learnable_norm_parameters=c.learnable_norm_parameters))
+            layers.append(nn.Linear(self.input_dim, self.h, bias=False))
             
             # Hidden layers (no ReLU)
             for _ in range(self.num_layers - 1):
                 if c.is_norm:
-                    layers.append(make_norm(self.h))
-                layers.append(linear(self.h, self.h, bias=False))
+                    layers.append(RMSNorm(self.h, learnable_norm_parameters=c.learnable_norm_parameters))
+                layers.append(nn.Linear(self.h, self.h, bias=False))
         
         self.layers = nn.Sequential(*layers) if layers else nn.Identity()
         
@@ -751,19 +715,19 @@ class MultiLinear(nn.Module):
         if c.down_rank_dim is not None:
             # When num_layers=0, down_rank takes input directly from input_dim
             down_rank_input = self.input_dim if self.num_layers == 0 else self.h
-            self.down_rank_layer = linear(down_rank_input, c.down_rank_dim, bias=False)
-            self.final_layer = linear(c.down_rank_dim, output_dim, bias=False)
+            self.down_rank_layer = nn.Linear(down_rank_input, c.down_rank_dim, bias=False)
+            self.final_layer = nn.Linear(c.down_rank_dim, output_dim, bias=False)
             final_norm_dim = c.down_rank_dim
         else:
             self.down_rank_layer = None
             # When num_layers=0, final layer takes input directly from input_dim
             final_input = self.input_dim if self.num_layers == 0 else self.h
-            self.final_layer = linear(final_input, output_dim, bias=False)
+            self.final_layer = nn.Linear(final_input, output_dim, bias=False)
             final_norm_dim = final_input
         
         # Add final layer normalization (pre-logit)
         if c.is_norm:
-            self.final_rms_norm = make_norm(final_norm_dim)
+            self.final_rms_norm = RMSNorm(final_norm_dim, learnable_norm_parameters=c.learnable_norm_parameters)
         else:
             self.final_rms_norm = None
     
@@ -851,32 +815,6 @@ class KPolynomial(nn.Module):
         return logits
 
 
-def _get_linear_class(c: Config) -> Type[nn.Module]:
-    """
-    Get the appropriate linear layer class based on configuration.
-    
-    Args:
-        c: Configuration object containing is_logit_prior flag
-        
-    Returns:
-        Linear layer class (nn.Linear or LinearLP)
-    """
-    return LinearLP if c.is_logit_prior else nn.Linear
-
-
-def _get_rms_norm_class(c: Config) -> Type[nn.Module]:
-    """
-    Get the appropriate RMSNorm class based on configuration.
-    
-    Args:
-        c: Configuration object containing is_logit_prior flag
-        
-    Returns:
-        RMSNorm class (RMSNorm or RMSNormLP)
-    """
-    return RMSNormLP if c.is_logit_prior else RMSNorm
-
-
 def create_resnet(c: Config):
     """
     Factory function to create the appropriate Resnet subclass based on the configuration.
@@ -890,10 +828,8 @@ def create_resnet(c: Config):
     Raises:
         ValueError: If width_varyer is not a recognized value
     """
-    linear = _get_linear_class(c)
-    rms_norm_class = _get_rms_norm_class(c)
     if c.width_varyer is None:
-        return Resnet(c, linear=linear, rms_norm_class=rms_norm_class)
+        return Resnet(c)
     elif c.width_varyer == "h":
         return ResnetH(c)
     elif c.width_varyer == "down_rank_dim":
@@ -921,10 +857,8 @@ def create_mlp(c: Config):
     if c.num_layers == 0 and c.width_varyer is not None:
         raise ValueError(f"num_layers=0 is only supported when width_varyer=None. Got width_varyer={c.width_varyer}")
     
-    linear = _get_linear_class(c)
-    rms_norm_class = _get_rms_norm_class(c)
     if c.width_varyer is None:
-        return MLP(c, linear=linear, rms_norm_class=rms_norm_class)
+        return MLP(c)
     elif c.width_varyer == "down_rank_dim":
         return MLPDownRankDim(c)
     elif c.width_varyer == "h":
@@ -951,9 +885,7 @@ def create_model(c: Config):
     elif c.model_type == 'mlp':
         return create_mlp(c)
     elif c.model_type == 'multi-linear':
-        linear = _get_linear_class(c)
-        rms_norm_class = _get_rms_norm_class(c)
-        return MultiLinear(c, linear=linear, rms_norm_class=rms_norm_class)
+        return MultiLinear(c)
     elif c.model_type == 'k-polynomial':
         return KPolynomial(c)
     else:

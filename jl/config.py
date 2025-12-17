@@ -13,7 +13,7 @@ class Config:
                  is_weight_tracker: bool = False, down_rank_dim: Optional[int] = None,
                  width_varyer: Optional[str] = None, is_norm: bool = True, c: Optional[float] = None,
                  k: Optional[int] = None, adam_eps: float = 1e-8, is_adam_w: bool = True,
-                 learnable_norm_parameters: bool = True, is_logit_prior: bool = False):
+                 learnable_norm_parameters: bool = True):
         # Validate model_type
         if model_type not in ['resnet', 'mlp', 'k-polynomial', 'multi-linear']:
             raise ValueError(f"model_type must be either 'resnet', 'mlp', 'k-polynomial', or 'multi-linear', got '{model_type}'")
@@ -48,12 +48,6 @@ class Config:
         if model_type == 'multi-linear' and width_varyer is not None:
             raise ValueError("width_varyer must be None for 'multi-linear' model_type")
         
-        # Validate is_logit_prior
-        if is_logit_prior and width_varyer is not None:
-            raise ValueError("is_logit_prior can only be True when width_varyer is None")
-        if is_logit_prior and learnable_norm_parameters:
-            raise ValueError("is_logit_prior can only be True when learnable_norm_parameters is False")
-        
         self.model_type = model_type
         self.d = d
         self.n_val = n_val
@@ -75,4 +69,3 @@ class Config:
         self.adam_eps = adam_eps
         self.is_adam_w = is_adam_w
         self.learnable_norm_parameters = learnable_norm_parameters
-        self.is_logit_prior = is_logit_prior
