@@ -9,7 +9,7 @@ from jl.single_runner import train_once
 
 
 def main():
-    # torch.manual_seed(38173)
+    torch.manual_seed(38173)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Problem: SingleFeatures
@@ -27,15 +27,15 @@ def main():
 
     # Model configuration
     model_config = Config(
-        model_type='resnet',
+        model_type='multi-linear',
         d=problem.d,
         n_val=n,
         n=n,
         batch_size=n // 4,
-        lr=0.05,
+        lr=0.01,
         epochs=1000,
         weight_decay=0.01,
-        num_layers=1,
+        num_layers=0,
         num_class=problem.num_classes(),
         h= problem.f,
         is_weight_tracker=False,
@@ -44,6 +44,7 @@ def main():
         is_norm=True,
         is_adam_w=False,
         learnable_norm_parameters=False,
+        is_logit_prior=True,
     )
 
     # Generate validation set with class-balanced sampling
