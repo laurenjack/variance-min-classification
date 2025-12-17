@@ -34,7 +34,6 @@ def main():
         is_norm=True,
         is_adam_w=True,
         learnable_norm_parameters=True,
-        is_logit_prior=False,
     )
 
     x_val, y_val, val_center_indices = problem.generate_dataset(

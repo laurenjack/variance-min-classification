@@ -44,7 +44,6 @@ def main():
         is_norm=True,
         is_adam_w=False,
         learnable_norm_parameters=False,
-        is_logit_prior=True,
     )
 
     # Generate validation set with class-balanced sampling

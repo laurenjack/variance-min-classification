@@ -11,7 +11,7 @@ We need to implement `generate_dataset`, every example has exactly 1 and only on
 
 ## Kaleidoscope
 
-Let’s create the Kaleidoscope problem, we have:
+Let's create the Kaleidoscope problem, we have:
 d - the number of inputs
 [C_0, C_1, C_2, ...CL-1] - the centers, where C_{L-1} is the number of classes.
 
@@ -89,31 +89,35 @@ Generate n datapoints by:
 
 Return x, y, and center_indices_list (a list of tensors tracking features at each layer).
 
+# RegAdamW
 
+RegAdamW is a new optimizer which implements a version of AdamW that applies L2 regularization much more effectively to large neural networks. It is implemented in feature_experiments/optimizer.py. We will describe RegAdamW mathematically, then get into the specific implementation details. Recall that Adam/AdamW has:
 
-# Logit Prior
+1. A first moment g (this is just the gradient)
+2. A second moment g^2
+3. A moving first moment m
+4. A moving second moment v
 
-Let us define a new boolean parameter on the @config is_logit_prior=False. If it is False the behavior is as it is now. If it is true, we are going to do use a different set of atomtic modules, and compute a different kind of backprop.
+with the update given by:
+W - lr*(m / (root(v) + epsilon) + wd)
+(where wd is the weight decay as per Adam W) 
 
-First of all we will need to create a new python module logit_prior, it should have a class LinearLP. This is a class that extend pytorch's linear, we will be implementing a customer autograd function in this module too, and this class LinearLP should call that in it's forward method, such that it implements that custom autograd function. LinearLP should not support biases, just a weight matrix. 
+We don't want to change the update rule but rather how the raw first and second moments are calculated. The second moment should be replaced with the sum across the per sample gradient squared, `g2_per_n`. That is, suppose g_out [batch_size, d1] is the backpropagated gradient to the Linear module, and x [batch_size, d0] is the input to the linear module. then we have:
+`g2_per_n = g_out.t() ** 2 @ x ** 2`
 
-Now the autograd function, the forward will be just the same, on the backwards pass we are going to leave the backpropagated gradient alone, but we are going to change the way that we compute the weight gradient. Let dF_dz be the tensor og the loss w.r.t the output of the linear unit z. dF_dz is of shape [m, d_out] (where m is the batch size here). we shall separate it into two tensors slicing along the batch dimension, dL_dz = dF_dz[:m // 2] and dZ_dz = dF_dz[m // 2:], we can assume m is always even.
-We will then compute the tensor for_weight = dL_dz / (torch.abs(dZ_dz) + 1e-8), and use this tensor to compute the weight gradient, dF_dz will be backpropagated to the previous layer as normal.
+The first moment should also change, for each weight we want to scale it by the square root of the number of examples that were not zero-ed out by ReLUs. More specifically, we have `non_zero_count = ((g_out != 0).t() @ (x != 0))`.
 
-Now we need to modify @single_runner.py, we have train_once, we need to paths here now _train_once_standard and _train_once_logit_prior. _train_once_standard has the existing, standard training behavior. _train_once_logit_prior should do much the same, and we should re-use common functions, the only difference should be the training step. When we get to the the training step, we should "double the input batch" concantenating the input batch with itself, producing a double length batch dimension. We feed that forward, and then we slice the batch dimension, such that we have two logit tensors of batch size (which are identical by virtue of being copies of the same batch) To the first we apply the standard loss L (whether multi class cross entropy or BCE), to the second we apply the loss Z which is the sum of squared logits, across the logit dimension and mean across the batch dimension. We can then sum the two losses, and now we are ready for backpropagation.
+So to clarify:
+1. The first moment must be replaced with `non_zero_count ** 0.5 * g`
+2. The second moment must be replaced with `g2_per_n`
+3. Otherwise, the implementation is the same as AdamW
 
-Finally we need to be able to use this LinearLP in models, logit_prior can only be set to True if width_varyer is None, otherwise we should raise, this means that MLP, MultiLinear and Resnet need to take a constructor argument linear, which has a default value of nn.Linear, this argument linear should specify the linear constructor. When logit_prior is True, we need to pass in LinearLP as the linear constructor
+## Implementation Details
+We can use gradient hooks to calculate and store the tensors `g2_per_n` and `non_zero_count` on each parameter. Then we can implement a new Optimizer RegAdamW in `feature_experiments/optimizer.py`, to calculate the new moments and apply the update.
 
-All evaluation, whether on the training set or validation set should be carried out normally, on a sinlge batch, rather than a double batch. We only use the "double batch" approach to get the special gradient normalization during training
+We can use two hooks on the Linear module here, firstly we require a forward hook to store the input tensor x, this will allow us to calculate `g2_per_n`and `non_zero_count` in the backwards hook. These two fields can simply be stored on the parameter, for use by the optimizer.
 
-## RMSNormLP
+## Use
 
-Similar to LinearLP, we also need a special version of RMSNorm for logit prior training. The logit_prior module should contain a class RMSNormLP that uses a custom autograd function (RMSNormLPFunction). 
+Notice config.py, this has the flag is_adam_W, this should be replaced with the optimizer string field with "adam_w" as the default, the other options should be "sgd" and "reg_adam_w", firstly update all existing code which uses it to switch to the string parameter instead. For the "reg_adam_w" path, let is simply be unsupported for the empirical_runner pathway (raise an exception) However if specified for single_runner then it should be used. It is of course important on this pathway to register the hooks on the model. We can support all models, because we need not touch the model code directly to register the hooks.
 
-RMSNormLP only supports non-learnable weights. In config validation, we must raise an error if is_logit_prior=True and learnable_norm_parameters=True.
-
-The models (MLP, MultiLinear, Resnet, ResidualBlock) take an additional constructor argument rms_norm_class with default value RMSNorm. When is_logit_prior=True, the factory functions pass in RMSNormLP as the rms_norm_class constructor.
-
-The custom autograd function RMSNormLPFunction implements:
-- Forward: Standard RMSNorm computation: y = x / rms where rms = sqrt(mean(x^2, dim=-1) + eps)
-- Backward: Modified gradient that multiplies through by the "unstable denominator" (rms). Instead of the standard gradient `grad_x = grad_output / rms - x * (grad_output * x).sum() / (d * rms^3)`, we use `grad_x = grad_output - x * (grad_output * x).sum() / (d * rms^2)`. This is the standard gradient multiplied by rms.

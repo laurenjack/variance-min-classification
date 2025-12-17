@@ -7,13 +7,17 @@ from jl.models import create_model
 from jl.config import Config
 
 
-def _setup_training(device, problem, validation_set, c: Config, clean_mode: bool):
+def train_once(device, problem, validation_set, c: Config, clean_mode: bool = False):
     """
-    Common setup for both standard and logit prior training.
+    Create and train a model with weight tracking for testing purposes.
     
-    Returns:
-        Tuple of (model, tracker, criterion, optimizer, train_loader, x_train, y_train, 
-                  train_center_indices, x_val, y_val, center_indices)
+    Parameters:
+        device: torch.device to run computation on
+        problem: Dataset generator with generate_dataset method. If c.use_covariance is True,
+                 problem must have a 'covariance' property.
+        validation_set: Tuple of (x_val, y_val, center_indices) tensors
+        c: Config containing training and architecture parameters
+        clean_mode: Whether to generate clean data (no noise)
     """
     if c.model_type == 'mlp':
         model_desc = f"{c.model_type.upper()}: d={c.d}, h={c.h}"
@@ -46,49 +50,33 @@ def _setup_training(device, problem, validation_set, c: Config, clean_mode: bool
     if c.is_adam_w:
         optimizer = optim.AdamW(model.parameters(), lr=c.lr, weight_decay=c.weight_decay, eps=c.adam_eps)
     else:
-        optimizer = optim.SGD(model.parameters(), lr=c.lr, momentum=0.9, weight_decay=c.weight_decay)
+        optimizer = optim.SGD(model.parameters(), lr=c.lr, weight_decay=c.weight_decay)
     
     # Get validation set
     x_val, y_val, center_indices = validation_set
     
-    return (model, tracker, criterion, optimizer, train_loader, 
-            x_train, y_train, train_center_indices, x_val, y_val, center_indices)
-
-
-def _evaluate(model, x, y, criterion, num_class):
-    """
-    Evaluate model on given data.
-    
-    Returns:
-        Tuple of (loss, accuracy)
-    """
-    with torch.no_grad():
-        logits = model(x)
-        if num_class == 2:
-            loss = criterion(logits, y.float()).item()
-            preds = (torch.sigmoid(logits) >= 0.5).float()
-            acc = (preds == y.float()).float().mean().item()
-        else:
-            loss = criterion(logits, y.long()).item()
-            preds = logits.argmax(dim=1)
-            acc = (preds == y.long()).float().mean().item()
-    return loss, acc
-
-
-def _train_once_standard(model, tracker, criterion, optimizer, train_loader, 
-                         x_val, y_val, c: Config):
-    """
-    Standard training loop.
-    """
     print("Starting training...")
     
+    # Training loop
     for epoch in range(c.epochs):
+        # Training phase
         model.train()
         
         for batch_x, batch_y in train_loader:
             # Calculate validation accuracy and loss for tracker
             model.eval()
-            val_loss, val_acc = _evaluate(model, x_val, y_val, criterion, c.num_class)
+            with torch.no_grad():
+                val_logits = model(x_val)
+                if c.num_class == 2:
+                    val_loss = criterion(val_logits, y_val.float()).item()
+                    val_preds = (torch.sigmoid(val_logits) >= 0.5).float()
+                    val_acc = (val_preds == y_val.float()).float().mean().item()
+                else:
+                    # For multi-class, logits should be (batch_size, num_classes)
+                    val_loss = criterion(val_logits, y_val.long()).item()
+                    val_preds = val_logits.argmax(dim=1)
+                    val_acc = (val_preds == y_val.long()).float().mean().item()
+            
             model.train()
             
             # Training step
@@ -97,9 +85,10 @@ def _train_once_standard(model, tracker, criterion, optimizer, train_loader,
             if c.num_class == 2:
                 loss = criterion(logits, batch_y.float())
             else:
+                # For multi-class, logits should be (batch_size, num_classes)
                 loss = criterion(logits, batch_y.long())
             
-            # Add logit regularization if c.c is specified
+            # Add logit regularization if c is specified
             if c.c is not None:
                 logit_reg = c.c * torch.mean(logits ** 2)
                 loss = loss + logit_reg
@@ -120,111 +109,33 @@ def _train_once_standard(model, tracker, criterion, optimizer, train_loader,
             
             loss.backward()
             optimizer.step()
-
-
-def _train_once_logit_prior(model, tracker, criterion, optimizer, train_loader, 
-                            x_val, y_val, c: Config):
-    """
-    Logit prior training loop.
-    
-    Uses double batch approach: concatenates each batch with itself, feeds forward,
-    then applies standard loss L to first half of logits and sum-of-squared-logits 
-    loss Z to second half. The two losses are summed for backpropagation.
-    """
-    print("Starting logit prior training...")
-    
-    for epoch in range(c.epochs):
-        model.train()
-        
-        for batch_x, batch_y in train_loader:
-            # Calculate validation accuracy and loss for tracker (normal evaluation)
-            model.eval()
-            val_loss, val_acc = _evaluate(model, x_val, y_val, criterion, c.num_class)
-            model.train()
-            
-            # Training step with double batch
-            optimizer.zero_grad()
-            
-            # Double the input batch by concatenating with itself
-            double_batch_x = torch.cat([batch_x, batch_x], dim=0)
-            
-            # Forward pass with double batch
-            double_logits = model(double_batch_x)
-            
-            # Split logits into two halves
-            batch_size = batch_x.shape[0]
-            logits_L = double_logits[:batch_size]  # For standard loss
-            logits_Z = double_logits[batch_size:]  # For squared logits loss
-            
-            # Compute standard loss L on first half
-            if c.num_class == 2:
-                loss_L = criterion(logits_L, batch_y.float())
-            else:
-                loss_L = criterion(logits_L, batch_y.long())
-            
-            # Compute loss Z: sum across logit dimension, mean across batch dimension
-            if c.num_class == 2:
-                # For binary, logits are shape (batch_size,)
-                loss_Z = torch.abs(logits_Z).sum()
-            else:
-                # For multi-class, logits are shape (batch_size, num_classes)
-                # Sum across logit dimension, mean across batch
-                loss_Z = torch.abs(logits_Z).sum(dim=1).sum()
-            
-            # Combine losses
-            loss = loss_L + loss_Z
-
-            # Track only the standard loss L (not Z) for training loss reporting
-            train_loss = loss_L.item()
-            
-            # Calculate training accuracy using first half logits
-            with torch.no_grad():
-                if c.num_class == 2:
-                    train_preds = (torch.sigmoid(logits_L) >= 0.5).float()
-                    train_acc = (train_preds == batch_y.float()).float().mean().item()
-                else:
-                    train_preds = logits_L.argmax(dim=1)
-                    train_acc = (train_preds == batch_y.long()).float().mean().item()
-            
-            # Update tracker with both accuracies and losses
-            tracker.update(model, val_acc, train_acc, val_loss, train_loss)
-            
-            loss.backward()
-            optimizer.step()
-
-
-def train_once(device, problem, validation_set, c: Config, clean_mode: bool = False):
-    """
-    Create and train a model with weight tracking for testing purposes.
-    
-    Parameters:
-        device: torch.device to run computation on
-        problem: Dataset generator with generate_dataset method. If c.use_covariance is True,
-                 problem must have a 'covariance' property.
-        validation_set: Tuple of (x_val, y_val, center_indices) tensors
-        c: Config containing training and architecture parameters
-        clean_mode: Whether to generate clean data (no noise)
-    """
-    # Setup
-    (model, tracker, criterion, optimizer, train_loader, 
-     x_train, y_train, train_center_indices, x_val, y_val, center_indices) = \
-        _setup_training(device, problem, validation_set, c, clean_mode)
-    
-    # Run appropriate training loop
-    if c.is_logit_prior:
-        _train_once_logit_prior(model, tracker, criterion, optimizer, train_loader, 
-                                x_val, y_val, c)
-    else:
-        _train_once_standard(model, tracker, criterion, optimizer, train_loader, 
-                             x_val, y_val, c)
     
     # Final evaluation
     model.eval()
-    val_loss, val_acc = _evaluate(model, x_val, y_val, criterion, c.num_class)
-    train_loss, train_acc = _evaluate(model, x_train, y_train, criterion, c.num_class)
+    with torch.no_grad():
+        # Calculate final validation accuracy
+        val_logits = model(x_val)
+        if c.num_class == 2:
+            val_loss = criterion(val_logits, y_val.float()).item()
+            val_preds = (torch.sigmoid(val_logits) >= 0.5).float()
+            val_acc = (val_preds == y_val.float()).float().mean().item()
+        else:
+            val_loss = criterion(val_logits, y_val.long()).item()
+            val_preds = val_logits.argmax(dim=1)
+            val_acc = (val_preds == y_val.long()).float().mean().item()
+        
+        # Calculate final training accuracy and loss
+        train_logits = model(x_train)
+        if c.num_class == 2:
+            train_loss = criterion(train_logits, y_train.float()).item()
+            train_preds = (torch.sigmoid(train_logits) >= 0.5).float()
+            train_acc = (train_preds == y_train.float()).float().mean().item()
+        else:
+            train_loss = criterion(train_logits, y_train.long()).item()
+            train_preds = train_logits.argmax(dim=1)
+            train_acc = (train_preds == y_train.long()).float().mean().item()
     
-    print(f"Final: Validation Loss = {val_loss:.6f}, Validation Accuracy = {val_acc:.4f}, "
-          f"Training Loss = {train_loss:.6f}, Training Accuracy = {train_acc:.4f}")
+    print(f"Final: Validation Loss = {val_loss:.6f}, Validation Accuracy = {val_acc:.4f}, Training Loss = {train_loss:.6f}, Training Accuracy = {train_acc:.4f}")
     
     # Show plots
     print("Generating weight evolution plots...")
