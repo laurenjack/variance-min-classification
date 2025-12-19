@@ -11,7 +11,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     problem = FeatureCombinations(
-        num_layers=3,
+        num_layers=2,
         random_basis=False,
         device=device,
     )
@@ -24,12 +24,12 @@ def main():
         n=n,
         batch_size=n // 5,
         lr=0.01,
-        epochs=100,
+        epochs=20,
         weight_decay=0.1,
-        num_layers=2,
+        num_layers=1,
         num_class=problem.num_classes(),
         h=20,
-        is_weight_tracker=False,
+        is_weight_tracker=True,
         down_rank_dim=None,
         width_varyer=None,
         is_norm=True,

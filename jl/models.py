@@ -163,6 +163,7 @@ class Resnet(nn.Module):
         # Add final layer normalization (pre-logit) as in transformers
         # Applied after down-rank layer if it exists
         self.is_norm = c.is_norm
+        self.learnable_norm_parameters = c.learnable_norm_parameters
         if c.is_norm:
             self.final_rms_norm = RMSNorm(final_norm_dim, learnable_norm_parameters=c.learnable_norm_parameters)
         else:
@@ -172,7 +173,8 @@ class Resnet(nn.Module):
         return ResnetTracker(
             track_weights=track_weights,
             num_layers=len(self.blocks),
-            has_down_rank_layer=self.down_rank_layer is not None
+            has_down_rank_layer=self.down_rank_layer is not None,
+            learnable_norm_parameters=self.learnable_norm_parameters
         )
 
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):
@@ -445,6 +447,7 @@ class MLP(nn.Module):
             final_norm_dim = final_input
         
         # Add final layer normalization (pre-logit)
+        self.learnable_norm_parameters = c.learnable_norm_parameters
         if c.is_norm:
             self.final_rms_norm = RMSNorm(final_norm_dim, learnable_norm_parameters=c.learnable_norm_parameters)
         else:
@@ -454,7 +457,8 @@ class MLP(nn.Module):
         return MLPTracker(
             track_weights=track_weights,
             num_layers=self.num_layers,
-            has_down_rank_layer=self.down_rank_layer is not None
+            has_down_rank_layer=self.down_rank_layer is not None,
+            learnable_norm_parameters=self.learnable_norm_parameters
         )
     
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):
