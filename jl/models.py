@@ -163,18 +163,16 @@ class Resnet(nn.Module):
         # Add final layer normalization (pre-logit) as in transformers
         # Applied after down-rank layer if it exists
         self.is_norm = c.is_norm
-        self.learnable_norm_parameters = c.learnable_norm_parameters
         if c.is_norm:
             self.final_rms_norm = RMSNorm(final_norm_dim, learnable_norm_parameters=c.learnable_norm_parameters)
         else:
             self.final_rms_norm = None
 
-    def get_tracker(self, track_weights):
+    def get_tracker(self, c: Config):
         return ResnetTracker(
-            track_weights=track_weights,
+            c=c,
             num_layers=len(self.blocks),
-            has_down_rank_layer=self.down_rank_layer is not None,
-            learnable_norm_parameters=self.learnable_norm_parameters
+            has_down_rank_layer=self.down_rank_layer is not None
         )
 
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):
@@ -447,18 +445,16 @@ class MLP(nn.Module):
             final_norm_dim = final_input
         
         # Add final layer normalization (pre-logit)
-        self.learnable_norm_parameters = c.learnable_norm_parameters
         if c.is_norm:
             self.final_rms_norm = RMSNorm(final_norm_dim, learnable_norm_parameters=c.learnable_norm_parameters)
         else:
             self.final_rms_norm = None
     
-    def get_tracker(self, track_weights):
+    def get_tracker(self, c: Config):
         return MLPTracker(
-            track_weights=track_weights,
+            c=c,
             num_layers=self.num_layers,
-            has_down_rank_layer=self.down_rank_layer is not None,
-            learnable_norm_parameters=self.learnable_norm_parameters
+            has_down_rank_layer=self.down_rank_layer is not None
         )
     
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):
@@ -735,9 +731,9 @@ class MultiLinear(nn.Module):
         else:
             self.final_rms_norm = None
     
-    def get_tracker(self, track_weights):
+    def get_tracker(self, c: Config):
         return MultiLinearTracker(
-            track_weights=track_weights,
+            c=c,
             num_layers=self.num_layers,
             has_down_rank_layer=self.down_rank_layer is not None
         )
@@ -787,8 +783,8 @@ class KPolynomial(nn.Module):
         # Each row i contains coefficients for dimension i: [wᵢ₁, wᵢ₂, ..., wᵢₖ]
         self.coefficients = nn.Parameter(torch.randn(self.input_dim, self.k) * 0.01)
     
-    def get_tracker(self, track_weights):
-        return PolynomialTracker(track_weights)
+    def get_tracker(self, c: Config):
+        return PolynomialTracker(c)
     
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):
         """

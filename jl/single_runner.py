@@ -38,8 +38,8 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
     # Create model
     model = create_model(c).to(device)
     
-    # Create weight tracker with tracking enabled
-    tracker = model.get_tracker(track_weights=c.is_weight_tracker)
+    # Create weight tracker
+    tracker = model.get_tracker(c)
     
     # Set up loss function based on classification type
     if c.num_class == 2:
@@ -111,11 +111,25 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
                     train_preds = logits.argmax(dim=1)
                     train_acc = (train_preds == batch_y.long()).float().mean().item()
             
-            # Update tracker with both accuracies and losses
-            tracker.update(model, val_acc, train_acc, val_loss, train_loss)
-            
             loss.backward()
-            optimizer.step()
+            
+            # For 'full_step' mode, compute the optimizer step direction (Δw / lr)
+            if c.weight_tracker == 'full_step':
+                # Store old weights before optimizer step
+                old_weights = {id(p): p.data.clone() for p in model.parameters()}
+                
+                optimizer.step()
+                
+                # Compute and store the full step (Δw / lr) on each parameter
+                for p in model.parameters():
+                    p._step = (p.data - old_weights[id(p)]) / c.lr
+                
+                # Update tracker after step computation
+                tracker.update(model, val_acc, train_acc, val_loss, train_loss)
+            else:
+                # For 'weight' mode or None, update tracker before optimizer.step()
+                tracker.update(model, val_acc, train_acc, val_loss, train_loss)
+                optimizer.step()
     
     # Final evaluation
     model.eval()

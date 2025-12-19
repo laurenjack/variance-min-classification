@@ -192,7 +192,7 @@ def main() -> None:
         num_layers=1,
         num_class=problem.num_classes(),
         d_model=20,
-        is_weight_tracker=False,
+        weight_tracker=None,
         is_norm=False,
         down_rank_dim=None
     )

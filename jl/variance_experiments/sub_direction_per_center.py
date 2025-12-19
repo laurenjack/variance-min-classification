@@ -54,7 +54,7 @@ def main() -> None:
         num_layers=2,
         num_class=problem.num_classes(),
         h=80,
-        is_weight_tracker=False,
+        weight_tracker=None,
         d_model=40,
         down_rank_dim=None
     )
