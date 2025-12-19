@@ -5,17 +5,19 @@ import torch.nn as nn
 
 
 class ResnetTracker:
-    def __init__(self, track_weights=True, num_layers=0, has_down_rank_layer=False):
+    def __init__(self, track_weights=True, num_layers=0, has_down_rank_layer=False, learnable_norm_parameters=True):
         """
         Parameters:
             track_weights (bool): If True the weight matrices are tracked; if False only the
                                   accuracy is tracked.
             num_layers (int): Number of residual blocks in the model.
             has_down_rank_layer (bool): Whether the model has a down-rank layer.
+            learnable_norm_parameters (bool): Whether norm parameters are learnable (if False, skip norm plots).
         """
         self.track_weights = track_weights
         self.num_layers = num_layers
         self.has_down_rank_layer = has_down_rank_layer
+        self.learnable_norm_parameters = learnable_norm_parameters
         # Each element is a list (one per training step) of lists of numpy arrays for the linear layer weight matrices.
         self.weight_history = []
         # Each element is a list (one per training step) of lists of numpy arrays for the layer norm weight vectors.
@@ -140,16 +142,14 @@ class ResnetTracker:
                 out_dim, in_dim = weight_array.shape[1], weight_array.shape[2]
                 for row in range(out_dim):
                     for col in range(in_dim):
-                        plt.plot(training_steps, weight_array[:, row, col],
-                                 label=f"w[{row},{col}]")
+                        plt.plot(training_steps, weight_array[:, row, col])
                 plt.xlabel("Training Step")
                 plt.ylabel("Weight Value")
                 plt.title(weight_titles[i])
-                plt.legend()
                 plt.show()
 
-        # Plot layer norm weights if weight tracking is enabled.
-        if self.track_weights and self.norm_history and self.norm_history[0]:
+        # Plot layer norm weights if weight tracking is enabled and norms are learnable.
+        if self.track_weights and self.learnable_norm_parameters and self.norm_history and self.norm_history[0]:
             norm_titles = self._get_norm_titles()
             for i in range(len(self.norm_history[0])):
                 plt.figure()
@@ -158,11 +158,10 @@ class ResnetTracker:
                 # norm_array has shape (num_training_steps, dim)
                 dim = norm_array.shape[1]
                 for j in range(dim):
-                    plt.plot(training_steps, norm_array[:, j], label=f"norm[{j}]")
+                    plt.plot(training_steps, norm_array[:, j])
                 plt.xlabel("Training Step")
                 plt.ylabel("Norm Weight Value")
                 plt.title(norm_titles[i])
-                plt.legend()
                 plt.show()
 
         # Plot validation accuracy.
@@ -191,17 +190,19 @@ class ResnetTracker:
 
 
 class MLPTracker:
-    def __init__(self, track_weights=True, num_layers=0, has_down_rank_layer=False):
+    def __init__(self, track_weights=True, num_layers=0, has_down_rank_layer=False, learnable_norm_parameters=True):
         """
         Parameters:
             track_weights (bool): If True the weight matrices are tracked; if False only the
                                   accuracy is tracked.
             num_layers (int): Number of hidden layers in the model.
             has_down_rank_layer (bool): Whether the model has a down-rank layer.
+            learnable_norm_parameters (bool): Whether norm parameters are learnable (if False, skip norm plots).
         """
         self.track_weights = track_weights
         self.num_layers = num_layers
         self.has_down_rank_layer = has_down_rank_layer
+        self.learnable_norm_parameters = learnable_norm_parameters
         # Each element is a list (one per training step) of lists of numpy arrays for the linear layer weight matrices.
         self.weight_history = []
         # Each element is a list (one per training step) of lists of numpy arrays for the layer norm weight vectors.
@@ -329,16 +330,14 @@ class MLPTracker:
                 out_dim, in_dim = weight_array.shape[1], weight_array.shape[2]
                 for row in range(out_dim):
                     for col in range(in_dim):
-                        plt.plot(training_steps, weight_array[:, row, col],
-                                 label=f"w[{row},{col}]")
+                        plt.plot(training_steps, weight_array[:, row, col])
                 plt.xlabel("Training Step")
                 plt.ylabel("Weight Value")
                 plt.title(weight_titles[i] if i < len(weight_titles) else f"Weight Matrix {i}")
-                plt.legend()
                 plt.show()
 
-        # Plot layer norm weights if weight tracking is enabled.
-        if self.track_weights and self.norm_history and self.norm_history[0]:
+        # Plot layer norm weights if weight tracking is enabled and norms are learnable.
+        if self.track_weights and self.learnable_norm_parameters and self.norm_history and self.norm_history[0]:
             norm_titles = self._get_norm_titles()
             for i in range(len(self.norm_history[0])):
                 plt.figure()
@@ -347,11 +346,10 @@ class MLPTracker:
                 # norm_array has shape (num_training_steps, dim)
                 dim = norm_array.shape[1]
                 for j in range(dim):
-                    plt.plot(training_steps, norm_array[:, j], label=f"norm[{j}]")
+                    plt.plot(training_steps, norm_array[:, j])
                 plt.xlabel("Training Step")
                 plt.ylabel("Norm Weight Value")
                 plt.title(norm_titles[i] if i < len(norm_titles) else f"Norm {i}")
-                plt.legend()
                 plt.show()
 
         # Plot validation accuracy.
@@ -480,12 +478,10 @@ class MultiLinearTracker:
                 out_dim, in_dim = weight_array.shape[1], weight_array.shape[2]
                 for row in range(out_dim):
                     for col in range(in_dim):
-                        plt.plot(training_steps, weight_array[:, row, col],
-                                 label=f"w[{row},{col}]")
+                        plt.plot(training_steps, weight_array[:, row, col])
                 plt.xlabel("Training Step")
                 plt.ylabel("Weight Value")
                 plt.title(weight_titles[i] if i < len(weight_titles) else f"Weight Matrix {i}")
-                plt.legend()
                 plt.show()
 
         # Plot validation accuracy.
