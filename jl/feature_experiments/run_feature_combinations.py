@@ -25,15 +25,15 @@ def main():
         batch_size=n // 5,
         lr=0.01,
         epochs=20,
-        weight_decay=0.1,
+        weight_decay=0.0,
         num_layers=1,
         num_class=problem.num_classes(),
         h=20,
-        is_weight_tracker=True,
+        weight_tracker="full_step",
         down_rank_dim=None,
         width_varyer=None,
         is_norm=True,
-        optimizer="adam_w",
+        optimizer="reg_adam_w",
         learnable_norm_parameters=False,
     )
 

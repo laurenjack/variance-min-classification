@@ -10,7 +10,7 @@ class Config:
                  num_class: int,
                  h: Optional[int] = None,
                  d_model: Optional[int] = None,
-                 is_weight_tracker: bool = False, down_rank_dim: Optional[int] = None,
+                 weight_tracker: Optional[str] = None, down_rank_dim: Optional[int] = None,
                  width_varyer: Optional[str] = None, is_norm: bool = True, c: Optional[float] = None,
                  k: Optional[int] = None, adam_eps: float = 1e-8, optimizer: str = "adam_w",
                  learnable_norm_parameters: bool = True):
@@ -56,6 +56,10 @@ class Config:
         if optimizer == 'reg_adam_w' and learnable_norm_parameters:
             raise ValueError("learnable_norm_parameters must be False when optimizer='reg_adam_w'")
         
+        # Validate weight_tracker
+        if weight_tracker is not None and weight_tracker not in ['weight', 'full_step']:
+            raise ValueError(f"weight_tracker must be None, 'weight', or 'full_step', got '{weight_tracker}'")
+        
         self.model_type = model_type
         self.d = d
         self.n_val = n_val
@@ -68,7 +72,7 @@ class Config:
         self.h = h
         self.num_layers = num_layers
         self.d_model = d_model
-        self.is_weight_tracker = is_weight_tracker
+        self.weight_tracker = weight_tracker
         self.down_rank_dim = down_rank_dim
         self.width_varyer = width_varyer
         self.is_norm = is_norm

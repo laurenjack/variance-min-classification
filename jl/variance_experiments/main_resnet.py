@@ -68,7 +68,7 @@ def main():
         num_class=problem.num_classes(),
         h=h,
         d_model=d_model,
-        is_weight_tracker=False,
+        weight_tracker=None,
         down_rank_dim=None,
         width_varyer="d_model",
         is_norm=True

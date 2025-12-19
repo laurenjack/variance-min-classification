@@ -37,7 +37,7 @@ def main():
         num_layers=2,
         num_class=problem.num_classes(),
         h=None,
-        is_weight_tracker=False,
+        weight_tracker=None,
         d_model=20,
         down_rank_dim=5,
         is_norm=False
