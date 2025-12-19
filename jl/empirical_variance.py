@@ -50,8 +50,8 @@ def run_experiment_parallel(
     if c.num_class != 2:
         raise ValueError("run_experiment_parallel currently only supports binary classification. Multi-class support is not yet implemented.")
     
-    if c.frobenius_reg_k is not None:
-        raise ValueError("frobenius_reg_k is not supported in empirical_variance runner. Please use standard training or implement support for parallel execution.")
+    if c.optimizer == "reg_adam_w":
+        raise ValueError("reg_adam_w optimizer is not supported in empirical_variance runner. Please use single_runner instead.")
     
     x_val, y_val, center_indices_val = validation_set
     training_sets = _generate_training_sets(problem, c, num_runs, device, clean_mode)
@@ -116,10 +116,12 @@ def run_experiment_parallel(
     # Training
     x_full_list, y_full_list = zip(*training_sets)
     # Single optimizer for all parameters
-    if c.is_adam_w:
+    if c.optimizer == "adam_w":
         opt = torch.optim.AdamW(params.values(), lr=c.lr, weight_decay=c.weight_decay, eps=c.adam_eps)
-    else:
+    elif c.optimizer == "sgd":
         opt = torch.optim.SGD(params.values(), lr=c.lr, weight_decay=c.weight_decay)
+    else:
+        raise ValueError(f"Unknown optimizer: {c.optimizer}")
     # Ensure template is in training mode for the training loop
     template.train()
     for epoch in range(c.epochs):

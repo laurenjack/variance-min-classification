@@ -42,7 +42,7 @@ def main():
         down_rank_dim=None,
         width_varyer=None,
         is_norm=True,
-        is_adam_w=False,
+        optimizer="sgd",
         learnable_norm_parameters=False,
     )
 

@@ -99,25 +99,38 @@ RegAdamW is a new optimizer which implements a version of AdamW that applies L2 
 4. A moving second moment v
 
 with the update given by:
-W - lr*(m / (root(v) + epsilon) + wd)
+W - lr*(m / (root(v) + adam_eps) + wd)
 (where wd is the weight decay as per Adam W) 
 
-We don't want to change the update rule but rather how the raw first and second moments are calculated. The second moment should be replaced with the sum across the per sample gradient squared, `g2_per_n`. That is, suppose g_out [batch_size, d1] is the backpropagated gradient to the Linear module, and x [batch_size, d0] is the input to the linear module. then we have:
+We don't want to change the update rule but rather how the raw first and second moments are calculated. The second moment should be replaced with the sum across the per sample gradient squared, `g2_per_n`. That is, suppose g_out [batch_size, d1] is the backpropagated gradient with respect to the output of the Linear module (i.e., ∂L/∂(xW^T)), and x [batch_size, d0] is the input to the linear module. Then we have:
 `g2_per_n = g_out.t() ** 2 @ x ** 2`
 
-The first moment should also change, for each weight we want to scale it by the square root of the number of examples that were not zero-ed out by ReLUs. More specifically, we have `non_zero_count = ((g_out != 0).t() @ (x != 0))`.
+The first moment should also change, for each weight we want to scale it by the square root of the number of examples that were not zero-ed out by ReLUs, normalized by batch size. More specifically, we have `non_zero_count = ((g_out != 0).t() @ (x != 0))`. The comparison to zero is exact (not threshold-based).
 
-So to clarify:
-1. The first moment must be replaced with `non_zero_count ** 0.5 * g`
+So to clarify, let g be the standard gradient ∂L/∂W (i.e., `g = g_out.t() @ x`):
+1. The first moment must be replaced with `(non_zero_count ** 0.5 / batch_size ** 0.5) * g`
 2. The second moment must be replaced with `g2_per_n`
 3. Otherwise, the implementation is the same as AdamW
 
 ## Implementation Details
+
+We assume all Linear modules have bias=False (which is the case throughout the codebase).
+
 We can use gradient hooks to calculate and store the tensors `g2_per_n` and `non_zero_count` on each parameter. Then we can implement a new Optimizer RegAdamW in `feature_experiments/optimizer.py`, to calculate the new moments and apply the update.
 
-We can use two hooks on the Linear module here, firstly we require a forward hook to store the input tensor x, this will allow us to calculate `g2_per_n`and `non_zero_count` in the backwards hook. These two fields can simply be stored on the parameter, for use by the optimizer.
+We use two hooks on each Linear module:
+1. A forward hook to store the input tensor x on the module (e.g., `module._reg_input = x`)
+2. A `register_full_backward_hook` to compute `g2_per_n` and `non_zero_count` using `grad_output[0]` as g_out
+
+These two fields (`g2_per_n` and `non_zero_count`) can be stored directly on the nn.Parameter for use by the optimizer.
 
 ## Use
 
-Notice config.py, this has the flag is_adam_W, this should be replaced with the optimizer string field with "adam_w" as the default, the other options should be "sgd" and "reg_adam_w", firstly update all existing code which uses it to switch to the string parameter instead. For the "reg_adam_w" path, let is simply be unsupported for the empirical_runner pathway (raise an exception) However if specified for single_runner then it should be used. It is of course important on this pathway to register the hooks on the model. We can support all models, because we need not touch the model code directly to register the hooks.
+Notice config.py, this has the flag is_adam_w, this should be replaced with the optimizer string field with "adam_w" as the default, the other options should be "sgd" and "reg_adam_w". The optimizer field should be validated in Config.__init__. Firstly update all existing code which uses it to switch to the string parameter instead.
+
+**Important constraint:** When `optimizer="reg_adam_w"`, the config must have `learnable_norm_parameters=False`. If `learnable_norm_parameters=True` with `optimizer="reg_adam_w"`, raise a ValueError in Config.__init__.
+
+For the "reg_adam_w" path, it is unsupported for the empirical_runner pathway (raise an exception). However if specified for single_runner then it should be used. It is of course important on this pathway to register the hooks on the model. We can support all models, because we need not touch the model code directly to register the hooks.
+
+THINK ABOUT THE BATCH_SIZE SCALING, WHAT SHOULD HAPPEN FOR SMALL BATCHES? IT WAS A SUGGESTION BUT NOT QUITE RIGHT.
 
