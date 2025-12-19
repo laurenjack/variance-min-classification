@@ -5,6 +5,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from jl.models import create_model
 from jl.config import Config
+from jl.feature_experiments.optimizer import RegAdamW, register_reg_adam_w_hooks
 
 
 def train_once(device, problem, validation_set, c: Config, clean_mode: bool = False):
@@ -47,10 +48,16 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
         criterion = nn.CrossEntropyLoss()
     
     # Select optimizer based on config
-    if c.is_adam_w:
+    if c.optimizer == "adam_w":
         optimizer = optim.AdamW(model.parameters(), lr=c.lr, weight_decay=c.weight_decay, eps=c.adam_eps)
-    else:
+    elif c.optimizer == "sgd":
         optimizer = optim.SGD(model.parameters(), lr=c.lr, weight_decay=c.weight_decay)
+    elif c.optimizer == "reg_adam_w":
+        # Register hooks on Linear modules for RegAdamW
+        register_reg_adam_w_hooks(model)
+        optimizer = RegAdamW(model.parameters(), lr=c.lr, weight_decay=c.weight_decay, eps=c.adam_eps)
+    else:
+        raise ValueError(f"Unknown optimizer: {c.optimizer}")
     
     # Get validation set
     x_val, y_val, center_indices = validation_set

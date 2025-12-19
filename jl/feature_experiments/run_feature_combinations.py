@@ -11,29 +11,29 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     problem = FeatureCombinations(
-        num_layers=4,
+        num_layers=3,
         random_basis=False,
         device=device,
     )
 
-    n = 3000
+    n = 100
     model_config = Config(
         model_type="resnet",
         d=problem.d,
         n_val=n,
         n=n,
-        batch_size=n // 20,
+        batch_size=n // 5,
         lr=0.01,
-        epochs=200,
-        weight_decay=0.01,
-        num_layers=6,
+        epochs=100,
+        weight_decay=0.1,
+        num_layers=2,
         num_class=problem.num_classes(),
-        h=80,
+        h=20,
         is_weight_tracker=False,
         down_rank_dim=None,
         width_varyer=None,
         is_norm=True,
-        is_adam_w=False,
+        optimizer="adam_w",
         learnable_norm_parameters=False,
     )
 

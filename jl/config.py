@@ -12,7 +12,7 @@ class Config:
                  d_model: Optional[int] = None,
                  is_weight_tracker: bool = False, down_rank_dim: Optional[int] = None,
                  width_varyer: Optional[str] = None, is_norm: bool = True, c: Optional[float] = None,
-                 k: Optional[int] = None, adam_eps: float = 1e-8, is_adam_w: bool = True,
+                 k: Optional[int] = None, adam_eps: float = 1e-8, optimizer: str = "adam_w",
                  learnable_norm_parameters: bool = True):
         # Validate model_type
         if model_type not in ['resnet', 'mlp', 'k-polynomial', 'multi-linear']:
@@ -48,6 +48,14 @@ class Config:
         if model_type == 'multi-linear' and width_varyer is not None:
             raise ValueError("width_varyer must be None for 'multi-linear' model_type")
         
+        # Validate optimizer
+        if optimizer not in ['adam_w', 'sgd', 'reg_adam_w']:
+            raise ValueError(f"optimizer must be 'adam_w', 'sgd', or 'reg_adam_w', got '{optimizer}'")
+        
+        # Validate reg_adam_w constraint
+        if optimizer == 'reg_adam_w' and learnable_norm_parameters:
+            raise ValueError("learnable_norm_parameters must be False when optimizer='reg_adam_w'")
+        
         self.model_type = model_type
         self.d = d
         self.n_val = n_val
@@ -67,5 +75,5 @@ class Config:
         self.c = c
         self.k = k
         self.adam_eps = adam_eps
-        self.is_adam_w = is_adam_w
+        self.optimizer = optimizer
         self.learnable_norm_parameters = learnable_norm_parameters
