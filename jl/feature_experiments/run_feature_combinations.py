@@ -18,14 +18,14 @@ def main():
 
     n = 100
     model_config = Config(
-        model_type="resnet",
+        model_type="mlp",
         d=problem.d,
         n_val=n,
         n=n,
         batch_size=n // 5,
         lr=0.01,
         epochs=20,
-        weight_decay=0.0,
+        weight_decay=0.5,
         num_layers=1,
         num_class=problem.num_classes(),
         h=20,

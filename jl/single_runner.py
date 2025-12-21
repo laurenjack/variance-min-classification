@@ -113,16 +113,19 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
             
             loss.backward()
             
-            # For 'full_step' mode, compute the optimizer step direction (Δw / lr)
+            # For 'full_step' mode, compute the optimizer step direction (excluding lr and weight_decay)
             if c.weight_tracker == 'full_step':
                 # Store old weights before optimizer step
                 old_weights = {id(p): p.data.clone() for p in model.parameters()}
                 
                 optimizer.step()
                 
-                # Compute and store the full step (Δw / lr) on each parameter
+                # Compute and store the full step on each parameter
+                # Δw = -lr * (adam_update + wd * w_old)
+                # full_step = Δw/lr + wd*w_old = -adam_update (just the gradient-based update)
                 for p in model.parameters():
-                    p._step = (p.data - old_weights[id(p)]) / c.lr
+                    delta_w = p.data - old_weights[id(p)]
+                    p._step = delta_w / c.lr # + c.weight_decay * old_weights[id(p)]
                 
                 # Update tracker after step computation
                 tracker.update(model, val_acc, train_acc, val_loss, train_loss)

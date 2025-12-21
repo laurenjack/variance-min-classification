@@ -108,7 +108,7 @@ We don't want to change the update rule but rather how the raw first and second 
 The first moment should also change, for each weight we want to scale it by the square root of the number of examples that were not zero-ed out by ReLUs, normalized by batch size. More specifically, we have `non_zero_count = ((g_out != 0).t() @ (x != 0))`. The comparison to zero is exact (not threshold-based).
 
 So to clarify, let g be the standard gradient ∂L/∂W (i.e., `g = g_out.t() @ x`):
-1. The first moment must be replaced with `(non_zero_count ** 0.5 / batch_size ** 0.5) * g`
+1. The first moment must be replaced with `(non_zero_count ** 0.5 / batch_size) * g`
 2. The second moment must be replaced with `g2_per_n`
 3. Otherwise, the implementation is the same as AdamW
 
@@ -131,6 +131,4 @@ Notice config.py, this has the flag is_adam_w, this should be replaced with the 
 **Important constraint:** When `optimizer="reg_adam_w"`, the config must have `learnable_norm_parameters=False`. If `learnable_norm_parameters=True` with `optimizer="reg_adam_w"`, raise a ValueError in Config.__init__.
 
 For the "reg_adam_w" path, it is unsupported for the empirical_runner pathway (raise an exception). However if specified for single_runner then it should be used. It is of course important on this pathway to register the hooks on the model. We can support all models, because we need not touch the model code directly to register the hooks.
-
-THINK ABOUT THE BATCH_SIZE SCALING, WHAT SHOULD HAPPEN FOR SMALL BATCHES? IT WAS A SUGGESTION BUT NOT QUITE RIGHT.
 
