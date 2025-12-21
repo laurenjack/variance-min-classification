@@ -91,7 +91,7 @@ class RegAdamW(Optimizer):
         weight_decay: Weight decay coefficient (default: 0.01)
     """
     
-    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.01):
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.95), eps=1e-8, weight_decay=0.01):
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
         if eps < 0.0:
@@ -143,31 +143,22 @@ class RegAdamW(Optimizer):
                 exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
                 state['step'] += 1
                 
-                # Check if this parameter has RegAdamW statistics from hooks
-                has_reg_stats = hasattr(p, '_g2_per_n') and hasattr(p, '_non_zero_count') and hasattr(p, '_batch_size')
+                # Use RegAdamW moment calculations
+                g2_per_n = p._g2_per_n
+                non_zero_count = p._non_zero_count
+                batch_size = p._batch_size
                 
-                if has_reg_stats:
-                    # Use RegAdamW moment calculations
-                    g2_per_n = p._g2_per_n
-                    non_zero_count = p._non_zero_count
-                    batch_size = p._batch_size
-                    
-                    # First moment: (non_zero_count ** 0.5 / batch_size ** 0.5) * g
-                    scaling = (non_zero_count ** 0.5) / (batch_size ** 0.5)
-                    first_moment = scaling * grad
-                    
-                    # Second moment: g2_per_n
-                    second_moment = g2_per_n
-                    
-                    # Clean up stored statistics
-                    del p._g2_per_n
-                    del p._non_zero_count
-                    del p._batch_size
-                else:
-                    # Fall back to standard AdamW for parameters without hooks
-                    # (e.g., RMSNorm parameters if they were learnable)
-                    first_moment = grad
-                    second_moment = grad ** 2
+                # First moment: (non_zero_count ** 0.5 / batch_size) * g
+                scaling = (non_zero_count ** 0.5) / batch_size
+                first_moment = scaling * grad
+                
+                # Second moment: g2_per_n
+                second_moment = g2_per_n
+                
+                # Clean up stored statistics
+                del p._g2_per_n
+                del p._non_zero_count
+                del p._batch_size
                 
                 # Update biased first and second moment estimates
                 exp_avg.mul_(beta1).add_(first_moment, alpha=1 - beta1)

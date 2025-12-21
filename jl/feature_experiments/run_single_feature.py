@@ -9,7 +9,7 @@ from jl.single_runner import train_once
 
 
 def main():
-    torch.manual_seed(38173)
+    # torch.manual_seed(38173)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Problem: SingleFeatures
@@ -33,16 +33,16 @@ def main():
         n=n,
         batch_size=n // 4,
         lr=0.01,
-        epochs=1000,
-        weight_decay=0.01,
-        num_layers=0,
+        epochs=300,
+        weight_decay=0.2,
+        num_layers=1,
         num_class=problem.num_classes(),
         h= problem.f,
-        weight_tracker=None,
+        weight_tracker="full_step",
         down_rank_dim=None,
         width_varyer=None,
         is_norm=True,
-        optimizer="sgd",
+        optimizer="adam_w",
         learnable_norm_parameters=False,
     )
 
