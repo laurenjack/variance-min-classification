@@ -96,11 +96,11 @@ class SingleFeatures(Problem):
     The f features are the f rows of matrix Q ∈ R^(f×d).
     
     Two modes are supported:
-    1. orthogonal_as_possible=True (default):
-       - If f <= d: Q has orthonormal rows (orthonormal basis)
-       - If f > d: Q rows form a Unit Norm Tight Frame (UNTF), where Q.T @ Q = (f/d) * I_d
+    1. is_orthogonal=True (default):
+       - Requires f <= d
+       - Q has orthonormal rows (orthonormal basis)
     
-    2. orthogonal_as_possible=False:
+    2. is_orthogonal=False:
        - Q rows are random unit-norm vectors from standard Gaussian
        - Features are generated with rejection sampling to ensure they are not too close
        - Dot product between any two features must be <= cos(2π/d)
@@ -108,32 +108,46 @@ class SingleFeatures(Problem):
     Each sample activates exactly one feature (and corresponds to one class).
     
     The number of classes equals the number of features: num_class = f.
+    
+    If noisy_scale is specified, f additional random unit vectors (scaled by noisy_scale)
+    are created. For each sample, one is selected uniformly at random (independent of the
+    sample's feature) and concatenated, doubling the dimensionality to 2*d.
     """
     
     def __init__(
         self,
         d: int,
         f: int,
-        orthogonal_as_possible: bool = True,
+        is_orthogonal: bool = True,
         n_per_f: Optional[List[int]] = None,
+        percent_correct_per_f: Optional[List[float]] = None,
+        noisy_scale: Optional[float] = None,
         device: Optional[torch.device] = None,
         generator: Optional[torch.Generator] = None,
     ) -> None:
         """
         Args:
             d: Dimensionality of the input space
-            f: Number of features (and number of classes)
-            orthogonal_as_possible: If True, generate orthonormal features (f <= d) or UNTF (f > d).
-                                    If False, generate random unit-norm features with rejection sampling
-                                    to avoid features that are too close (dot product > cos(2π/d)).
+            f: Number of features (and number of classes). Must be <= d when is_orthogonal=True.
+            is_orthogonal: If True, generate orthonormal features (requires f <= d).
+                           If False, generate random unit-norm features with rejection sampling
+                           to avoid features that are too close (dot product > cos(2π/d)).
             n_per_f: The frequency of each feature in the dataset. If None, all features are equally frequent.
+            percent_correct_per_f: Optional list of length f specifying the probability that
+                                   samples of each feature retain their correct label.
+                                   Each element must be in [1/f, 1.0]. When a label is flipped,
+                                   it becomes (original_label + 1) % f. If None, no label noise.
+            noisy_scale: If specified, create f random unit vectors of length d, scale them by
+                         this value, and concatenate one (selected uniformly at random, independent
+                         of the sample's feature) to each sample. This doubles the dimensionality
+                         to 2*d but provides no class-discriminative signal.
             device: torch device to use for tensors
             generator: optional random generator for reproducibility
         """
         self._d: int = _validate_positive(d, "d")
         self.f: int = _validate_positive(f, "f")
         self.num_class: int = self.f
-        self.orthogonal_as_possible: bool = orthogonal_as_possible
+        self.is_orthogonal: bool = is_orthogonal
         self.device: torch.device = device if device is not None else torch.device("cpu")
         self.generator: Optional[torch.Generator] = generator
         
@@ -145,72 +159,53 @@ class SingleFeatures(Problem):
                 raise ValueError("All elements of n_per_f must be positive")
         self.n_per_f = n_per_f
         
-        # Generate Q ∈ R^(f×d)
-        if self.orthogonal_as_possible:
-            if self.f <= self._d:
-                self.Q: torch.Tensor = _orthonormal_rows(
-                    self.f,
-                    self._d,
-                    generator=self.generator,
-                    device=self.device,
+        # Validate and store percent_correct_per_f
+        if percent_correct_per_f is not None:
+            if len(percent_correct_per_f) != self.f:
+                raise ValueError(
+                    f"percent_correct_per_f must have length f={self.f}, "
+                    f"got length {len(percent_correct_per_f)}"
                 )
-            else:
-                print("WARNING: This is not a harmonic UNTF, so the points are not equally distributed on the sphere.")
-                # Case 2: f > d - construct Unit Norm Tight Frame (UNTF)
-                # A UNTF satisfies: Q.T @ Q = (f/d) * I_d and each row has unit norm
-                self.Q = self._construct_untf()
+            min_pc = 1.0 / self.f
+            for i, pc in enumerate(percent_correct_per_f):
+                if not (min_pc <= pc <= 1.0):
+                    raise ValueError(
+                        f"percent_correct_per_f[{i}] must be in [{min_pc:.4f}, 1.0], got {pc}"
+                    )
+        self.percent_correct_per_f = percent_correct_per_f
+        
+        # Generate Q ∈ R^(f×d)
+        if self.is_orthogonal:
+            if self.f > self._d:
+                raise ValueError(
+                    f"When is_orthogonal=True, f must be <= d. Got f={self.f}, d={self._d}."
+                )
+            self.Q: torch.Tensor = _orthonormal_rows(
+                self.f,
+                self._d,
+                generator=self.generator,
+                device=self.device,
+            )
         else:
-            # Case 3: Random unit-norm features with rejection sampling
+            # Random unit-norm features with rejection sampling
             self.Q = _construct_random_features(
                 self.f,
                 self._d,
                 generator=self.generator,
                 device=self.device,
             )
-    
-    def _construct_untf(self) -> torch.Tensor:
-        """
-        Construct a Unit Norm Tight Frame (UNTF) for f > d.
         
-        A UNTF satisfies:
-        - Each row has unit norm: ||Q[i]|| = 1 for all i
-        - Tight frame property: Q.T @ Q = (f/d) * I_d
-        
-        Returns:
-            Q: shape (f, d) tensor with unit norm rows forming a tight frame
-        """
-        # Start with f random unit vectors
-        A = torch.randn(self.f, self._d, generator=self.generator, device=self.device)
-        # Normalize each row to unit norm
-        Q = A / torch.norm(A, dim=1, keepdim=True)  # (f, d)
-        
-        # Iteratively refine to satisfy tight frame property Q.T @ Q = (f/d) * I_d
-        # Using alternating projection method
-        target_frame_constant = self.f / self._d
-        
-        for _ in range(50):  # Max iterations
-            # Compute current Gram matrix
-            G = Q.T @ Q  # (d, d)
-            
-            # Check if we're close enough
-            target_G = target_frame_constant * torch.eye(self._d, device=self.device)
-            if torch.allclose(G, target_G, atol=1e-6):
-                break
-            
-            # Project to satisfy tight frame property
-            # Compute G^(-1/2) using eigendecomposition for numerical stability
-            eigenvals, eigenvecs = torch.linalg.eigh(G)
-            eigenvals = torch.clamp(eigenvals, min=1e-8)  # Avoid division by zero
-            G_inv_sqrt = eigenvecs @ torch.diag(1.0 / torch.sqrt(eigenvals)) @ eigenvecs.T
-            
-            # Transform: Q_new = sqrt(f/d) * Q @ G^(-1/2)
-            Q = math.sqrt(target_frame_constant) * Q @ G_inv_sqrt
-            
-            # Renormalize rows to unit norm
-            row_norms = torch.norm(Q, dim=1, keepdim=True)
-            Q = Q / row_norms
-        
-        return Q
+        # Generate noisy vectors if noisy_scale is specified
+        self.noisy_scale = noisy_scale
+        if self.noisy_scale is not None:
+            # Create f random unit vectors of length d, scaled by noisy_scale
+            noisy_vectors = torch.randn(
+                self.f, self._d, generator=self.generator, device=self.device
+            )
+            noisy_vectors = noisy_vectors / torch.norm(noisy_vectors, dim=1, keepdim=True)
+            self.Q_noisy: Optional[torch.Tensor] = noisy_vectors * self.noisy_scale
+        else:
+            self.Q_noisy = None
     
     @property
     def d(self) -> int:
@@ -218,8 +213,11 @@ class SingleFeatures(Problem):
         The total dimensionality of the feature space.
         
         Returns:
-            int: Total number of dimensions in generated features
+            int: Total number of dimensions in generated features.
+                 Returns 2*d if noisy_scale is specified, otherwise d.
         """
+        if self.noisy_scale is not None:
+            return 2 * self._d
         return self._d
     
     def num_classes(self) -> int:
@@ -251,14 +249,15 @@ class SingleFeatures(Problem):
         
         Args:
             n: Number of samples to generate.
-            clean_mode: Unused for this problem (no noise yet).
+            clean_mode: If True, generate clean samples with no label noise.
+                        If False (default), apply label noise according to percent_correct_per_f.
             shuffle: If True, randomly permute the resulting dataset.
         
         Returns:
             (x, y, center_indices):
-              - x: shape (n, d) float32 tensor of features
+              - x: shape (n, d) float32 tensor of features (d is 2*input_d if noisy_scale is set)
               - y: shape (n,) int64 tensor of class labels (in range [0, f))
-              - center_indices: shape (n,) int64 tensor, same as y for this problem
+              - center_indices: shape (n,) int64 tensor, the true feature index for each sample
         """
         if n <= 0:
             raise ValueError("n must be positive")
@@ -311,10 +310,45 @@ class SingleFeatures(Problem):
             y = torch.arange(n, device=self.device, dtype=torch.int64) % self.f
         
         # Compute x = x_standard @ Q
-        x = x_standard @ self.Q  # shape (n, d)
+        x = x_standard @ self.Q  # shape (n, _d)
         
-        # center_indices is the same as y for this problem
+        # Concatenate noisy vectors if noisy_scale is specified
+        if self.Q_noisy is not None:
+            # Select uniformly at random from the f noisy vectors (independent of feature)
+            noisy_indices = torch.randint(
+                0, self.f, (n,), generator=self.generator, device=self.device
+            )
+            noisy_part = self.Q_noisy[noisy_indices]  # shape (n, _d)
+            x = torch.cat([x, noisy_part], dim=1)  # shape (n, 2*_d)
+        
+        # center_indices tracks the true feature for each sample (before any label noise)
         center_indices = y.clone()
+        
+        # Apply label noise based on percent_correct_per_f if specified and not in clean_mode
+        if not clean_mode and self.percent_correct_per_f is not None:
+            for feature_idx in range(self.f):
+                pc = self.percent_correct_per_f[feature_idx]
+                if pc < 1.0:
+                    # Find all samples with this feature
+                    feature_mask = (center_indices == feature_idx)
+                    feature_sample_indices = torch.nonzero(feature_mask, as_tuple=False).view(-1)
+                    num_feature_samples = feature_sample_indices.numel()
+                    
+                    if num_feature_samples > 0:
+                        # Calculate number of samples to flip
+                        num_to_flip = round(num_feature_samples * (1.0 - pc))
+                        if num_to_flip > 0:
+                            # Randomly select which samples to flip
+                            perm = torch.randperm(
+                                num_feature_samples,
+                                generator=self.generator,
+                                device=self.device,
+                            )
+                            indices_to_flip = feature_sample_indices[perm[:num_to_flip]]
+                            
+                            # Flip label to (feature_idx + 1) % f
+                            new_label = (feature_idx + 1) % self.f
+                            y[indices_to_flip] = new_label
         
         # Shuffle if requested
         if shuffle:

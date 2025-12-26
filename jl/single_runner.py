@@ -51,7 +51,7 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
     if c.optimizer == "adam_w":
         optimizer = optim.AdamW(model.parameters(), lr=c.lr, weight_decay=c.weight_decay, eps=c.adam_eps)
     elif c.optimizer == "sgd":
-        optimizer = optim.SGD(model.parameters(), lr=c.lr, weight_decay=c.weight_decay)
+        optimizer = optim.SGD(model.parameters(), lr=c.lr, momentum=0.9, weight_decay=c.weight_decay)
     elif c.optimizer == "reg_adam_w":
         # Register hooks on Linear modules for RegAdamW
         register_reg_adam_w_hooks(model)
