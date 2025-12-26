@@ -18,7 +18,7 @@ def main():
         d=4,
         f=8, 
         device=device,
-        orthogonal_as_possible=False,
+        is_orthogonal=False,
         # n_per_f=[32, 16, 8, 4],
         n_per_f=[2, 4, 8, 16, 2, 4, 8, 16]
     )
