@@ -98,7 +98,7 @@ Return x, y, and center_indices_list (a list of tensors tracking features at eac
 
 # RegAdamW
 
-RegAdamW is a new optimizer which implements a version of AdamW that applies L2 regularization much more effectively to large neural networks. It is implemented in feature_experiments/optimizer.py. We will describe RegAdamW mathematically, then get into the specific implementation details. Recall that Adam/AdamW has:
+RegAdamW is a new optimizer which implements a version of AdamW that applies L2 regularization much more effectively to large neural networks. It is implemented in feature_experiments/optimizer.py. We will describe RegAdamW mathematically, then get into the specific implementation details. Recall that AdamW has:
 
 1. A first moment g (this is just the gradient)
 2. A second moment g^2
