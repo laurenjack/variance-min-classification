@@ -43,9 +43,51 @@ def _build_consolidation_mapping(
     return mapping
 
 
+def _build_favourites_consolidation_mapping(
+    generator: Optional[torch.Generator],
+    device: torch.device,
+) -> torch.Tensor:
+    """
+    Build a consolidation mapping using semi-random assignment with favourites.
+
+    Uses predefined patterns where each output feature has exactly one favourite
+    on the left and one on the right (occurring twice), and randomly assigns these
+    patterns to output feature indices.
+
+    Returns:
+        shape (16,) tensor mapping combination index (i*4 + j) to feature (0-3)
+    """
+    # Predefined patterns from the design document example
+    # Each pattern is a list of (left_feature, right_feature) pairs for the 4 combinations
+    patterns = [
+        # Pattern A
+        [(0, 1), (0, 2), (3, 2), (2, 0)],
+        # Pattern B
+        [(1, 0), (2, 2), (2, 3), (3, 3)],
+        # Pattern C
+        [(1, 1), (1, 2), (0, 3), (2, 1)],
+        # Pattern D
+        [(3, 1), (1, 3), (0, 0), (3, 0)],
+    ]
+
+    # Randomly permute which output feature gets which pattern
+    pattern_permutation = torch.randperm(4, generator=generator, device=device)
+
+    # Build the mapping
+    mapping = torch.zeros(16, dtype=torch.int64, device=device)
+    for output_feature_idx in range(4):
+        pattern_idx = pattern_permutation[output_feature_idx].item()
+        pattern = patterns[pattern_idx]
+        for combo_idx, (left_feat, right_feat) in enumerate(pattern):
+            combination_index = left_feat * 4 + right_feat
+            mapping[combination_index] = output_feature_idx
+
+    return mapping
+
+
 class FeatureCombinations(Problem):
     """
-    Hierarchical feature combination problem for binary classification.
+    Hierarchical feature combination problem for 4-class classification.
 
     The input space has d = 2 * 2^num_layers dimensions. At the atomic level
     (layer 0), the space is divided into num_subs = d // 4 subsections of 4
@@ -63,19 +105,20 @@ class FeatureCombinations(Problem):
 
     This does NOT guarantee linear separability at each layer.
 
-    At the final layer (1 subsection with 4 possible features), 2 features are
-    randomly assigned to class 0 and 2 to class 1.
+    At the final layer (1 subsection with 4 possible features), each of the 4
+    features is randomly assigned to one of 4 classes.
 
     Attributes:
         num_layers: Number of layers in the hierarchy.
         d: Dimensionality of input space (2 * 2^num_layers).
-        num_class: Always 2 (binary classification).
+        num_class: Always 4 (4-class classification).
     """
 
     def __init__(
         self,
         num_layers: int,
         random_basis: bool = False,
+        has_favourites: bool = False,
         device: Optional[torch.device] = None,
         generator: Optional[torch.Generator] = None,
     ) -> None:
@@ -83,6 +126,7 @@ class FeatureCombinations(Problem):
         Args:
             num_layers: Number of layers. Must be >= 2. Determines d = 2 * 2^num_layers.
             random_basis: If True, rotate the input space with a random orthonormal matrix.
+            has_favourites: If True, use semi-random assignment with favourites instead of completely random.
             device: torch device to use for tensors.
             generator: Optional random generator for reproducibility.
         """
@@ -91,8 +135,9 @@ class FeatureCombinations(Problem):
 
         self.num_layers = num_layers
         self._d = 2 * (2 ** num_layers)
-        self.num_class = 2
+        self.num_class = 4
         self.random_basis = random_basis
+        self.has_favourites = has_favourites
         self.device = device if device is not None else torch.device("cpu")
         self.generator = generator
 
@@ -118,15 +163,17 @@ class FeatureCombinations(Problem):
             num_subsections_this_layer = num_subsections // 2
             layer_mappings: List[torch.Tensor] = []
             for _ in range(num_subsections_this_layer):
-                mapping = _build_consolidation_mapping(self.generator, self.device)
+                if self.has_favourites:
+                    mapping = _build_favourites_consolidation_mapping(self.generator, self.device)
+                else:
+                    mapping = _build_consolidation_mapping(self.generator, self.device)
                 layer_mappings.append(mapping)
             self.consolidation_mappings.append(layer_mappings)
             num_subsections = num_subsections_this_layer
 
-        # At the final layer, randomly assign 2 features to class 0, 2 to class 1
-        assignment = torch.tensor([0, 0, 1, 1], dtype=torch.int64, device=self.device)
-        perm = torch.randperm(4, generator=self.generator, device=self.device)
-        self.final_class_assignment = assignment[perm]
+        # At the final layer, randomly assign each of the 4 features to one of 4 classes
+        assignment = torch.randint(0, 4, (4,), generator=self.generator, device=self.device, dtype=torch.int64)
+        self.final_class_assignment = assignment
 
         # If random_basis, generate a random orthonormal rotation matrix
         self.Q_rotation: Optional[torch.Tensor] = None
@@ -141,7 +188,7 @@ class FeatureCombinations(Problem):
         return self._d
 
     def num_classes(self) -> int:
-        """Returns the number of classes (always 2 for this problem)."""
+        """Returns the number of classes (always 4 for this problem)."""
         return self.num_class
 
     def _consolidate_features(
@@ -181,7 +228,7 @@ class FeatureCombinations(Problem):
         Returns:
             (x, y, center_indices_list):
               - x: shape (n, d) float32 tensor of features
-              - y: shape (n,) int64 tensor of class labels (0 or 1)
+              - y: shape (n,) int64 tensor of class labels (0, 1, 2, or 3)
               - center_indices_list: List of tensors, one per layer.
                   - center_indices_list[0]: shape (n, num_atomic_subsections) atomic features
                   - center_indices_list[l]: shape (n, num_subsections_at_layer_l)

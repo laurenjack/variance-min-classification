@@ -74,9 +74,61 @@ The consolidation uses **completely random assignment** to partition the 16 comb
 
 This does NOT guarantee linear separability - the assignment is completely random. A different random permutation is generated for each subsection at each layer.
 
+#### Favourites
+
+FeatureCombinations should also take a constructor argument has_favourites=False. At a given layer (other than the atomic layer). Every output feature is made up of exactly 4 possibilities from the previous layer. When has_favourites=False, these possible combinations are randomly assigned, as described above. However, when has_favourites=True, that assignment changes and becomes semi-random, each output feature has a favourite input feature from the left and a favourite input feature on the right.
+
+For example, consider an output feature at any layer (except the features at the atomic layer, these are the model inputs). As always the output feature is made up of 4 combinations, of one feature from the left and one feature from the right. A favourite feature is defined as an input feature occurs twice as often as the others, for example, the four possibilities (for output feature A), below shows a 1-hot encoding of which of the 4 input features in the left and right sub directions where chosen:
+Output Feature A:
+L: 1 0 0 0 R: 0 1 0 0
+L: 1 0 0 0 R: 0 0 1 0
+L: 0 0 0 1 R: 0 0 1 0
+L: 0 0 1 0 R: 1 0 0 0
+
+See that the first input feature on the left occurs twice, and then the third input feature on the right occurs twice, these are the favourites.
+
+Here are the constraints, when taking two subdirections and making the 4 different output features:
+1. Out of the 4 output features, they can never have the same favourites (on either side). The other 3 cannot have the first  input feature as their left favourite, OR the third input feature as their right favourite, because each is taken by output A.
+2. Each output feature must only have one favourite on each side, so the other input features must occur once or zero times
+3. Overall for the mapping, across all 4 feature outputs, for all 4 feature inputs, each feature must occur the exact same amount of times.
+
+So to match those constaints, we could have:
+Output Feature A:
+L: 1 0 0 0 R: 0 1 0 0
+L: 1 0 0 0 R: 0 0 1 0
+L: 0 0 0 1 R: 0 0 1 0
+L: 0 0 1 0 R: 1 0 0 0
+
+Output Feature B:
+L: 0 1 0 0 R: 1 0 0 0
+L: 0 0 1 0 R: 0 0 1 0
+L: 0 0 1 0 R: 0 0 0 1
+L: 0 0 0 1 R: 0 0 0 1
+
+Output Feature C:
+L: 0 1 0 0 R: 0 1 0 0
+L: 0 1 0 0 R: 0 0 1 0
+L: 1 0 0 0 R: 0 0 0 1
+L: 0 0 1 0 R: 0 1 0 0
+
+Output Feature D:
+L: 0 0 0 1 R: 0 1 0 0
+L: 0 1 0 0 R: 0 0 0 1
+L: 1 0 0 0 R: 1 0 0 0
+L: 0 0 0 1 R: 1 0 0 0
+
+Check each constraint:
+1. From each side, each favourite is used only once
+2. Each output feature only has a single favourite on a given side
+3. On the left side, input feature 1 occurs 2 + 1 + 0 + 1 = 4, input feature 2 occurs 0 + 1 + 2 + 1 = 4, input feature 3 occurs 1 + 2 + 1 + 0 = 4, input feature 4 occurs 1 + 0 + 1 + 2 = 4. Likewise, the same holds for the right side. That is, each input feature is as frequent as the others across all four combinations in the mapping.
+
+To keep things simple, you can use the exact pattern I showed in the example, but just randomly assign each of those patterns to an actual output feature index e.g. A-> 2, B -> 1 C-> 3 and D-> 0. This ensures that not every mapping is exactly the same, but at least has a few different possibilities
+
+Let us make sure to write unit tests in @test_feature_combinations.py that explictly checks the constraints.
+
 ### Final Layer
 
-This continues until the last layer, where there is just a single subsection with 4 possible consolidated features. At the final layer, 2 of the 4 features are randomly assigned to class 0, and the other 2 are assigned to class 1. This allocation determines the class for all generated points.
+This continues until the last layer, where there is just a single subsection with 4 possible consolidated features. At the final layer, the 4 features are randomly assigned to one of 4 classes. This allocation determines the class for all generated points.
 
 ### Constructor Arguments
 
