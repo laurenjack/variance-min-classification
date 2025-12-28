@@ -2,11 +2,11 @@
 
 ## Single Feature
 
-In the new python package feature_experiments, create a new module feature_problem.py, which should have a class SingleFeatures which inherits from problem. You should accept device as part of the constructor args like the other Problems. It should take a constructor argument d which is the dimensionality of the problem, it should also take a number of features f. Each feature f is encoded as a specific direction in the input space d. These features will not exist on any particular basis. 
+In the new python package feature_experiments, create a new module feature_problem.py, which should have a class SingleFeatures which inherits from problem. You should accept device as part of the constructor args like the other Problems. It should take a constructor argument true_d which is the dimensionality of the true feature space, it should also take a number of features f. Each feature f is encoded as a specific direction in the input space true_d. These features will not exist on any particular basis. 
 
-We require f <= d. Let the f features be the f rows of the matrix Q ∈ R^{f×d}, where Q is a random matrix with orthonormal rows (when `is_orthogonal=True`, the default). Alternatively, when `is_orthogonal=False`, the rows of Q are random unit-norm vectors generated with rejection sampling to ensure they are not too close (dot product between any two features must be <= cos(2π/d)). The num_class (number of classes) is exactly f = num_class.
+We require f <= true_d. Let the f features be the f rows of the matrix Q ∈ R^{f×true_d}, where Q is a random matrix with orthonormal rows (when `is_orthogonal=True`, the default). Alternatively, when `is_orthogonal=False`, the rows of Q are random unit-norm vectors generated with rejection sampling to ensure they are not too close (dot product between any two features must be <= cos(2π/true_d)). The num_class (number of classes) is exactly f = num_class.
 
-We need to implement `generate_dataset`, every example has exactly 1 and only one feature (and therefore a single class). We should be as class balanced as possible. We could achieve this by stacking `I_f` identity matrices on top of each other, specifically `ceiling(n / f)` identity matrices, and then truncating the number of rows to n, so we have xstandard ∈ R^{n×f}. Finally the matrix multiplication x = xstandard @ Q gives us the (n, d) inputs. The labels y should exactly correspond to the feature. It should be clear what to do with the shuffle flag from the other problems. We do not need to use the clean_mode flag as there is no noise yet. In this case, center_indices is the same as y, we can make a copy of it and return it.
+We need to implement `generate_dataset`, every example has exactly 1 and only one feature (and therefore a single class). We should be as class balanced as possible. We could achieve this by stacking `I_f` identity matrices on top of each other, specifically `ceiling(n / f)` identity matrices, and then truncating the number of rows to n, so we have xstandard ∈ R^{n×f}. Finally the matrix multiplication x = xstandard @ Q gives us the (n, true_d) inputs. The labels y should exactly correspond to the feature. It should be clear what to do with the shuffle flag from the other problems. We do not need to use the clean_mode flag as there is no noise yet. In this case, center_indices is the same as y, we can make a copy of it and return it.
 
 ### Percent Correct
 
@@ -14,7 +14,7 @@ We want to introduce some noise to the problem, optionally. Much like the constr
 
 ### Noisy d
 
-We will also have an optional constructor argument `noisy_scale = None`. If it is specified, we will create f completely random unit vectors of length d (sampled from standard Gaussian and normalized to unit length, using the generator for reproducibility). Each will then be multiplied by `noisy_scale` (so if it was 1, these random vectors would all stay unit vectors). If it is specified, the full dimensionality for the problem will be 2*d (i.e., the `d` property returns 2*d). For every sample generated, a vector will be selected uniformly at random from the f scaled random vectors (independent of which feature the sample belongs to, providing no class-discriminative signal), and that will be concatenated onto the actual feature vector x (so that it now has 2*d dimensions).
+We will also have a constructor argument `noisy_d = 0` (defaults to 0, must be non-negative). For each sample, we will create a single random unit vector of length noisy_d (sampled from standard Gaussian but multiplied by 1 / sqrt(true_d) to match the scale of the individual units of the true explanatory vector, using the generator for reproducibility). The noisy dimensions will be concatenated onto the actual feature vector x (so that it now has true_d + noisy_d dimensions). The `d` property returns true_d + noisy_d.
 
 ## Kaleidoscope
 
@@ -106,30 +106,33 @@ RegAdamW is a new optimizer which implements a version of AdamW that applies L2 
 4. A moving second moment v
 
 with the update given by:
-W - lr*(m / (root(v) + adam_eps) + wd)
-(where wd is the weight decay as per Adam W) 
+W - lr*(m / (root(v) + adam_eps) + wd * W)
+(where wd is the weight decay as per AdamW) 
 
-We don't want to change the update rule but rather how the raw first and second moments are calculated. The second moment should be replaced with the sum across the per sample gradient squared, `g2_per_n`. That is, suppose g_out [batch_size, d1] is the backpropagated gradient with respect to the output of the Linear module (i.e., ∂L/∂(xW^T)), and x [batch_size, d0] is the input to the linear module. Then we have:
-`g2_per_n = g_out.t() ** 2 @ x ** 2`
+We want to change how the second moment is calculated. The second moment should be replaced with the sum across the per sample gradient squared, `g2_per_n`. That is, suppose g_out [batch_size, d1] is the backpropagated gradient with respect to the output of the Linear module (i.e., ∂L/∂(xW^T)), and x [batch_size, d0] is the input to the linear module. Then we have:
+`g2_per_n = batch_size * g_out.t() ** 2 @ x ** 2`
+Notice that this is equivalent to \frac{1}/{batch_size} * \sum(g_i)^2 where g_i is the gradient for an individual point (without the \frac{1}/{batch_size} scaling from the loss), i.e. the expected value of each individual gradient square.
 
-The first moment should also change, for each weight we want to scale it by the square root of the number of examples that were not zero-ed out by ReLUs, normalized by batch size. More specifically, we have `non_zero_count = ((g_out != 0).t() @ (x != 0))`. The comparison to zero is exact (not threshold-based).
+The update rule will change too, we shall have:
+W - lr*(m + wd * W) / (root(v) + adam_eps)
+So the weight decay is also scaled, this preserves the regularization effect. 
 
 So to clarify, let g be the standard gradient ∂L/∂W (i.e., `g = g_out.t() @ x`):
-1. The first moment must be replaced with `(non_zero_count ** 0.5 / batch_size) * g`
+1. The first moment doesn't change
 2. The second moment must be replaced with `g2_per_n`
-3. Otherwise, the implementation is the same as AdamW
+3. The update rule must scale both the first moment and the reg term
 
 ## Implementation Details
 
 We assume all Linear modules have bias=False (which is the case throughout the codebase).
 
-We can use gradient hooks to calculate and store the tensors `g2_per_n` and `non_zero_count` on each parameter. Then we can implement a new Optimizer RegAdamW in `feature_experiments/optimizer.py`, to calculate the new moments and apply the update.
+We can use gradient hooks to calculate and store the tensors `g2_per_n`. Then we can implement a new Optimizer RegAdamW in `feature_experiments/optimizer.py`, to calculate the new moment and apply the update.
 
 We use two hooks on each Linear module:
 1. A forward hook to store the input tensor x on the module (e.g., `module._reg_input = x`)
-2. A `register_full_backward_hook` to compute `g2_per_n` and `non_zero_count` using `grad_output[0]` as g_out
+2. A `register_full_backward_hook` to compute `g2_per_n` using `grad_output[0]` as g_out
 
-These two fields (`g2_per_n` and `non_zero_count`) can be stored directly on the nn.Parameter for use by the optimizer.
+The field `g2_per_n` can be stored directly on the nn.Parameter for use by the optimizer.
 
 ## Use
 
@@ -138,4 +141,15 @@ Notice config.py, this has the flag is_adam_w, this should be replaced with the 
 **Important constraint:** When `optimizer="reg_adam_w"`, the config must have `learnable_norm_parameters=False`. If `learnable_norm_parameters=True` with `optimizer="reg_adam_w"`, raise a ValueError in Config.__init__.
 
 For the "reg_adam_w" path, it is unsupported for the empirical_runner pathway (raise an exception). However if specified for single_runner then it should be used. It is of course important on this pathway to register the hooks on the model. We can support all models, because we need not touch the model code directly to register the hooks.
+
+# Learning Rate Decay
+
+We introduce a new parameter `lr_scheduler` in the config with three options:
+
+- `None`: Fixed learning rate (default behavior)
+- `"sd"`: Stable + decay phases (85% stable at lr, 15% cosine annealing decay to 0)
+- `"wsd"`: Warmup + stable + decay phases (5% warmup from 0 to lr, 80% stable at lr, 15% cosine annealing decay to 0)
+
+We deduce the number of training steps using ceiling division: `training_steps = ceil(n / batch_size) * epochs`. The scheduler steps once per batch (not per epoch). Percentages are rounded to the nearest integer training steps, requiring at least 20 training steps total. When using scheduling, the optimizer initializes with adjusted lr for proper warmup. The scheduler applies to all optimizer types (adam_w, sgd, reg_adam_w). If percentages don't sum exactly to training_steps, the final decay phase takes the remaining steps. Cosine annealing in decay phases starts from lr and decays to zero following a cosine curve.
+
 

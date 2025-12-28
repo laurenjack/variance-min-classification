@@ -1,4 +1,5 @@
 from typing import Tuple, List
+import math
 
 import torch
 from torch import Tensor
@@ -8,6 +9,7 @@ from torch.func import vmap, stack_module_state, functional_call, grad_and_value
 
 from jl.config import Config
 from jl.models import create_model
+from jl.scheduler import create_lr_scheduler
 
 
 def _generate_training_sets(problem, c: Config, num_runs: int, device: torch.device, clean_mode: bool) -> List[Tuple[Tensor, Tensor]]:
@@ -115,13 +117,28 @@ def run_experiment_parallel(
 
     # Training
     x_full_list, y_full_list = zip(*training_sets)
+
+    # Calculate training steps for WSD scheduler
+    steps_per_epoch = math.ceil(n / batch_size)
+    training_steps = steps_per_epoch * c.epochs
+
+    # Adjust initial lr for scheduler if needed
+    initial_lr = c.lr
+    if c.lr_scheduler == 'wsd':
+        warmup_steps = round(0.05 * training_steps)
+        if warmup_steps > 0:
+            initial_lr = c.lr / warmup_steps
+
     # Single optimizer for all parameters
     if c.optimizer == "adam_w":
-        opt = torch.optim.AdamW(params.values(), lr=c.lr, weight_decay=c.weight_decay, eps=c.adam_eps)
+        opt = torch.optim.AdamW(params.values(), lr=initial_lr, weight_decay=c.weight_decay, eps=c.adam_eps)
     elif c.optimizer == "sgd":
-        opt = torch.optim.SGD(params.values(), lr=c.lr, weight_decay=c.weight_decay)
+        opt = torch.optim.SGD(params.values(), lr=initial_lr, weight_decay=c.weight_decay)
     else:
         raise ValueError(f"Unknown optimizer: {c.optimizer}")
+
+    # Create learning rate scheduler if enabled
+    scheduler = create_lr_scheduler(opt, training_steps, c.lr, c.lr_scheduler)
     # Ensure template is in training mode for the training loop
     template.train()
     for epoch in range(c.epochs):
@@ -148,6 +165,9 @@ def run_experiment_parallel(
             for name, param in params.items():
                 param.grad = grads[name]
             opt.step()
+            # Step WSD scheduler if enabled
+            if scheduler is not None:
+                scheduler.step()
             opt.zero_grad(set_to_none=True)
         
         # Compute and report average training loss per width for this epoch

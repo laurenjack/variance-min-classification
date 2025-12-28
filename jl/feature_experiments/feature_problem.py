@@ -92,64 +92,68 @@ class SingleFeatures(Problem):
     """
     Generates classification data where each sample has exactly one active feature.
     
-    Each feature is encoded as a specific direction in the input space R^d.
-    The f features are the f rows of matrix Q ∈ R^(f×d).
+    Each feature is encoded as a specific direction in the input space R^true_d.
+    The f features are the f rows of matrix Q ∈ R^(f×true_d).
     
     Two modes are supported:
     1. is_orthogonal=True (default):
-       - Requires f <= d
+       - Requires f <= true_d
        - Q has orthonormal rows (orthonormal basis)
     
     2. is_orthogonal=False:
        - Q rows are random unit-norm vectors from standard Gaussian
        - Features are generated with rejection sampling to ensure they are not too close
-       - Dot product between any two features must be <= cos(2π/d)
+       - Dot product between any two features must be <= cos(2π/true_d)
     
     Each sample activates exactly one feature (and corresponds to one class).
     
     The number of classes equals the number of features: num_class = f.
     
-    If noisy_scale is specified, f additional random unit vectors (scaled by noisy_scale)
-    are created. For each sample, one is selected uniformly at random (independent of the
-    sample's feature) and concatenated, doubling the dimensionality to 2*d.
+    If noisy_d > 0, for each sample a random unit vector of length noisy_d is generated
+    (scaled by 1/sqrt(true_d) to match the scale of true features) and concatenated,
+    resulting in total dimensionality true_d + noisy_d.
     """
     
     def __init__(
         self,
-        d: int,
+        true_d: int,
         f: int,
         is_orthogonal: bool = True,
         n_per_f: Optional[List[int]] = None,
         percent_correct_per_f: Optional[List[float]] = None,
-        noisy_scale: Optional[float] = None,
+        noisy_d: int = 0,
         device: Optional[torch.device] = None,
         generator: Optional[torch.Generator] = None,
     ) -> None:
         """
         Args:
-            d: Dimensionality of the input space
-            f: Number of features (and number of classes). Must be <= d when is_orthogonal=True.
-            is_orthogonal: If True, generate orthonormal features (requires f <= d).
+            true_d: Dimensionality of the true feature space
+            f: Number of features (and number of classes). Must be <= true_d when is_orthogonal=True.
+            is_orthogonal: If True, generate orthonormal features (requires f <= true_d).
                            If False, generate random unit-norm features with rejection sampling
-                           to avoid features that are too close (dot product > cos(2π/d)).
+                           to avoid features that are too close (dot product > cos(2π/true_d)).
             n_per_f: The frequency of each feature in the dataset. If None, all features are equally frequent.
             percent_correct_per_f: Optional list of length f specifying the probability that
                                    samples of each feature retain their correct label.
                                    Each element must be in [1/f, 1.0]. When a label is flipped,
                                    it becomes (original_label + 1) % f. If None, no label noise.
-            noisy_scale: If specified, create f random unit vectors of length d, scale them by
-                         this value, and concatenate one (selected uniformly at random, independent
-                         of the sample's feature) to each sample. This doubles the dimensionality
-                         to 2*d but provides no class-discriminative signal.
+            noisy_d: Number of noisy dimensions to add. For each sample, a random unit vector of
+                     length noisy_d is generated (scaled by 1/sqrt(true_d)) and concatenated.
+                     Must be non-negative. Defaults to 0.
             device: torch device to use for tensors
             generator: optional random generator for reproducibility
         """
-        self._d: int = _validate_positive(d, "d")
+        self._true_d: int = _validate_positive(true_d, "true_d")
         self.f: int = _validate_positive(f, "f")
         self.num_class: int = self.f
         self.is_orthogonal: bool = is_orthogonal
         self.device: torch.device = device if device is not None else torch.device("cpu")
         self.generator: Optional[torch.Generator] = generator
+        
+        # Validate and store noisy_d
+        if noisy_d < 0:
+            raise ValueError("noisy_d must be non-negative")
+        self.noisy_d: int = int(noisy_d)
         
         # Validate and store n_per_f
         if n_per_f is not None:
@@ -174,15 +178,15 @@ class SingleFeatures(Problem):
                     )
         self.percent_correct_per_f = percent_correct_per_f
         
-        # Generate Q ∈ R^(f×d)
+        # Generate Q ∈ R^(f×true_d)
         if self.is_orthogonal:
-            if self.f > self._d:
+            if self.f > self._true_d:
                 raise ValueError(
-                    f"When is_orthogonal=True, f must be <= d. Got f={self.f}, d={self._d}."
+                    f"When is_orthogonal=True, f must be <= true_d. Got f={self.f}, true_d={self._true_d}."
                 )
             self.Q: torch.Tensor = _orthonormal_rows(
                 self.f,
-                self._d,
+                self._true_d,
                 generator=self.generator,
                 device=self.device,
             )
@@ -190,22 +194,10 @@ class SingleFeatures(Problem):
             # Random unit-norm features with rejection sampling
             self.Q = _construct_random_features(
                 self.f,
-                self._d,
+                self._true_d,
                 generator=self.generator,
                 device=self.device,
             )
-        
-        # Generate noisy vectors if noisy_scale is specified
-        self.noisy_scale = noisy_scale
-        if self.noisy_scale is not None:
-            # Create f random unit vectors of length d, scaled by noisy_scale
-            noisy_vectors = torch.randn(
-                self.f, self._d, generator=self.generator, device=self.device
-            )
-            noisy_vectors = noisy_vectors / torch.norm(noisy_vectors, dim=1, keepdim=True)
-            self.Q_noisy: Optional[torch.Tensor] = noisy_vectors * self.noisy_scale
-        else:
-            self.Q_noisy = None
     
     @property
     def d(self) -> int:
@@ -214,11 +206,9 @@ class SingleFeatures(Problem):
         
         Returns:
             int: Total number of dimensions in generated features.
-                 Returns 2*d if noisy_scale is specified, otherwise d.
+                 Returns true_d + noisy_d.
         """
-        if self.noisy_scale is not None:
-            return 2 * self._d
-        return self._d
+        return self._true_d + self.noisy_d
     
     def num_classes(self) -> int:
         """
@@ -255,7 +245,7 @@ class SingleFeatures(Problem):
         
         Returns:
             (x, y, center_indices):
-              - x: shape (n, d) float32 tensor of features (d is 2*input_d if noisy_scale is set)
+              - x: shape (n, d) float32 tensor of features (d = true_d + noisy_d)
               - y: shape (n,) int64 tensor of class labels (in range [0, f))
               - center_indices: shape (n,) int64 tensor, the true feature index for each sample
         """
@@ -310,16 +300,20 @@ class SingleFeatures(Problem):
             y = torch.arange(n, device=self.device, dtype=torch.int64) % self.f
         
         # Compute x = x_standard @ Q
-        x = x_standard @ self.Q  # shape (n, _d)
+        x = x_standard @ self.Q  # shape (n, _true_d)
         
-        # Concatenate noisy vectors if noisy_scale is specified
-        if self.Q_noisy is not None:
-            # Select uniformly at random from the f noisy vectors (independent of feature)
-            noisy_indices = torch.randint(
-                0, self.f, (n,), generator=self.generator, device=self.device
+        # Concatenate noisy vectors if noisy_d > 0
+        if self.noisy_d > 0:
+            # Generate a random unit vector for each sample
+            noisy_vectors = torch.randn(
+                n, self.noisy_d, generator=self.generator, device=self.device
             )
-            noisy_part = self.Q_noisy[noisy_indices]  # shape (n, _d)
-            x = torch.cat([x, noisy_part], dim=1)  # shape (n, 2*_d)
+            # Normalize to unit length
+            noisy_vectors = noisy_vectors / torch.norm(noisy_vectors, dim=1, keepdim=True)
+            # Scale by 1/sqrt(true_d) to match the scale of true features
+            scale_factor = 1.0 / math.sqrt(self._true_d)
+            noisy_vectors = noisy_vectors * scale_factor
+            x = torch.cat([x, noisy_vectors], dim=1)  # shape (n, _true_d + noisy_d)
         
         # center_indices tracks the true feature for each sample (before any label noise)
         center_indices = y.clone()
