@@ -3,9 +3,11 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
+
 from jl.models import create_model
 from jl.config import Config
 from jl.feature_experiments.optimizer import RegAdamW, register_reg_adam_w_hooks
+from jl.scheduler import create_lr_scheduler
 
 
 def train_once(device, problem, validation_set, c: Config, clean_mode: bool = False):
@@ -34,7 +36,18 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
     # Create data loader for batch training
     train_dataset = TensorDataset(x_train, y_train)
     train_loader = DataLoader(train_dataset, batch_size=c.batch_size, shuffle=True)
-    
+
+    # Calculate training steps for scheduler
+    steps_per_epoch = len(train_loader)
+    training_steps = steps_per_epoch * c.epochs
+
+    # Adjust initial lr for scheduler if needed
+    initial_lr = c.lr
+    if c.lr_scheduler == 'wsd':
+        warmup_steps = round(0.05 * training_steps)
+        if warmup_steps > 0:
+            initial_lr = c.lr / warmup_steps
+
     # Create model
     model = create_model(c).to(device)
     
@@ -49,15 +62,18 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
     
     # Select optimizer based on config
     if c.optimizer == "adam_w":
-        optimizer = optim.AdamW(model.parameters(), lr=c.lr, weight_decay=c.weight_decay, eps=c.adam_eps)
+        optimizer = optim.AdamW(model.parameters(), lr=initial_lr, weight_decay=c.weight_decay, eps=c.adam_eps, betas=c.adam_betas)
     elif c.optimizer == "sgd":
-        optimizer = optim.SGD(model.parameters(), lr=c.lr, momentum=0.9, weight_decay=c.weight_decay)
+        optimizer = optim.SGD(model.parameters(), lr=initial_lr, momentum=c.sgd_momentum, weight_decay=c.weight_decay)
     elif c.optimizer == "reg_adam_w":
         # Register hooks on Linear modules for RegAdamW
         register_reg_adam_w_hooks(model)
-        optimizer = RegAdamW(model.parameters(), lr=c.lr, weight_decay=c.weight_decay, eps=c.adam_eps)
+        optimizer = RegAdamW(model.parameters(), lr=initial_lr, weight_decay=c.weight_decay, eps=c.adam_eps, betas=c.adam_betas)
     else:
         raise ValueError(f"Unknown optimizer: {c.optimizer}")
+
+    # Create learning rate scheduler if enabled
+    scheduler = create_lr_scheduler(optimizer, training_steps, c.lr, c.lr_scheduler)
     
     # Get validation set
     x_val, y_val, center_indices = validation_set
@@ -133,6 +149,10 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
                 # For 'weight' mode or None, update tracker before optimizer.step()
                 tracker.update(model, val_acc, train_acc, val_loss, train_loss)
                 optimizer.step()
+
+            # Step WSD scheduler if enabled
+            if scheduler is not None:
+                scheduler.step()
     
     # Final evaluation
     model.eval()

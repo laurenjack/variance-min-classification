@@ -4,7 +4,7 @@ from typing import Optional
 class Config:
     """Configuration parameters for model experiments"""
     
-    def __init__(self, model_type: str, d: int, n_val: int, n: int, batch_size: int, 
+    def __init__(self, model_type: str, d: int, n_val: int, n: int, batch_size: int,
                  lr: float, epochs: int, weight_decay: float,
                  num_layers: int,
                  num_class: int,
@@ -13,7 +13,8 @@ class Config:
                  weight_tracker: Optional[str] = None, down_rank_dim: Optional[int] = None,
                  width_varyer: Optional[str] = None, is_norm: bool = True, c: Optional[float] = None,
                  k: Optional[int] = None, adam_eps: float = 1e-8, optimizer: str = "adam_w",
-                 learnable_norm_parameters: bool = True):
+                 learnable_norm_parameters: bool = True, adam_betas: tuple = (0.9, 0.999),
+                 sgd_momentum: float = 0.0, lr_scheduler: Optional[str] = None):
         # Validate model_type
         if model_type not in ['resnet', 'mlp', 'k-polynomial', 'multi-linear']:
             raise ValueError(f"model_type must be either 'resnet', 'mlp', 'k-polynomial', or 'multi-linear', got '{model_type}'")
@@ -60,6 +61,29 @@ class Config:
         if weight_tracker is not None and weight_tracker not in ['weight', 'full_step']:
             raise ValueError(f"weight_tracker must be None, 'weight', or 'full_step', got '{weight_tracker}'")
         
+        # Validate adam_betas
+        if not isinstance(adam_betas, tuple) or len(adam_betas) != 2:
+            raise ValueError(f"adam_betas must be a tuple of length 2, got {adam_betas}")
+        if not 0.0 <= adam_betas[0] < 1.0:
+            raise ValueError(f"adam_betas[0] must be in [0, 1), got {adam_betas[0]}")
+        if not 0.0 <= adam_betas[1] < 1.0:
+            raise ValueError(f"adam_betas[1] must be in [0, 1), got {adam_betas[1]}")
+        
+        # Validate sgd_momentum
+        if not isinstance(sgd_momentum, (int, float)) or not 0.0 <= sgd_momentum < 1.0:
+            raise ValueError(f"sgd_momentum must be in [0, 1), got {sgd_momentum}")
+
+        # Validate lr_scheduler
+        if lr_scheduler is not None and lr_scheduler not in ['sd', 'wsd']:
+            raise ValueError(f"lr_scheduler must be None, 'sd', or 'wsd', got '{lr_scheduler}'")
+
+        # Validate scheduler requirements
+        if lr_scheduler is not None:
+            import math
+            training_steps = math.ceil(n / batch_size) * epochs
+            if training_steps < 20:
+                raise ValueError(f"Learning rate scheduler requires at least 20 training steps, got {training_steps} (calculated as ceil({n}/{batch_size}) * {epochs})")
+
         self.model_type = model_type
         self.d = d
         self.n_val = n_val
@@ -81,3 +105,6 @@ class Config:
         self.adam_eps = adam_eps
         self.optimizer = optimizer
         self.learnable_norm_parameters = learnable_norm_parameters
+        self.adam_betas = adam_betas
+        self.sgd_momentum = sgd_momentum
+        self.lr_scheduler = lr_scheduler
