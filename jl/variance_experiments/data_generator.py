@@ -231,7 +231,7 @@ class SubDirections(Problem):
         n: int,
         clean_mode: bool = False,
         shuffle: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, None]:
         if n <= 0:
             raise ValueError("n must be positive")
 
@@ -335,7 +335,7 @@ class SubDirections(Problem):
             y = y[perm]
             center_indices = center_indices[perm]
 
-        return x, y, center_indices
+        return x, y, center_indices, None
 
 
 class Gaussian(Problem):
@@ -400,7 +400,7 @@ class Gaussian(Problem):
         n: int,
         clean_mode: bool = False,
         shuffle: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, None]:
         """
         Generate a dataset of size n.
 
@@ -410,10 +410,11 @@ class Gaussian(Problem):
             shuffle: If True, randomly permute the resulting dataset.
 
         Returns:
-            (x, y, center_indices):
+            (x, y, center_indices, px):
               - x: shape (n, d) float32 tensor of features sampled from N(0, 1)
               - y: shape (n,) int64 tensor of class labels (0 or 1)
               - center_indices: shape (n,) int64 tensor of zeros (all samples from same center)
+              - px: None (not used for this problem)
         """
         if n <= 0:
             raise ValueError("n must be positive")
@@ -451,7 +452,7 @@ class Gaussian(Problem):
             y = y[perm]
             # center_indices doesn't need to be shuffled since all are 0
         
-        return x, y, center_indices
+        return x, y, center_indices, None
     
     def _gen_class_balanced_labels(self, n: int) -> torch.Tensor:
         """Generate perfectly balanced class labels."""
@@ -569,7 +570,7 @@ class TwoGaussians(Problem):
         n: int,
         clean_mode: bool = False,
         shuffle: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, None]:
         """
         Generate a dataset of size n.
         
@@ -582,11 +583,12 @@ class TwoGaussians(Problem):
             shuffle: If True, randomly permute the resulting dataset.
         
         Returns:
-            (x, y, center_indices):
+            (x, y, center_indices, px):
               - x: shape (n, d) float32 tensor of features
               - y: shape (n,) int64 tensor of class labels (0 or 1)
               - center_indices: shape (n,) int64 tensor of center index for each sample
                                (0 for class 0 center, 1 for class 1 center)
+              - px: None (not used for this problem)
         """
         if n <= 0:
             raise ValueError("n must be positive")
@@ -646,7 +648,7 @@ class TwoGaussians(Problem):
             y = y[perm]
             center_indices = center_indices[perm]
         
-        return x, y, center_indices
+        return x, y, center_indices, None
     
     def _generate_batch(
         self,
@@ -819,7 +821,7 @@ class TwoDirections(Problem):
         n: int,
         clean_mode: bool = False,
         shuffle: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, None]:
         """
         Generate a dataset of size n.
         
@@ -832,11 +834,12 @@ class TwoDirections(Problem):
             shuffle: If True, randomly permute the resulting dataset.
         
         Returns:
-            (x, y, center_indices):
+            (x, y, center_indices, px):
               - x: shape (n, d) float32 tensor of features
               - y: shape (n,) int64 tensor of class labels (0 or 1)
               - center_indices: shape (n,) int64 tensor of center index for each sample
                                (0 for class 0 center, 1 for class 1 center)
+              - px: None (not used for this problem)
         """
         if n <= 0:
             raise ValueError("n must be positive")
@@ -847,7 +850,7 @@ class TwoDirections(Problem):
         if remainder > 0:
             # Randomly assign remainder to one of the classes
             extra_class = torch.randint(0, self.NUM_CLASS, (1,), device=self.device).item()
-            n_per_class[extra_class] += remainder
+            n_per_class[int(extra_class)] += remainder
         
         # Generate samples for each class
         x_list = []
@@ -944,4 +947,4 @@ class TwoDirections(Problem):
             y = y[perm]
             center_indices = center_indices[perm]
         
-        return x, y, center_indices
+        return x, y, center_indices, None

@@ -44,7 +44,7 @@ def main():
     )
 
     # Generate validation set with class-balanced sampling
-    x_val, y_val, center_indices = problem.generate_dataset(
+    x_val, y_val, center_indices, _ = problem.generate_dataset(
         model_config.n_val, 
         shuffle=True, 
         clean_mode=False
@@ -52,7 +52,7 @@ def main():
     validation_set = x_val.to(device), y_val.to(device), center_indices.to(device)
 
     # Train the model using single_runner
-    train_once(device, problem, validation_set, model_config, clean_mode=clean_mode)
+    _, _, _, _, _, _ = train_once(device, problem, validation_set, model_config, clean_mode=clean_mode)
 
 
 if __name__ == "__main__":

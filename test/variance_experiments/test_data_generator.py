@@ -71,7 +71,7 @@ def test_class_balancing_within_subsections():
 
 def test_generate_shapes_and_types():
     sd = SubDirections(true_d=6, sub_d=3, centers=6, num_class=2, generator=make_gen(1))
-    x, y, center_indices = sd.generate_dataset(n=12, shuffle=False)
+    x, y, center_indices, _ = sd.generate_dataset(n=12, shuffle=False)
     assert isinstance(x, torch.Tensor) and isinstance(y, torch.Tensor)
     assert isinstance(center_indices, torch.Tensor)
     assert x.dtype == torch.float32
@@ -93,7 +93,7 @@ def test_center_balanced_sampling_counts():
     
     # Test case 1: n divisible by perms - each center gets exactly n//perms samples
     n = 120  # 120 = 12 * 10, so each center gets exactly 10 samples
-    x, y, _ = sd.generate_dataset(n=n, shuffle=False)
+    x, y, _, _ = sd.generate_dataset(n=n, shuffle=False)
     
     # Since sampling is center-balanced, we can verify the structure
     # We know each center gets exactly n//perms = 10 samples
@@ -102,7 +102,7 @@ def test_center_balanced_sampling_counts():
     
     # Test case 2: n not divisible by perms - some centers get +1 sample
     n2 = 125  # 125 = 12*10 + 5, so 5 centers get 11 samples, 7 centers get 10 samples
-    x2, y2, _ = sd.generate_dataset(n=n2, shuffle=False)
+    x2, y2, _, _ = sd.generate_dataset(n=n2, shuffle=False)
     base2 = n2 // perms  # 10
     remainder2 = n2 % perms  # 5
     
@@ -120,11 +120,11 @@ def test_center_balanced_sampling_counts():
 def test_determinism_with_generator():
     gen = make_gen(42)
     sd1 = SubDirections(true_d=6, sub_d=3, centers=12, num_class=2, generator=gen)
-    x1, y1, _ = sd1.generate_dataset(n=24, shuffle=False)
+    x1, y1, _, _ = sd1.generate_dataset(n=24, shuffle=False)
 
     gen2 = make_gen(42)
     sd2 = SubDirections(true_d=6, sub_d=3, centers=12, num_class=2, generator=gen2)
-    x2, y2, _ = sd2.generate_dataset(n=24, shuffle=False)
+    x2, y2, _, _ = sd2.generate_dataset(n=24, shuffle=False)
 
     assert torch.allclose(x1, x2)
     assert torch.equal(y1, y2)
@@ -135,7 +135,7 @@ def test_sample_generation_logic():
     d, sub_d, perms = 8, 2, 8
     sd = SubDirections(true_d=d, sub_d=sub_d, centers=perms, num_class=2, generator=make_gen(0), sigma=1e-6)
     n = 80  # 80 = 8*10, so each center gets exactly 10 samples
-    x, y, _ = sd.generate_dataset(n=n, shuffle=False)
+    x, y, _, _ = sd.generate_dataset(n=n, shuffle=False)
 
     # With center-balanced sampling, we know the structure:
     # Each center gets exactly n//perms = 10 samples
@@ -178,11 +178,11 @@ def test_percent_correct_balance_across_centers():
     percent_correct = 0.7  # 30% incorrect = 27 incorrect samples
     
     sd = SubDirections(true_d=d, sub_d=sub_d, centers=perms, num_class=num_class, percent_correct=percent_correct, generator=make_gen(123))
-    x, y, _ = sd.generate_dataset(n=n, clean_mode=False, shuffle=False)
+    x, y, _, _ = sd.generate_dataset(n=n, clean_mode=False, shuffle=False)
     
     # Generate perfect labels for comparison
     sd_perfect = SubDirections(true_d=d, sub_d=sub_d, centers=perms, num_class=num_class, percent_correct=1.0, generator=make_gen(123))
-    x_perfect, y_perfect, _ = sd_perfect.generate_dataset(n=n, clean_mode=True, shuffle=False)
+    x_perfect, y_perfect, _, _ = sd_perfect.generate_dataset(n=n, clean_mode=True, shuffle=False)
     
     # Count how many labels are different
     different_labels = torch.sum(y != y_perfect).item()
@@ -212,8 +212,8 @@ def test_percent_correct_edge_cases():
     sd = SubDirections(true_d=d, sub_d=sub_d, centers=perms, num_class=num_class, percent_correct=1.0, generator=make_gen(99))
     
     # Test 100% correct with clean_mode=True
-    x1, y1, _ = sd.generate_dataset(n=20, clean_mode=True)
-    x2, y2, _ = sd.generate_dataset(n=20, clean_mode=True)
+    x1, y1, _, _ = sd.generate_dataset(n=20, clean_mode=True)
+    x2, y2, _, _ = sd.generate_dataset(n=20, clean_mode=True)
     # Should be deterministic with same generator state
     # (Note: generator state advances, so we can't directly compare)
     
@@ -221,8 +221,8 @@ def test_percent_correct_edge_cases():
     sd_zero = SubDirections(true_d=d, sub_d=sub_d, centers=perms, num_class=num_class, percent_correct=0.0, generator=make_gen(99))
     sd_perfect = SubDirections(true_d=d, sub_d=sub_d, centers=perms, num_class=num_class, percent_correct=1.0, generator=make_gen(99))
     
-    x_zero, y_zero, _ = sd_zero.generate_dataset(n=20, clean_mode=False, shuffle=False)
-    x_perf, y_perf, _ = sd_perfect.generate_dataset(n=20, clean_mode=True, shuffle=False)
+    x_zero, y_zero, _, _ = sd_zero.generate_dataset(n=20, clean_mode=False, shuffle=False)
+    x_perf, y_perf, _, _ = sd_perfect.generate_dataset(n=20, clean_mode=True, shuffle=False)
     
     # All labels should be different when percent_correct=0
     different_count = torch.sum(y_zero != y_perf).item()
@@ -271,10 +271,11 @@ def test_two_gaussians_basic():
     assert abs(actual_norm - expected_norm) < 1e-5, f"Expected norm {expected_norm}, got {actual_norm}"
     
     # Test dataset generation
-    x, y, center_indices = problem.generate_dataset(n=100)
+    x, y, center_indices, px = problem.generate_dataset(n=100)
     assert x.shape == (100, 15)
     assert y.shape == (100,)
     assert center_indices.shape == (100,)
+    assert px is None  # TwoGaussians returns None for px
     
     # Check class balance
     class_0_count = torch.sum(y == 0).item()
@@ -324,7 +325,7 @@ def test_two_gaussians_percent_correct_in_constructor():
     
     # percent_correct is now only a constructor parameter
     # generate_dataset should work without it
-    x, y, center_indices = problem.generate_dataset(n=100)
+    x, y, center_indices, _ = problem.generate_dataset(n=100)
     assert x.shape == (100, 5)
 
 
@@ -336,12 +337,12 @@ def test_two_gaussians_class_balance():
     problem = TwoGaussians(true_d=8, percent_correct=0.85)
     
     # Test even n
-    x, y, center_indices = problem.generate_dataset(n=200, shuffle=False)
+    x, y, center_indices, _ = problem.generate_dataset(n=200, shuffle=False)
     assert torch.sum(y == 0).item() == 100
     assert torch.sum(y == 1).item() == 100
     
     # Test odd n
-    x2, y2, center_indices2 = problem.generate_dataset(n=201, shuffle=False)
+    x2, y2, center_indices2, _ = problem.generate_dataset(n=201, shuffle=False)
     class_0_count = torch.sum(y2 == 0).item()
     class_1_count = torch.sum(y2 == 1).item()
     # One class should have 100, the other 101
@@ -357,12 +358,12 @@ def test_two_gaussians_noisy_dimensions():
     
     # Test with noisy_d = 0
     problem_no_noise = TwoGaussians(true_d=10, noisy_d=0, percent_correct=0.9)
-    x_no_noise, _, _ = problem_no_noise.generate_dataset(n=50)
+    x_no_noise, _, _, _ = problem_no_noise.generate_dataset(n=50)
     assert x_no_noise.shape == (50, 10)
     
     # Test with noisy_d > 0
     problem_with_noise = TwoGaussians(true_d=10, noisy_d=5, percent_correct=0.9)
-    x_with_noise, _, _ = problem_with_noise.generate_dataset(n=50)
+    x_with_noise, _, _, _ = problem_with_noise.generate_dataset(n=50)
     assert x_with_noise.shape == (50, 15)
 
 
@@ -375,11 +376,11 @@ def test_two_gaussians_shuffle():
     
     # Generate without shuffle
     torch.manual_seed(100)
-    x1, y1, center_indices1 = problem.generate_dataset(n=100, shuffle=False)
+    x1, y1, center_indices1, _ = problem.generate_dataset(n=100, shuffle=False)
     
     # Generate again with same seed
     torch.manual_seed(100)
-    x2, y2, center_indices2 = problem.generate_dataset(n=100, shuffle=False)
+    x2, y2, center_indices2, _ = problem.generate_dataset(n=100, shuffle=False)
     
     # Should be identical
     assert torch.allclose(x1, x2)
@@ -387,7 +388,7 @@ def test_two_gaussians_shuffle():
     
     # Generate with shuffle
     torch.manual_seed(100)
-    x3, y3, center_indices3 = problem.generate_dataset(n=100, shuffle=True)
+    x3, y3, center_indices3, _ = problem.generate_dataset(n=100, shuffle=True)
     
     # Should have same class distribution but different order
     assert torch.sum(y3 == 0).item() == torch.sum(y1 == 0).item()
@@ -409,7 +410,7 @@ def test_two_gaussians_overlap_statistical():
     
     # Generate large dataset
     n = 10000
-    x, y, center_indices = problem.generate_dataset(n=n, shuffle=False)
+    x, y, center_indices, _ = problem.generate_dataset(n=n, shuffle=False)
     
     # For each sample, check if it's closer to its own center or the other center
     # Center 0 is at +mu, Center 1 is at -mu
@@ -474,12 +475,12 @@ def test_two_directions_basic():
     assert problem.true_d == 10
     assert problem.noisy_d == 5
     
-    # Check mean vector is unit norm
-    actual_norm = torch.norm(problem.mu).item()
-    assert abs(actual_norm - 1.0) < 1e-5, f"Expected unit norm, got {actual_norm}"
+    # Check mean vector comes from hypercube vertices (each coordinate is -1 or +1)
+    assert torch.all((problem.mu == -1.0) | (problem.mu == 1.0)), "mu should be a hypercube vertex"
     
     # Test dataset generation
-    x, y, center_indices = problem.generate_dataset(n=100)
+    x, y, center_indices, px = problem.generate_dataset(n=100)
+    assert px is None  # TwoDirections returns None for px
     assert x.shape == (100, 15)
     assert y.shape == (100,)
     assert center_indices.shape == (100,)
@@ -506,7 +507,7 @@ def test_two_directions_deterministic():
     
     # Generate dataset without shuffling for deterministic testing
     n = 100
-    x, y, center_indices = problem.generate_dataset(n=n, shuffle=False)
+    x, y, center_indices, _ = problem.generate_dataset(n=n, shuffle=False)
     
     # Check shapes
     assert x.shape == (100, 5)
@@ -592,14 +593,14 @@ def test_two_directions_clean_mode_flag():
     problem = TwoDirections(true_d=5, percent_correct=0.8)
     
     # Test with clean_mode=False (should have label noise)
-    x1, y1, center_indices1 = problem.generate_dataset(n=100, clean_mode=False, shuffle=False)
+    x1, y1, center_indices1, _ = problem.generate_dataset(n=100, clean_mode=False, shuffle=False)
     num_flipped_with_noise = torch.sum(y1 != center_indices1).item()
     assert num_flipped_with_noise == 20, f"Expected 20 flipped labels, got {num_flipped_with_noise}"
     
     # Test with clean_mode=True (should have perfect labels)
     torch.manual_seed(42)  # Reset seed for same randomness
     problem2 = TwoDirections(true_d=5, percent_correct=0.8)
-    x2, y2, center_indices2 = problem2.generate_dataset(n=100, clean_mode=True, shuffle=False)
+    x2, y2, center_indices2, _ = problem2.generate_dataset(n=100, clean_mode=True, shuffle=False)
     num_flipped_without_noise = torch.sum(y2 != center_indices2).item()
     assert num_flipped_without_noise == 0, f"Expected 0 flipped labels, got {num_flipped_without_noise}"
     
@@ -618,7 +619,7 @@ def test_two_directions_noisy_dimensions():
     
     # Test with noisy_d > 0
     problem = TwoDirections(true_d=10, noisy_d=5, percent_correct=1.0, sigma=None, random_basis=False)
-    x, y, center_indices = problem.generate_dataset(n=50, shuffle=False)
+    x, y, center_indices, _ = problem.generate_dataset(n=50, shuffle=False)
     
     assert x.shape == (50, 15)
     
@@ -645,7 +646,7 @@ def test_two_directions_with_sigma():
     # Create problem with sigma
     problem = TwoDirections(true_d=5, noisy_d=0, percent_correct=1.0, sigma=0.1)
     
-    x, y, center_indices = problem.generate_dataset(n=100, shuffle=False)
+    x, y, center_indices, _ = problem.generate_dataset(n=100, shuffle=False)
     
     # With sigma, samples should not be exactly at mu or -mu
     # Check first sample from center 0
@@ -674,7 +675,7 @@ def test_two_directions_with_random_basis():
     identity = torch.eye(5, device=problem.device)
     assert torch.allclose(product, identity, atol=1e-5)
     
-    x, y, center_indices = problem.generate_dataset(n=100, shuffle=False)
+    x, y, center_indices, _ = problem.generate_dataset(n=100, shuffle=False)
     
     # After transformation, samples should not be at mu or -mu in original space
     # (they are rotated)
@@ -689,7 +690,7 @@ def test_two_directions_perfect_labels():
     
     problem = TwoDirections(true_d=8, percent_correct=1.0)
     
-    x, y, center_indices = problem.generate_dataset(n=200, shuffle=False)
+    x, y, center_indices, _ = problem.generate_dataset(n=200, shuffle=False)
     
     # All labels should match center indices (no flipping)
     assert torch.all(y == center_indices)
@@ -705,7 +706,7 @@ def test_two_directions_label_noise_balanced():
     problem = TwoDirections(true_d=5, percent_correct=0.85)  # 15% incorrect
     
     n = 100
-    x, y, center_indices = problem.generate_dataset(n=n, shuffle=False)
+    x, y, center_indices, _ = problem.generate_dataset(n=n, shuffle=False)
     
     num_incorrect = round(n * 0.15)  # 15
     
@@ -738,7 +739,7 @@ def test_two_gaussians_clean_mode_filtering():
     
     # Generate dataset with clean_mode=True
     n = 200
-    x, y, center_indices = problem.generate_dataset(n=n, clean_mode=True, shuffle=True)
+    x, y, center_indices, _ = problem.generate_dataset(n=n, clean_mode=True, shuffle=True)
     
     # Check that exactly n samples are returned
     assert x.shape[0] == n, f"Expected {n} samples, got {x.shape[0]}"
