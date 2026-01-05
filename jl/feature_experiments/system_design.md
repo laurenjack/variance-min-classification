@@ -128,7 +128,7 @@ Let us make sure to write unit tests in @test_feature_combinations.py that expli
 
 ### Final Layer
 
-This continues until the last layer, where there is just a single subsection with 4 possible consolidated features. At the final layer, the 4 features are randomly assigned to one of 4 classes. This allocation determines the class for all generated points.
+This continues until the last layer, where there is just a single subsection with 4 possible consolidated features. At the final layer, the 4 features are randomly assigned to one of 2 classes. This allocation determines the class for all generated points.
 
 ### Constructor Arguments
 
@@ -203,5 +203,15 @@ We introduce a new parameter `lr_scheduler` in the config with three options:
 - `"wsd"`: Warmup + stable + decay phases (5% warmup from 0 to lr, 80% stable at lr, 15% cosine annealing decay to 0)
 
 We deduce the number of training steps using ceiling division: `training_steps = ceil(n / batch_size) * epochs`. The scheduler steps once per batch (not per epoch). Percentages are rounded to the nearest integer training steps, requiring at least 20 training steps total. When using scheduling, the optimizer initializes with adjusted lr for proper warmup. The scheduler applies to all optimizer types (adam_w, sgd, reg_adam_w). If percentages don't sum exactly to training_steps, the final decay phase takes the remaining steps. Cosine annealing in decay phases starts from lr and decays to zero following a cosine curve.
+
+# Scaled Gradients
+
+We are going to introduce a new parameter @config.py is_scaled_gradients=False, when it's false nothing happens to the gradients. When it is True, we are going to replace all Linear layers with a new subclass of nn.Linear, ScaledLinear. ScaledLinear is defined in a new python module scaled_linear.py. This won't change the forward pass, but it will modify the way that the linear gradients are calculated for the weights in the Linear module. We don't need to worry about biases as we don't support them in this project. At the moment only binary classification is supported, so we should fail if is_scaled_gradients=True and num_class != 2. Also, should not work with reg_adam_w.
+
+Specifically, suppose g_out is the gradient w.r.t to the output of the ScaledLinear module (i.e., ∂L/∂(xW^T)), this is a tensor of shape [batch_size, d_out] We define the scale of the gradient for an individual point as s_per_n = g_out / dl_dz, where dl_dz is the gradient of the loss w.r.t the logit, which is of shape [batch_size]. We then have the scale defined as s = torch.sum(s_per_n ** 2, dim=0, keepdim=True) / torch.sum(torch.abs(s_per_n), dim=0, keepdim=True). 
+
+Let the standard gradient for the weight be g, then scaled_g = g / (s.t() + 1e-8) scaled_g is that which should be applied to the weight.
+
+Use a hook to store the backpropagated dl_dz at the logit layer. In the create_model method in models, you should use is_scaled_gradients to determine the kind of Linear model to build. We only need to support ScaledLinear for mlp, multi-linear and resnet.
 
 

@@ -25,7 +25,7 @@ def visualize_kaleidoscope_2d():
     )
     
     # Generate dataset
-    x, y, _ = problem.generate_dataset(n, shuffle=False)
+    x, y, _, _ = problem.generate_dataset(n, shuffle=False)
     
     # Convert to numpy for plotting
     x_np = x.cpu().numpy()

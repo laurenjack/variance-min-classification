@@ -39,7 +39,7 @@ def main(analyze_weights: bool = True):
     )
 
     # Generate validation set without label noise (clean_mode=True)
-    x_val, y_val, center_indices = problem.generate_dataset(
+    x_val, y_val, center_indices, _ = problem.generate_dataset(
         model_config.n_val, 
         clean_mode=True,
         shuffle=True
@@ -47,13 +47,13 @@ def main(analyze_weights: bool = True):
     validation_set = x_val.to(device), y_val.to(device), center_indices.to(device)
 
     # Train the model using single_runner (with label noise in training)
-    model, tracker, x_train, y_train, train_center_indices = train_once(
+    model, tracker, x_train, y_train, train_center_indices, _ = train_once(
         device, problem, validation_set, model_config, clean_mode=False
     )
     
     # Stop here if analyze_weights is False
     if not analyze_weights:
-        return model, tracker, x_train, y_train, train_center_indices
+        return model, tracker, x_train, y_train, train_center_indices, None
     
     # Print magnitude of final weight matrix
     final_weight = model.final_layer.weight.data  # Shape: (1, d)
@@ -123,7 +123,7 @@ def main(analyze_weights: bool = True):
         print(f"First 5 learned weights (true): {learned_weights_true[:5].cpu().numpy()}")
         print(f"First 5 learned weights (noisy):{learned_weights_noisy[:5].cpu().numpy()}")
     
-    return model, tracker, x_train, y_train, train_center_indices
+    return model, tracker, x_train, y_train, train_center_indices, None
     
 if __name__ == "__main__":
     main(analyze_weights=True)

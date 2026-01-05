@@ -31,10 +31,10 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
     print(f"Starting training with {model_desc}")
     
     # Generate training data
-    x_train, y_train, train_center_indices = problem.generate_dataset(c.n, shuffle=True, clean_mode=clean_mode)
+    x_train, y_train, train_center_indices, px = problem.generate_dataset(c.n, shuffle=True, clean_mode=clean_mode)
     
     # Create data loader for batch training
-    train_dataset = TensorDataset(x_train, y_train)
+    train_dataset = TensorDataset(x_train, y_train, px)
     train_loader = DataLoader(train_dataset, batch_size=c.batch_size, shuffle=True)
 
     # Calculate training steps for scheduler
@@ -85,7 +85,7 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
         # Training phase
         model.train()
         
-        for batch_x, batch_y in train_loader:
+        for batch_x, batch_y, batch_px in train_loader:
             # Calculate validation accuracy and loss for tracker
             model.eval()
             with torch.no_grad():
@@ -113,7 +113,7 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
             
             # Add logit regularization if c is specified
             if c.c is not None:
-                logit_reg = c.c * torch.mean(logits ** 2)
+                logit_reg = c.c * torch.sum(logits ** 2 / batch_px)
                 loss = loss + logit_reg
 
             train_loss = loss.item()
@@ -185,4 +185,6 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
     print("Generating weight evolution plots...")
     tracker.plot()
     
-    return model, tracker, x_train, y_train, train_center_indices
+    return model, tracker, x_train, y_train, train_center_indices, px
+
+

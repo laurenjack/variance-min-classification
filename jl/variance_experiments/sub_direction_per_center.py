@@ -60,7 +60,7 @@ def main() -> None:
     )
 
     # Generate validation set with requested label noise
-    x_val, y_val, center_indices = problem.generate_dataset(
+    x_val, y_val, center_indices, _ = problem.generate_dataset(
         model_config.n_val,
         clean_mode=True,
         shuffle=True,
@@ -68,7 +68,7 @@ def main() -> None:
 
     # Train the model using single_runner (kept consistent with sub_direction.py)
     validation_set = x_val.to(device), y_val.to(device), center_indices.to(device)
-    model, _, _, _, _ = train_once(device, problem, validation_set, model_config, clean_mode=False)
+    model, _, _, _, _, _ = train_once(device, problem, validation_set, model_config, clean_mode=False)
 
     # Evaluate model predictions against the true center class (exclude label noise)
     model.eval()

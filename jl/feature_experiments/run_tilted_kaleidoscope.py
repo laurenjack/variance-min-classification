@@ -36,7 +36,7 @@ def main():
         learnable_norm_parameters=True,
     )
 
-    x_val, y_val, val_center_indices = problem.generate_dataset(
+    x_val, y_val, val_center_indices, _ = problem.generate_dataset(
         model_config.n_val,
         shuffle=True,
     )
@@ -46,7 +46,7 @@ def main():
         val_center_indices,
     )
 
-    model, tracker, x_train, y_train, train_center_indices = train_once(
+    model, tracker, x_train, y_train, train_center_indices, _ = train_once(
         device,
         problem,
         validation_set,

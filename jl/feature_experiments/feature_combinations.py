@@ -87,7 +87,7 @@ def _build_favourites_consolidation_mapping(
 
 class FeatureCombinations(Problem):
     """
-    Hierarchical feature combination problem for 4-class classification.
+    Hierarchical feature combination problem for binary classification.
 
     The input space has d = 2 * 2^num_layers dimensions. At the atomic level
     (layer 0), the space is divided into num_subs = d // 4 subsections of 4
@@ -106,12 +106,12 @@ class FeatureCombinations(Problem):
     This does NOT guarantee linear separability at each layer.
 
     At the final layer (1 subsection with 4 possible features), each of the 4
-    features is randomly assigned to one of 4 classes.
+    features is randomly assigned to one of 2 classes.
 
     Attributes:
         num_layers: Number of layers in the hierarchy.
         d: Dimensionality of input space (2 * 2^num_layers).
-        num_class: Always 4 (4-class classification).
+        num_class: Always 2 (binary classification).
     """
 
     def __init__(
@@ -135,7 +135,7 @@ class FeatureCombinations(Problem):
 
         self.num_layers = num_layers
         self._d = 2 * (2 ** num_layers)
-        self.num_class = 4
+        self.num_class = 2
         self.random_basis = random_basis
         self.has_favourites = has_favourites
         self.device = device if device is not None else torch.device("cpu")
@@ -171,8 +171,8 @@ class FeatureCombinations(Problem):
             self.consolidation_mappings.append(layer_mappings)
             num_subsections = num_subsections_this_layer
 
-        # At the final layer, randomly assign each of the 4 features to one of 4 classes
-        assignment = torch.randint(0, 4, (4,), generator=self.generator, device=self.device, dtype=torch.int64)
+        # At the final layer, randomly assign each of the 4 features to one of 2 classes
+        assignment = torch.randint(0, 2, (4,), generator=self.generator, device=self.device, dtype=torch.int64)
         self.final_class_assignment = assignment
 
         # If random_basis, generate a random orthonormal rotation matrix
@@ -188,7 +188,7 @@ class FeatureCombinations(Problem):
         return self._d
 
     def num_classes(self) -> int:
-        """Returns the number of classes (always 4 for this problem)."""
+        """Returns the number of classes (always 2 for this problem)."""
         return self.num_class
 
     def _consolidate_features(
@@ -216,7 +216,7 @@ class FeatureCombinations(Problem):
         n: int,
         clean_mode: bool = False,
         shuffle: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor]]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor], torch.Tensor]:
         """
         Generate a dataset of size n.
 
@@ -226,13 +226,14 @@ class FeatureCombinations(Problem):
             shuffle: If True, randomly permute the resulting dataset.
 
         Returns:
-            (x, y, center_indices_list):
+            (x, y, center_indices_list, px):
               - x: shape (n, d) float32 tensor of features
-              - y: shape (n,) int64 tensor of class labels (0, 1, 2, or 3)
+              - y: shape (n,) int64 tensor of class labels (0 or 1)
               - center_indices_list: List of tensors, one per layer.
                   - center_indices_list[0]: shape (n, num_atomic_subsections) atomic features
                   - center_indices_list[l]: shape (n, num_subsections_at_layer_l)
                   - center_indices_list[-1]: shape (n,) final layer features
+              - px: shape (n,) float32 tensor of ones (uniform probability)
         """
         del clean_mode  # unused
 
@@ -302,11 +303,15 @@ class FeatureCombinations(Problem):
         if self.Q_rotation is not None:
             x = x @ self.Q_rotation.T
 
+        # Create px tensor of ones (uniform probability)
+        px = torch.ones(n, device=self.device, dtype=torch.float32)
+
         # Shuffle if requested
         if shuffle:
             perm = torch.randperm(n, generator=self.generator, device=self.device)
             x = x[perm]
             y = y[perm]
             center_indices_list = [indices[perm] for indices in center_indices_list]
+            px = px[perm]
 
-        return x, y, center_indices_list
+        return x, y, center_indices_list, px

@@ -38,7 +38,7 @@ class Problem(ABC):
         n: int,
         clean_mode: bool = False,
         shuffle: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
         """
         Generate a dataset of size n.
 
@@ -49,10 +49,11 @@ class Problem(ABC):
             shuffle: If True, randomly permute the resulting dataset.
 
         Returns:
-            (x, y, center_indices):
+            (x, y, center_indices, px):
               - x: shape (n, d) float32 tensor of features
               - y: shape (n,) int64 tensor of class labels
               - center_indices: shape (n,) int64 tensor of center index for each sample
+              - px: optional shape (n,) float32 tensor of per-sample probabilities
         """
         raise NotImplementedError
 

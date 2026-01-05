@@ -54,7 +54,7 @@ def main():
     # c3.num_layers = 3
     
     # Generate validation set with class-balanced sampling
-    x_val, y_val, center_indices = problem.generate_dataset(
+    x_val, y_val, center_indices, _ = problem.generate_dataset(
         c.n_val, 
         shuffle=True, 
         clean_mode=True

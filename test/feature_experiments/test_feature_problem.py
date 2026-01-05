@@ -22,9 +22,9 @@ def device():
 @pytest.fixture
 def problem(device):
     """Create a SingleFeatures problem instance."""
-    d = 20  # input dimensionality
+    true_d = 20  # input dimensionality
     f = 5   # number of features/classes
-    return SingleFeatures(d=d, f=f, device=device)
+    return SingleFeatures(true_d=true_d, f=f, device=device)
 
 
 @pytest.fixture
@@ -37,29 +37,29 @@ def kaleidoscope_problem(device):
 
 def test_initialization(device):
     """Test that SingleFeatures initializes correctly with valid parameters."""
-    d = 20
+    true_d = 20
     f = 5
-    problem = SingleFeatures(d=d, f=f, device=device)
+    problem = SingleFeatures(true_d=true_d, f=f, device=device)
     
-    assert problem.d == d
+    assert problem.d == true_d
     assert problem.f == f
     assert problem.num_class == f
-    assert problem.Q.shape == (f, d)
+    assert problem.Q.shape == (f, true_d)
 
 
 def test_initialization_invalid_params(device):
     """Test that SingleFeatures raises errors for invalid parameters."""
-    # Negative d should fail
-    with pytest.raises(ValueError, match="d must be positive"):
-        SingleFeatures(d=-5, f=3, device=device)
+    # Negative true_d should fail
+    with pytest.raises(ValueError, match="true_d must be positive"):
+        SingleFeatures(true_d=-5, f=3, device=device)
     
     # Negative f should fail
     with pytest.raises(ValueError, match="f must be positive"):
-        SingleFeatures(d=10, f=-3, device=device)
+        SingleFeatures(true_d=10, f=-3, device=device)
     
     # Zero f should fail
     with pytest.raises(ValueError, match="f must be positive"):
-        SingleFeatures(d=10, f=0, device=device)
+        SingleFeatures(true_d=10, f=0, device=device)
 
 
 def test_orthonormal_rows(problem, device):
@@ -85,20 +85,22 @@ def test_generate_dataset_shapes(problem):
     n = 100
     d = problem.d
     
-    x, y, center_indices = problem.generate_dataset(n, shuffle=False)
+    x, y, center_indices, px = problem.generate_dataset(n, shuffle=False)
     
     assert x.shape == (n, d), f"Expected x shape ({n}, {d}), got {x.shape}"
     assert y.shape == (n,), f"Expected y shape ({n},), got {y.shape}"
     assert center_indices.shape == (n,), f"Expected center_indices shape ({n},), got {center_indices.shape}"
+    assert px.shape == (n,), f"Expected px shape ({n},), got {px.shape}"
     assert x.dtype == torch.float32
     assert y.dtype == torch.int64
     assert center_indices.dtype == torch.int64
+    assert px.dtype == torch.float32
 
 
 def test_center_indices_equals_labels(problem):
     """Test that center_indices equals y for SingleFeatures."""
     n = 100
-    x, y, center_indices = problem.generate_dataset(n, shuffle=False)
+    x, y, center_indices, _ = problem.generate_dataset(n, shuffle=False)
     
     assert torch.all(center_indices == y), "center_indices should equal y!"
 
@@ -108,7 +110,7 @@ def test_class_balance_no_shuffle(problem):
     n = 100
     f = problem.f
     
-    x, y, center_indices = problem.generate_dataset(n, shuffle=False)
+    x, y, center_indices, _ = problem.generate_dataset(n, shuffle=False)
     
     # Check each class gets the expected number of samples
     for class_idx in range(f):
@@ -122,7 +124,7 @@ def test_class_balance_with_shuffle(problem):
     n = 100
     f = problem.f
     
-    x, y, center_indices = problem.generate_dataset(n, shuffle=True)
+    x, y, center_indices, _ = problem.generate_dataset(n, shuffle=True)
     
     # Check all classes are represented
     unique_classes = torch.unique(y).sort()[0]
@@ -141,7 +143,7 @@ def test_one_hot_feature_activation(problem):
     n = 100
     f = problem.f
     
-    x, y, center_indices = problem.generate_dataset(n, shuffle=False)
+    x, y, center_indices, _ = problem.generate_dataset(n, shuffle=False)
     
     # Project back to feature space
     x_projected = x @ problem.Q.T  # (n, f)
@@ -170,19 +172,19 @@ def test_one_hot_feature_activation(problem):
 
 def test_generator_reproducibility(device):
     """Test that using a generator produces reproducible results."""
-    d = 20
+    true_d = 20
     f = 5
     n = 50
     seed = 42
     
     # Generate with same seed twice
     gen1 = torch.Generator(device=device).manual_seed(seed)
-    problem1 = SingleFeatures(d=d, f=f, device=device, generator=gen1)
-    x1, y1, _ = problem1.generate_dataset(n, shuffle=True)
+    problem1 = SingleFeatures(true_d=true_d, f=f, device=device, generator=gen1)
+    x1, y1, _, _ = problem1.generate_dataset(n, shuffle=True)
     
     gen2 = torch.Generator(device=device).manual_seed(seed)
-    problem2 = SingleFeatures(d=d, f=f, device=device, generator=gen2)
-    x2, y2, _ = problem2.generate_dataset(n, shuffle=True)
+    problem2 = SingleFeatures(true_d=true_d, f=f, device=device, generator=gen2)
+    x2, y2, _, _ = problem2.generate_dataset(n, shuffle=True)
     
     # Q matrices should be identical
     assert torch.allclose(problem1.Q, problem2.Q), "Q matrices differ with same seed!"
@@ -198,7 +200,7 @@ def test_different_n_values(problem):
     
     # Test with n not divisible by f
     for n in [47, 53, 99, 101]:
-        x, y, center_indices = problem.generate_dataset(n, shuffle=False)
+        x, y, center_indices, _ = problem.generate_dataset(n, shuffle=False)
         
         assert x.shape[0] == n
         assert y.shape[0] == n
@@ -213,7 +215,7 @@ def test_edge_case_n_equals_f(problem):
     f = problem.f
     n = f
     
-    x, y, center_indices = problem.generate_dataset(n, shuffle=False)
+    x, y, center_indices, _ = problem.generate_dataset(n, shuffle=False)
     
     assert x.shape[0] == n
     assert len(torch.unique(y)) == f
@@ -229,7 +231,7 @@ def test_edge_case_small_n(problem):
     f = problem.f
     n = max(1, f - 2)  # n = f-2, but at least 1
     
-    x, y, center_indices = problem.generate_dataset(n, shuffle=False)
+    x, y, center_indices, _ = problem.generate_dataset(n, shuffle=False)
     
     assert x.shape[0] == n
     assert y.shape[0] == n
@@ -250,21 +252,21 @@ def test_invalid_n(problem):
 @pytest.fixture
 def problem_f_gt_d(device):
     """Create a SingleFeatures problem instance with f > d."""
-    d = 5   # input dimensionality
+    true_d = 5   # input dimensionality
     f = 10  # number of features/classes (f > d)
-    return SingleFeatures(d=d, f=f, device=device)
+    return SingleFeatures(true_d=true_d, f=f, is_orthogonal=False, device=device)
 
 
 def test_initialization_f_gt_d(device):
     """Test that SingleFeatures initializes correctly with f > d."""
-    d = 5
+    true_d = 5
     f = 10
-    problem = SingleFeatures(d=d, f=f, device=device)
+    problem = SingleFeatures(true_d=true_d, f=f, is_orthogonal=False, device=device)
     
-    assert problem.d == d
+    assert problem.d == true_d
     assert problem.f == f
     assert problem.num_class == f
-    assert problem.Q.shape == (f, d)
+    assert problem.Q.shape == (f, true_d)
 
 
 def test_untf_unit_norm_rows(problem_f_gt_d, device):
@@ -281,19 +283,17 @@ def test_untf_unit_norm_rows(problem_f_gt_d, device):
 
 
 def test_untf_tight_frame_property(problem_f_gt_d, device):
-    """Test that Q satisfies tight frame property Q.T @ Q = (f/d) * I_d."""
+    """Test that Q has unit norm rows when is_orthogonal=False (random features)."""
     Q = problem_f_gt_d.Q
     f = problem_f_gt_d.f
-    d = problem_f_gt_d.d
     
-    # Compute frame operator Q.T @ Q
-    frame_operator = Q.T @ Q  # (d, d)
+    # When is_orthogonal=False, we use random unit-norm features with rejection sampling
+    # Check each row has unit norm
+    row_norms = torch.norm(Q, dim=1)
+    expected_norm = torch.ones(f, device=device)
+    max_diff = torch.max(torch.abs(row_norms - expected_norm)).item()
     
-    # Should equal (f/d) * I_d
-    target = (f / d) * torch.eye(d, device=device)
-    max_diff = torch.max(torch.abs(frame_operator - target)).item()
-    
-    assert max_diff < 1e-4, f"Q does not satisfy tight frame property! Max diff: {max_diff}"
+    assert max_diff < 1e-5, f"Q rows are not unit norm! Max diff: {max_diff}"
 
 
 def test_generate_dataset_f_gt_d_shapes(problem_f_gt_d):
@@ -301,11 +301,12 @@ def test_generate_dataset_f_gt_d_shapes(problem_f_gt_d):
     n = 100
     d = problem_f_gt_d.d
     
-    x, y, center_indices = problem_f_gt_d.generate_dataset(n, shuffle=False)
+    x, y, center_indices, px = problem_f_gt_d.generate_dataset(n, shuffle=False)
     
     assert x.shape == (n, d), f"Expected x shape ({n}, {d}), got {x.shape}"
     assert y.shape == (n,), f"Expected y shape ({n},), got {y.shape}"
     assert center_indices.shape == (n,), f"Expected center_indices shape ({n},), got {center_indices.shape}"
+    assert px.shape == (n,), f"Expected px shape ({n},), got {px.shape}"
     assert x.dtype == torch.float32
     assert y.dtype == torch.int64
     assert center_indices.dtype == torch.int64
@@ -316,7 +317,7 @@ def test_class_balance_f_gt_d(problem_f_gt_d):
     n = 100
     f = problem_f_gt_d.f
     
-    x, y, center_indices = problem_f_gt_d.generate_dataset(n, shuffle=False)
+    x, y, center_indices, _ = problem_f_gt_d.generate_dataset(n, shuffle=False)
     
     # Check each class gets the expected number of samples
     for class_idx in range(f):
@@ -330,7 +331,7 @@ def test_one_hot_feature_activation_f_gt_d(problem_f_gt_d):
     n = 100
     f = problem_f_gt_d.f
     
-    x, y, center_indices = problem_f_gt_d.generate_dataset(n, shuffle=False)
+    x, y, center_indices, _ = problem_f_gt_d.generate_dataset(n, shuffle=False)
     
     # Project back to feature space
     x_projected = x @ problem_f_gt_d.Q.T  # (n, f)
@@ -349,19 +350,19 @@ def test_one_hot_feature_activation_f_gt_d(problem_f_gt_d):
 
 def test_generator_reproducibility_f_gt_d(device):
     """Test that using a generator produces reproducible results for f > d."""
-    d = 5
+    true_d = 5
     f = 10
     n = 50
     seed = 42
     
     # Generate with same seed twice
     gen1 = torch.Generator(device=device).manual_seed(seed)
-    problem1 = SingleFeatures(d=d, f=f, device=device, generator=gen1)
-    x1, y1, _ = problem1.generate_dataset(n, shuffle=True)
+    problem1 = SingleFeatures(true_d=true_d, f=f, is_orthogonal=False, device=device, generator=gen1)
+    x1, y1, _, _ = problem1.generate_dataset(n, shuffle=True)
     
     gen2 = torch.Generator(device=device).manual_seed(seed)
-    problem2 = SingleFeatures(d=d, f=f, device=device, generator=gen2)
-    x2, y2, _ = problem2.generate_dataset(n, shuffle=True)
+    problem2 = SingleFeatures(true_d=true_d, f=f, is_orthogonal=False, device=device, generator=gen2)
+    x2, y2, _, _ = problem2.generate_dataset(n, shuffle=True)
     
     # Q matrices should be identical
     assert torch.allclose(problem1.Q, problem2.Q, atol=1e-5), "Q matrices differ with same seed!"
@@ -373,11 +374,11 @@ def test_generator_reproducibility_f_gt_d(device):
 
 def test_edge_case_f_equals_d(device):
     """Test the boundary case where f == d."""
-    d = 10
+    true_d = 10
     f = 10
-    problem = SingleFeatures(d=d, f=f, device=device)
+    problem = SingleFeatures(true_d=true_d, f=f, device=device)
     
-    assert problem.Q.shape == (f, d)
+    assert problem.Q.shape == (f, true_d)
     # When f == d, should have orthonormal rows
     gram = problem.Q @ problem.Q.T
     identity = torch.eye(f, device=device)
@@ -404,22 +405,25 @@ def test_kaleidoscope_initialization(kaleidoscope_problem, device):
 
 def test_kaleidoscope_generate_dataset_shapes(kaleidoscope_problem):
     n = 64
-    x, y, centers = kaleidoscope_problem.generate_dataset(n, shuffle=False)
+    x, y, centers, px = kaleidoscope_problem.generate_dataset(n, shuffle=False)
 
     assert x.shape == (n, kaleidoscope_problem.d)
     assert x.dtype == torch.float32
     assert y.shape == (n,)
     assert y.dtype == torch.int64
-    assert centers is None
+    assert isinstance(centers, list)
+    assert px.shape == (n,)
+    assert torch.all(px == 1.0)
 
 
 def test_kaleidoscope_labels_within_range(kaleidoscope_problem):
     n = 100
-    x, y, centers = kaleidoscope_problem.generate_dataset(n, shuffle=True)
+    x, y, centers, px = kaleidoscope_problem.generate_dataset(n, shuffle=True)
 
     assert x.shape[0] == n
     assert torch.all((0 <= y) & (y < kaleidoscope_problem.num_classes()))
-    assert centers is None
+    assert isinstance(centers, list)
+    assert px.shape == (n,)
 
 
 def test_kaleidoscope_generator_reproducibility(device):
@@ -430,11 +434,11 @@ def test_kaleidoscope_generator_reproducibility(device):
 
     gen1 = torch.Generator(device=device).manual_seed(seed)
     problem1 = Kaleidoscope(d=d, centers=centers, device=device, generator=gen1)
-    x1, y1, _ = problem1.generate_dataset(n, shuffle=True)
+    x1, y1, _, _ = problem1.generate_dataset(n, shuffle=True)
 
     gen2 = torch.Generator(device=device).manual_seed(seed)
     problem2 = Kaleidoscope(d=d, centers=centers, device=device, generator=gen2)
-    x2, y2, _ = problem2.generate_dataset(n, shuffle=True)
+    x2, y2, _, _ = problem2.generate_dataset(n, shuffle=True)
 
     for Q1, Q2 in zip(problem1.Q_layers, problem2.Q_layers):
         assert torch.allclose(Q1, Q2, atol=1e-5)
