@@ -113,7 +113,11 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
             
             # Add logit regularization if c is specified
             if c.c is not None:
-                logit_reg = c.c * torch.sum(logits ** 2 / batch_px)
+                # p0 = torch.sigmoid(logits)
+                # p0 = p0.detach()
+                # p1 = 1 - p0
+                # logit_reg = c.c * torch.mean(logits ** 2 / (p0 + 1e-8) + logits ** 2 / (p1 + 1e-8))
+                logit_reg = c.c * torch.mean(logits ** 2)
                 loss = loss + logit_reg
 
             train_loss = loss.item()
