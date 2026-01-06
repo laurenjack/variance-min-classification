@@ -7,7 +7,7 @@ from jl.single_runner import train_once
 
 
 def main():
-    torch.manual_seed(594732)
+    torch.manual_seed(659)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     problem = FeatureCombinations(
@@ -23,9 +23,9 @@ def main():
         n_val=n,
         n=n,
         batch_size=n // 5,
-        lr=0.01,
-        epochs=1,
-        weight_decay=0.1,
+        lr=0.003,
+        epochs=30,
+        weight_decay=0.0,
         num_layers=2,
         num_class=problem.num_classes(),
         h=40,
@@ -33,8 +33,9 @@ def main():
         down_rank_dim=None,
         width_varyer=None,
         is_norm=True,
-        optimizer="reg_adam_w",
-        learnable_norm_parameters=False,
+        optimizer="adam_w",
+        c = 0.01,
+        learnable_norm_parameters=True,
         lr_scheduler=None,
     )
 
@@ -54,6 +55,8 @@ def main():
         validation_set,
         model_config,
     )
+
+    print(torch.sigmoid(model(x_val[:5])))
 
 
 if __name__ == "__main__":
