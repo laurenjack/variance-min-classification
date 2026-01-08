@@ -10,7 +10,7 @@ class Config:
                  num_class: int,
                  h: Optional[int] = None,
                  d_model: Optional[int] = None,
-                 weight_tracker: Optional[str] = None, down_rank_dim: Optional[int] = None,
+                 weight_tracker: Optional[str] = "accuracy", down_rank_dim: Optional[int] = None,
                  width_varyer: Optional[str] = None, is_norm: bool = True, c: Optional[float] = None,
                  k: Optional[int] = None, adam_eps: float = 1e-8, optimizer: str = "adam_w",
                  learnable_norm_parameters: bool = True, adam_betas: tuple = (0.9, 0.999),
@@ -58,8 +58,8 @@ class Config:
             raise ValueError("learnable_norm_parameters must be False when optimizer='reg_adam_w'")
         
         # Validate weight_tracker
-        if weight_tracker is not None and weight_tracker not in ['weight', 'full_step']:
-            raise ValueError(f"weight_tracker must be None, 'weight', or 'full_step', got '{weight_tracker}'")
+        if weight_tracker is not None and weight_tracker not in ['accuracy', 'weight', 'full_step']:
+            raise ValueError(f"weight_tracker must be None, 'accuracy', 'weight', or 'full_step', got '{weight_tracker}'")
         
         # Validate adam_betas
         if not isinstance(adam_betas, tuple) or len(adam_betas) != 2:

@@ -6,23 +6,20 @@ from jl.single_runner import train_once
 
 
 def main():
-    torch.manual_seed(38173)
+    # torch.manual_seed(38173)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Problem: SingleFeatures
     clean_mode = False
     problem = SingleFeatures(
-        true_d=2,
-        f=2, 
+        true_d=4,
+        f=8,
         device=device,
-        is_orthogonal=True,
-        # n_per_f=[4, 8],
-        # n_per_f=[4, 8, 16, 32, 4, 8, 16, 32]
-        # percent_correct_per_f=[0.6, 0.7, 0.8, 0.9, 0.6, 0.7, 0.8, 0.9],
-        percent_correct_per_f=[0.6, 0.8],
-        noisy_d=16,
+        is_orthogonal=False,
+        percent_correct_per_f=[0.8] * 8,
+        noisy_d=8,
     )
-    n = 256
+    n = 128
     # n = sum(problem.n_per_f)
 
     # Model configuration
@@ -31,19 +28,18 @@ def main():
         d=problem.d,
         n_val=n,
         n=n,
-        batch_size=n,
-        lr=0.1,
-        epochs=300,
-        weight_decay=0.0,
-        num_layers=1,
+        batch_size=n // 2,
+        lr=0.03,
+        epochs=100,
+        weight_decay=0.1,
+        num_layers=3,
         num_class=problem.num_classes(),
         h=20,
-        weight_tracker=None,
+        weight_tracker="accuracy",
         down_rank_dim=None,
         width_varyer=None,
         is_norm=True,
         optimizer="adam_w",
-        c=0.1,
         learnable_norm_parameters=False,
         lr_scheduler=None,
     )
@@ -61,8 +57,13 @@ def main():
         device, problem, validation_set, model_config, clean_mode=clean_mode
     )
 
-    print("ALL class: ", y_val[:10])
-    print("ALL probs:" , torch.sigmoid(model(x_val))[:10])
+    # print("TRAINING class: ", y_train[:10])
+    # print("ALL probs:" , torch.sigmoid(model(x_train))[:10])
+    
+    # print("VALIDATION class: ", y_val[:10])
+    # print("ALL probs:" , torch.sigmoid(model(x_val))[:10])
+
+
 
     # # Compute mean confidence for each center/feature
     # with torch.no_grad():

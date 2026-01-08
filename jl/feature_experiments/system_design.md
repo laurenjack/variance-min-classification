@@ -192,7 +192,7 @@ Notice config.py, this has the flag is_adam_w, this should be replaced with the 
 
 **Important constraint:** When `optimizer="reg_adam_w"`, the config must have `learnable_norm_parameters=False`. If `learnable_norm_parameters=True` with `optimizer="reg_adam_w"`, raise a ValueError in Config.__init__.
 
-For the "reg_adam_w" path, it is unsupported for the empirical_runner pathway (raise an exception). However if specified for single_runner then it should be used. It is of course important on this pathway to register the hooks on the model. We can support all models, because we need not touch the model code directly to register the hooks.
+For the "reg_adam_w" path, it is unsupported for the variance_experiment_runner pathway (raise an exception). However if specified for single_runner then it should be used. It is of course important on this pathway to register the hooks on the model. We can support all models, because we need not touch the model code directly to register the hooks.
 
 # Learning Rate Decay
 
@@ -213,5 +213,9 @@ Specifically, suppose g_out is the gradient w.r.t to the output of the ScaledLin
 Let the standard gradient for the weight be g, then scaled_g = g / (s.t() + 1e-8) scaled_g is that which should be applied to the weight.
 
 Use a hook to store the backpropagated dl_dz at the logit layer. In the create_model method in models, you should use is_scaled_gradients to determine the kind of Linear model to build. We only need to support ScaledLinear for mlp, multi-linear and resnet.
+
+# The Multi Model
+
+Notice the VectorizedModel clas
 
 
