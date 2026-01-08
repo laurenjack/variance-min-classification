@@ -2,7 +2,7 @@ from copy import deepcopy
 import torch
 
 from jl.config import Config
-from jl.empirical_runner import run_list_experiment
+from jl.variance_experiment_runner import run_list_experiment
 from jl.variance_experiments.data_generator import TwoGaussians
 
 

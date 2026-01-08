@@ -3,6 +3,7 @@ import torch
 import torch.nn.functional as F
 from typing import Optional
 
+from jl.model_tracker import TrackerInterface
 from jl.model_tracker import ResnetTracker
 from jl.model_tracker import MLPTracker
 from jl.model_tracker import MultiLinearTracker
@@ -169,6 +170,8 @@ class Resnet(nn.Module):
             self.final_rms_norm = None
 
     def get_tracker(self, c: Config):
+        if c.weight_tracker is None:
+            return TrackerInterface()
         return ResnetTracker(
             c=c,
             num_layers=len(self.blocks),
@@ -451,6 +454,8 @@ class MLP(nn.Module):
             self.final_rms_norm = None
     
     def get_tracker(self, c: Config):
+        if c.weight_tracker is None:
+            return TrackerInterface()
         return MLPTracker(
             c=c,
             num_layers=self.num_layers,
@@ -732,6 +737,8 @@ class MultiLinear(nn.Module):
             self.final_rms_norm = None
     
     def get_tracker(self, c: Config):
+        if c.weight_tracker is None:
+            return TrackerInterface()
         return MultiLinearTracker(
             c=c,
             num_layers=self.num_layers,
@@ -784,6 +791,8 @@ class KPolynomial(nn.Module):
         self.coefficients = nn.Parameter(torch.randn(self.input_dim, self.k) * 0.01)
     
     def get_tracker(self, c: Config):
+        if c.weight_tracker is None:
+            return TrackerInterface()
         return PolynomialTracker(c)
     
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):

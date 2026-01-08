@@ -5,16 +5,32 @@ import torch.nn as nn
 from jl.config import Config
 
 
-class BaseTracker:
+class TrackerInterface:
+    """Interface for all model trackers. Can be used directly as a no-op tracker."""
+    
+    def update(self, model, val_acc, train_acc=None, val_loss=None, train_loss=None):
+        """Record model state and metrics after a training step."""
+        pass
+    
+    def plot(self):
+        """Generate plots for tracked data."""
+        pass
+
+
+class BaseTracker(TrackerInterface):
     """Base class with shared functionality for all model trackers."""
     
     def __init__(self, c: Config):
-        self.weight_tracker = c.weight_tracker  # None, 'weight', or 'full_step'
+        self.weight_tracker = c.weight_tracker  # 'accuracy', 'weight', or 'full_step'
         self.weight_history = []
         self.val_acc_history = []
         self.train_acc_history = []
         self.val_loss_history = []
         self.train_loss_history = []
+    
+    def _tracks_weights(self):
+        """Return True if tracking weights or full steps."""
+        return self.weight_tracker in ('weight', 'full_step')
 
     def _get_tensor_data(self, param):
         """Get weight data or full step data depending on tracking mode."""
@@ -78,7 +94,7 @@ class BaseTracker:
 
     def _plot_weight_matrices(self, training_steps, titles):
         """Plot weight/step matrix evolution."""
-        if not (self.weight_tracker and self.weight_history and self.weight_history[0]):
+        if not (self._tracks_weights() and self.weight_history and self.weight_history[0]):
             return
         
         y_label = self._get_y_label()
@@ -111,7 +127,7 @@ class ResnetTracker(BaseTracker):
 
     def update(self, model, val_acc, train_acc=None, val_loss=None, train_loss=None):
         """Record weights/steps, norms, and metrics for a Resnet."""
-        if self.weight_tracker:
+        if self._tracks_weights():
             # Track linear layer weights/steps
             linear_data = []
             for block in model.blocks:
@@ -141,7 +157,7 @@ class ResnetTracker(BaseTracker):
         """Return titles for the linear layer weight/step matrices."""
         titles = []
         suffix = self._get_tracking_suffix()
-        if self.weight_tracker and self.weight_history and self.weight_history[0]:
+        if self._tracks_weights() and self.weight_history and self.weight_history[0]:
             for i in range(self.num_layers):
                 titles.append(f"Hidden Layer: Block {i + 1} Weight_in (d→h) {suffix}")
                 titles.append(f"Hidden Layer: Block {i + 1} Weight_out (h→d) {suffix}")
@@ -154,7 +170,7 @@ class ResnetTracker(BaseTracker):
         """Return titles for the layer norm weight/step vectors."""
         titles = []
         suffix = self._get_tracking_suffix()
-        if self.weight_tracker and self.norm_history and self.norm_history[0]:
+        if self._tracks_weights() and self.norm_history and self.norm_history[0]:
             num_norms = len(self.norm_history[0])
             if num_norms == 0:
                 return titles
@@ -171,7 +187,7 @@ class ResnetTracker(BaseTracker):
         self._plot_weight_matrices(training_steps, self._get_weight_titles())
         
         # Plot norm weights/steps if tracking is enabled and norms are learnable
-        if self.weight_tracker and self.learnable_norm_parameters and self.norm_history and self.norm_history[0]:
+        if self._tracks_weights() and self.learnable_norm_parameters and self.norm_history and self.norm_history[0]:
             norm_titles = self._get_norm_titles()
             norm_y_label = self._get_norm_y_label()
             for i in range(len(self.norm_history[0])):
@@ -205,7 +221,7 @@ class MLPTracker(BaseTracker):
 
     def update(self, model, val_acc, train_acc=None, val_loss=None, train_loss=None):
         """Record weights/steps, norms, and metrics for an MLP."""
-        if self.weight_tracker:
+        if self._tracks_weights():
             # Track linear layer weights/steps
             linear_data = []
             for i in range(len(model.hidden_linear1)):
@@ -237,7 +253,7 @@ class MLPTracker(BaseTracker):
         """Return titles for the linear layer weight/step matrices."""
         titles = []
         suffix = self._get_tracking_suffix()
-        if self.weight_tracker and self.weight_history and self.weight_history[0]:
+        if self._tracks_weights() and self.weight_history and self.weight_history[0]:
             for i in range(self.num_layers):
                 titles.append(f"Hidden Layer {i + 1} - Linear 1 {suffix}")
                 titles.append(f"Hidden Layer {i + 1} - Linear 2 {suffix}")
@@ -250,7 +266,7 @@ class MLPTracker(BaseTracker):
         """Return titles for the layer norm weight/step vectors."""
         titles = []
         suffix = self._get_tracking_suffix()
-        if self.weight_tracker and self.norm_history and self.norm_history[0]:
+        if self._tracks_weights() and self.norm_history and self.norm_history[0]:
             num_norms = len(self.norm_history[0])
             if num_norms == 0:
                 return titles
@@ -268,7 +284,7 @@ class MLPTracker(BaseTracker):
         self._plot_weight_matrices(training_steps, self._get_weight_titles())
         
         # Plot norm weights/steps if tracking is enabled and norms are learnable
-        if self.weight_tracker and self.learnable_norm_parameters and self.norm_history and self.norm_history[0]:
+        if self._tracks_weights() and self.learnable_norm_parameters and self.norm_history and self.norm_history[0]:
             norm_titles = self._get_norm_titles()
             norm_y_label = self._get_norm_y_label()
             for i in range(len(self.norm_history[0])):
@@ -304,7 +320,7 @@ class MultiLinearTracker(BaseTracker):
 
     def update(self, model, val_acc, train_acc=None, val_loss=None, train_loss=None):
         """Record weights/steps and metrics for a MultiLinear model."""
-        if self.weight_tracker:
+        if self._tracks_weights():
             # Track linear layer weights/steps only (skip RMSNorm layers which have constant weights)
             linear_data = []
             for layer in model.layers:
@@ -323,7 +339,7 @@ class MultiLinearTracker(BaseTracker):
         """Return titles for the linear layer weight/step matrices."""
         titles = []
         suffix = self._get_tracking_suffix()
-        if self.weight_tracker and self.weight_history and self.weight_history[0]:
+        if self._tracks_weights() and self.weight_history and self.weight_history[0]:
             for i in range(self.num_layers):
                 titles.append(f"Hidden Layer {i + 1} {suffix}")
             if self.has_down_rank_layer:
@@ -349,7 +365,7 @@ class PolynomialTracker(BaseTracker):
 
     def update(self, model, val_acc, train_acc=None, val_loss=None, train_loss=None):
         """Record coefficient weights/steps and metrics for a KPolynomial model."""
-        if self.weight_tracker:
+        if self._tracks_weights():
             coeff_data = self._get_tensor_data(model.coefficients)
             self.weight_history.append(coeff_data)
         else:
@@ -360,7 +376,7 @@ class PolynomialTracker(BaseTracker):
     def _get_weight_titles(self):
         """Return title for the polynomial coefficient matrix/step."""
         suffix = self._get_tracking_suffix()
-        if self.weight_tracker and self.weight_history and self.weight_history[0] is not None:
+        if self._tracks_weights() and self.weight_history and self.weight_history[0] is not None:
             d, k = self.weight_history[0].shape
             return [f"Polynomial Coefficients (d={d}, k={k}) {suffix}"]
         return []
@@ -378,7 +394,7 @@ class PolynomialTracker(BaseTracker):
         self._plot_loss(training_steps)
         
         # Plot coefficient matrix/step evolution (Frobenius norm)
-        if self.weight_tracker and self.weight_history:
+        if self._tracks_weights() and self.weight_history:
             valid_history = [w for w in self.weight_history if w is not None]
             if valid_history:
                 plt.figure()

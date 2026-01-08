@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -10,7 +12,7 @@ from jl.feature_experiments.optimizer import RegAdamW, register_reg_adam_w_hooks
 from jl.scheduler import create_lr_scheduler
 
 
-def train_once(device, problem, validation_set, c: Config, clean_mode: bool = False):
+def train_once(device, problem, validation_set, c: Config, clean_mode: bool = False, model_num: Optional[int] = None):
     """
     Create and train a model with weight tracking for testing purposes.
     
@@ -28,7 +30,7 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
         model_desc = f"{c.model_type.upper()}: d={c.d}, h={c.h}"
     else:
         model_desc = f"{c.model_type.upper()}: d={c.d}, d_model={c.d_model}"
-    print(f"Starting training with {model_desc}")
+    print(f"Starting training with {model_desc} model: {model_num}")
     
     # Generate training data
     x_train, y_train, train_center_indices, px = problem.generate_dataset(c.n, shuffle=True, clean_mode=clean_mode)
@@ -77,8 +79,6 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
     
     # Get validation set
     x_val, y_val, center_indices = validation_set
-    
-    print("Starting training...")
     
     # Training loop
     for epoch in range(c.epochs):

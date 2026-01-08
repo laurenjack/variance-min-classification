@@ -1,8 +1,101 @@
+from typing import Tuple, Optional
+
+import torch
+from torch import Tensor
 import matplotlib.pyplot as plt
 
-import jl.empirical_variance as ev
 from jl.config import Config
+from jl.multi_runner import (
+    VectorizedModel,
+    train_parallel,
+    compute_metrics,
+)
 
+
+def run_variance_experiments(
+    device: torch.device,
+    validation_set: Tuple[Tensor, Tensor, Tensor],
+    problem,
+    c: Config,
+    num_runs: int,
+    clean_mode: bool,
+    width_range: Optional[list[int]] = None,
+) -> tuple[VectorizedModel, list, list, list, list]:
+    """
+    Run num_widths * num_runs experiments in parallel with variance tracking.
+
+    This function wraps train_parallel() and adds variance tracking across runs,
+    grouped by center indices. Use this for variance experiments that need to
+    analyze how model predictions vary across different training runs.
+    
+    Args:
+        device: torch device
+        validation_set: Tuple of (x_val, y_val, center_indices) where center_indices
+                       is used for grouping variance calculations
+        problem: Dataset generator with generate_dataset method
+        c: Config object
+        num_runs: Number of runs per width
+        clean_mode: Whether to generate clean data
+        width_range: Optional list of widths. Required if c.width_varyer is set.
+                    If None and c.width_varyer is None, uses [1] internally.
+    
+    Returns:
+        Tuple of (VectorizedModel, mean_vars, mean_train_losses, mean_val_accuracies, mean_val_losses)
+    """
+    x_val, y_val, center_indices_val = validation_set
+    
+    # Train models using train_parallel (without printing metrics - we'll compute our own)
+    vectorized_model, training_sets = train_parallel(
+        device=device,
+        problem=problem,
+        c=c,
+        num_runs=num_runs,
+        clean_mode=clean_mode,
+        validation_set=None,  # Don't print basic metrics, we'll compute with variance
+        width_range=width_range,
+    )
+    
+    # Use [1] internally when no width variation (same as train_parallel)
+    if width_range is None:
+        width_range = [1]
+    
+    num_widths = vectorized_model.num_widths
+    
+    # Compute metrics (logits are always returned)
+    train_loss_per_w, val_acc_per_w, val_loss_per_w, val_logits_all = compute_metrics(
+        vectorized_model, training_sets, x_val, y_val, c
+    )
+
+    # Variance of validation logits across runs, grouped by center
+    unique_centers = torch.unique(center_indices_val)
+    num_centers = len(unique_centers)
+    
+    center_variances = []
+    for center_idx in range(num_centers):
+        center_mask = (center_indices_val == center_idx)
+        if c.num_class == 2:
+            center_logits = val_logits_all[:, :, center_mask]
+            center_var = center_logits.var(dim=1, unbiased=False)
+            center_variances.append(center_var.mean(dim=1))
+        else:
+            center_logits = val_logits_all[:, :, center_mask, :]
+            center_var = center_logits.var(dim=1, unbiased=False)
+            center_variances.append(center_var.mean(dim=(1, 2)))
+    
+    mean_var_per_w = torch.stack(center_variances, dim=1).mean(dim=1)
+
+    mean_vars = [v.item() for v in mean_var_per_w]
+    mean_train_losses = [v.item() for v in train_loss_per_w]
+    mean_val_accuracies = [v.item() for v in val_acc_per_w]
+    mean_val_losses = [v.item() for v in val_loss_per_w]
+
+    if c.width_varyer is None:
+        print(f"mean variance = {mean_vars[0]:.4e} | mean train loss = {mean_train_losses[0]:.4f} | mean val acc = {mean_val_accuracies[0]:.4f} | mean val loss = {mean_val_losses[0]:.4f}")
+    else:
+        for i, w in enumerate(width_range):
+            print(f"width = {w:2d} | mean variance = {mean_vars[i]:.4e} | mean train loss = {mean_train_losses[i]:.4f} | mean val acc = {mean_val_accuracies[i]:.4f} | mean val loss = {mean_val_losses[i]:.4f}")
+
+    return vectorized_model, mean_vars, mean_train_losses, mean_val_accuracies, mean_val_losses
 
 
 def run_list_experiment(
@@ -20,14 +113,14 @@ def run_list_experiment(
     results = []
     for i, c in enumerate(configs):
         print(f"Running experiment {i + 1} with {c.model_type}")
-        vars_, losses, val_accuracies, val_losses = ev.run_experiment_parallel(
+        _, vars_, losses, val_accuracies, val_losses = run_variance_experiments(
             device,
             validation_set,
             problem,
             c,
-            width_range,
             num_runs,
             clean_mode,
+            width_range=width_range,
         )
         results.append((vars_, losses, val_accuracies, val_losses))
         print()
