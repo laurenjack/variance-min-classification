@@ -168,6 +168,9 @@ class Resnet(nn.Module):
             self.final_rms_norm = RMSNorm(final_norm_dim, learnable_norm_parameters=c.learnable_norm_parameters)
         else:
             self.final_rms_norm = None
+        
+        # Optional dropout applied to block outputs before adding to residual stream
+        self.dropout = nn.Dropout(c.dropout_prob) if c.dropout_prob is not None else None
 
     def get_tracker(self, c: Config):
         if c.weight_tracker is None:
@@ -195,6 +198,9 @@ class Resnet(nn.Module):
 
         for block in self.blocks:
             block_out = block(current, width_mask=width_mask)
+            # Apply dropout to block output before adding to residual stream
+            if self.dropout is not None:
+                block_out = self.dropout(block_out)
             current = current + block_out
         
         # Apply optional down-ranking layer
@@ -251,6 +257,9 @@ class ResnetDownRankDim(Resnet):
 
         for block in self.blocks:
             block_out = block(current)  # No width_mask applied to blocks
+            # Apply dropout to block output before adding to residual stream
+            if self.dropout is not None:
+                block_out = self.dropout(block_out)
             current = current + block_out
         
         # Apply down-ranking layer (must exist in this model)
@@ -352,6 +361,9 @@ class ResnetDModel(Resnet):
         else:
             self.final_rms_norm = None
         
+        # Optional dropout applied to block outputs before adding to residual stream
+        self.dropout = nn.Dropout(c.dropout_prob) if c.dropout_prob is not None else None
+        
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):
         """
         Forward pass with width_mask applied to d_model dimensions.
@@ -369,6 +381,9 @@ class ResnetDModel(Resnet):
 
         for block in self.blocks:
             block_out = block(current, d_model_mask=width_mask)
+            # Apply dropout to block output before adding to residual stream
+            if self.dropout is not None:
+                block_out = self.dropout(block_out)
             current = current + block_out
         
         # Apply optional down-ranking layer
@@ -452,6 +467,9 @@ class MLP(nn.Module):
             self.final_rms_norm = RMSNorm(final_norm_dim, learnable_norm_parameters=c.learnable_norm_parameters)
         else:
             self.final_rms_norm = None
+        
+        # Optional dropout applied after hidden_linear2 outputs
+        self.dropout = nn.Dropout(c.dropout_prob) if c.dropout_prob is not None else None
     
     def get_tracker(self, c: Config):
         if c.weight_tracker is None:
@@ -487,6 +505,10 @@ class MLP(nn.Module):
             
             # Apply second linear
             current = self.hidden_linear2[i](current)
+            
+            # Apply dropout after hidden_linear2
+            if self.dropout is not None:
+                current = self.dropout(current)
         
         # Apply optional down-ranking layer before final norm
         if self.down_rank_layer is not None:
@@ -521,23 +543,24 @@ class MLPDownRankDim(nn.Module):
         # Determine output dimension: 1 for binary, num_class for multi-class
         output_dim = 1 if c.num_class == 2 else c.num_class
         
-        # Build MLP layers
-        layers = []
+        # Build MLP layers manually to support dropout
+        self.hidden_linears = nn.ModuleList()
+        self.hidden_norms = nn.ModuleList()
         
         # Input layer
-        layers.append(nn.Linear(self.input_dim, self.h, bias=False))
+        self.hidden_linears.append(nn.Linear(self.input_dim, self.h, bias=False))
         if c.is_norm:
-            layers.append(RMSNorm(self.h, learnable_norm_parameters=c.learnable_norm_parameters))
-        layers.append(nn.ReLU())
+            self.hidden_norms.append(RMSNorm(self.h, learnable_norm_parameters=c.learnable_norm_parameters))
+        else:
+            self.hidden_norms.append(None)
         
         # Hidden layers
         for _ in range(self.num_layers - 1):
-            layers.append(nn.Linear(self.h, self.h, bias=False))
+            self.hidden_linears.append(nn.Linear(self.h, self.h, bias=False))
             if c.is_norm:
-                layers.append(RMSNorm(self.h, learnable_norm_parameters=c.learnable_norm_parameters))
-            layers.append(nn.ReLU())
-        
-        self.layers = nn.Sequential(*layers)
+                self.hidden_norms.append(RMSNorm(self.h, learnable_norm_parameters=c.learnable_norm_parameters))
+            else:
+                self.hidden_norms.append(None)
         
         # Down-ranking layer (must exist in this model)
         self.down_rank_layer = nn.Linear(self.h, c.down_rank_dim, bias=False)
@@ -548,6 +571,9 @@ class MLPDownRankDim(nn.Module):
             self.final_rms_norm = MaskedRMSNorm(c.down_rank_dim, learnable_norm_parameters=c.learnable_norm_parameters)
         else:
             self.final_rms_norm = None
+        
+        # Optional dropout applied after each hidden layer
+        self.dropout = nn.Dropout(c.dropout_prob) if c.dropout_prob is not None else None
     
     def get_tracker(self, track_weights):
         raise NotImplementedError("Weight tracking is not supported for MLPDownRankDim. Use base MLP instead.")
@@ -561,7 +587,16 @@ class MLPDownRankDim(nn.Module):
             width_mask: Optional tensor of shape (down_rank_dim,) containing 0.0 or 1.0 values.
                        Applied to the down-ranking layer output.
         """
-        current = self.layers(x)
+        current = x
+        
+        # Process hidden layers: Linear → Norm → ReLU → (Dropout)
+        for linear, norm in zip(self.hidden_linears, self.hidden_norms):
+            current = linear(current)
+            if self.is_norm and norm is not None:
+                current = norm(current)
+            current = F.relu(current)
+            if self.dropout is not None:
+                current = self.dropout(current)
         
         # Apply down-ranking layer
         current = self.down_rank_layer(current)
@@ -630,6 +665,9 @@ class MLPH(nn.Module):
             self.final_rms_norm = MaskedRMSNorm(final_norm_dim, learnable_norm_parameters=c.learnable_norm_parameters)
         else:
             self.final_rms_norm = None
+        
+        # Optional dropout applied after each hidden layer
+        self.dropout = nn.Dropout(c.dropout_prob) if c.dropout_prob is not None else None
     
     def get_tracker(self, track_weights):
         raise NotImplementedError("Weight tracking is not supported for MLPH. Use base MLP instead.")
@@ -650,6 +688,8 @@ class MLPH(nn.Module):
         if self.is_norm:
             current = self.input_norm(current, mask=width_mask)
         current = F.relu(current)
+        if self.dropout is not None:
+            current = self.dropout(current)
         
         # Hidden layers with masking
         for hidden_layer, hidden_norm in zip(self.hidden_layers, self.hidden_norms):
@@ -659,6 +699,8 @@ class MLPH(nn.Module):
             if self.is_norm:
                 current = hidden_norm(current, mask=width_mask)
             current = F.relu(current)
+            if self.dropout is not None:
+                current = self.dropout(current)
         
         # Apply optional down-ranking layer
         if self.down_rank_layer is not None:
@@ -698,23 +740,26 @@ class MultiLinear(nn.Module):
         # Determine output dimension: 1 for binary, num_class for multi-class
         output_dim = 1 if c.num_class == 2 else c.num_class
         
-        # Build MultiLinear layers (no activations)
+        # Build MultiLinear layers manually to support dropout (no activations)
         # Using pre-norm architecture: Norm → Linear → Norm → Linear → ...
-        layers = []
+        self.hidden_norms = nn.ModuleList()
+        self.hidden_linears = nn.ModuleList()
         
-        # Input layer (only add if num_layers > 0, otherwise just identity)
+        # Input layer (only add if num_layers > 0)
         if self.num_layers > 0:
             if c.is_norm:
-                layers.append(RMSNorm(self.input_dim, learnable_norm_parameters=c.learnable_norm_parameters))
-            layers.append(nn.Linear(self.input_dim, self.h, bias=False))
+                self.hidden_norms.append(RMSNorm(self.input_dim, learnable_norm_parameters=c.learnable_norm_parameters))
+            else:
+                self.hidden_norms.append(None)
+            self.hidden_linears.append(nn.Linear(self.input_dim, self.h, bias=False))
             
             # Hidden layers (no ReLU)
             for _ in range(self.num_layers - 1):
                 if c.is_norm:
-                    layers.append(RMSNorm(self.h, learnable_norm_parameters=c.learnable_norm_parameters))
-                layers.append(nn.Linear(self.h, self.h, bias=False))
-        
-        self.layers = nn.Sequential(*layers) if layers else nn.Identity()
+                    self.hidden_norms.append(RMSNorm(self.h, learnable_norm_parameters=c.learnable_norm_parameters))
+                else:
+                    self.hidden_norms.append(None)
+                self.hidden_linears.append(nn.Linear(self.h, self.h, bias=False))
         
         # Optionally add the down-ranking layer
         if c.down_rank_dim is not None:
@@ -735,6 +780,9 @@ class MultiLinear(nn.Module):
             self.final_rms_norm = RMSNorm(final_norm_dim, learnable_norm_parameters=c.learnable_norm_parameters)
         else:
             self.final_rms_norm = None
+        
+        # Optional dropout applied after each hidden layer
+        self.dropout = nn.Dropout(c.dropout_prob) if c.dropout_prob is not None else None
     
     def get_tracker(self, c: Config):
         if c.weight_tracker is None:
@@ -754,7 +802,15 @@ class MultiLinear(nn.Module):
             x: Input tensor
             width_mask: Optional mask tensor (ignored in base MultiLinear)
         """
-        current = self.layers(x)
+        current = x
+        
+        # Process hidden layers: Norm → Linear → (Dropout)
+        for norm, linear in zip(self.hidden_norms, self.hidden_linears):
+            if self.is_norm and norm is not None:
+                current = norm(current)
+            current = linear(current)
+            if self.dropout is not None:
+                current = self.dropout(current)
         
         # Apply optional down-ranking layer
         if self.down_rank_layer is not None:
@@ -783,6 +839,11 @@ class KPolynomial(nn.Module):
             c: Configuration object containing model parameters
         """
         super(KPolynomial, self).__init__()
+        
+        # KPolynomial does not support dropout
+        if c.dropout_prob is not None:
+            raise ValueError("dropout_prob cannot be set for 'k-polynomial' model_type")
+        
         self.input_dim = c.d
         self.k = c.k
         

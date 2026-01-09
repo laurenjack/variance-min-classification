@@ -47,6 +47,7 @@ def main():
         optimizer="adam_w",
         learnable_norm_parameters=False,
         lr_scheduler=None,
+        dropout_prob=0.2,
     )
 
     # Generate a single validation set for comparison across all models

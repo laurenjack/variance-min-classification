@@ -14,7 +14,8 @@ class Config:
                  width_varyer: Optional[str] = None, is_norm: bool = True, c: Optional[float] = None,
                  k: Optional[int] = None, adam_eps: float = 1e-8, optimizer: str = "adam_w",
                  learnable_norm_parameters: bool = True, adam_betas: tuple = (0.9, 0.999),
-                 sgd_momentum: float = 0.0, lr_scheduler: Optional[str] = None):
+                 sgd_momentum: float = 0.0, lr_scheduler: Optional[str] = None,
+                dropout_prob: Optional[float] = None):
         # Validate model_type
         if model_type not in ['resnet', 'mlp', 'k-polynomial', 'multi-linear']:
             raise ValueError(f"model_type must be either 'resnet', 'mlp', 'k-polynomial', or 'multi-linear', got '{model_type}'")
@@ -84,6 +85,13 @@ class Config:
             if training_steps < 20:
                 raise ValueError(f"Learning rate scheduler requires at least 20 training steps, got {training_steps} (calculated as ceil({n}/{batch_size}) * {epochs})")
 
+        # Validate dropout_prob
+        if dropout_prob is not None:
+            if not isinstance(dropout_prob, (int, float)) or not 0.0 <= dropout_prob < 1.0:
+                raise ValueError(f"dropout_prob must be in [0, 1), got {dropout_prob}")
+            if model_type == 'k-polynomial':
+                raise ValueError("dropout_prob cannot be set for 'k-polynomial' model_type")
+
         self.model_type = model_type
         self.d = d
         self.n_val = n_val
@@ -108,3 +116,4 @@ class Config:
         self.adam_betas = adam_betas
         self.sgd_momentum = sgd_momentum
         self.lr_scheduler = lr_scheduler
+        self.dropout_prob = dropout_prob
