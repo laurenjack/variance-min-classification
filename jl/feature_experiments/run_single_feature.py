@@ -42,6 +42,7 @@ def main():
         optimizer="adam_w",
         learnable_norm_parameters=False,
         lr_scheduler=None,
+        dropout_prob=0.2,
     )
 
     # Generate validation set with class-balanced sampling

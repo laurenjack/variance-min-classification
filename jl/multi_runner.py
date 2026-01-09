@@ -40,9 +40,10 @@ class VectorizedModel:
         self.num_class = num_class
         
         # Create vectorized forward function
+        # randomness='different' ensures independent dropout masks per model if dropout is used
         def _forward(params, buffers, x, width_mask):
             return functional_call(template, (params, buffers), (x, width_mask))
-        self._vectorized_forward = vmap(_forward, in_dims=(0, 0, 0, 0))
+        self._vectorized_forward = vmap(_forward, in_dims=(0, 0, 0, 0), randomness='different')
     
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -231,7 +232,8 @@ def train_parallel(
         
         return loss
     loss_and_grad = grad_and_value(all_loss)
-    vectorized_models = vmap(loss_and_grad, in_dims=(0, 0, 0, 0, 0))
+    # randomness='different' ensures independent dropout masks per model if dropout is used
+    vectorized_models = vmap(loss_and_grad, in_dims=(0, 0, 0, 0, 0), randomness='different')
 
     # Training
     x_full_list, y_full_list = zip(*training_sets)
