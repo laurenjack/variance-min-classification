@@ -214,8 +214,23 @@ Let the standard gradient for the weight be g, then scaled_g = g / (s.t() + 1e-8
 
 Use a hook to store the backpropagated dl_dz at the logit layer. In the create_model method in models, you should use is_scaled_gradients to determine the kind of Linear model to build. We only need to support ScaledLinear for mlp, multi-linear and resnet.
 
-# The Multi Model
+# Hashed Dropout
 
-Notice the VectorizedModel clas
+Let us introduce a new flag to @config.py called is_hashed_dropout=False. It does nothing if it is False. If it is True we implement a new kind of dropout in @dropout.py. This behavior is only supported for the Resnet family of models in models.py (not parallel_models.py variants), and should fail if dropout_probability is not set. Additionally, is_hashed_dropout=True is incompatible with width_varyer; config.py should validate this. It should also fail if is_hashed_dropout=True and model_type is not 'resnet'.
 
+For this we will need to support adding an index to our dataset. When creating training sets in single_runner, we need to have an index for each datapoint (created as torch.arange(n)), we need that index to be passed to the forward (and it must correspond to the same point always). We need the point index for the sake of calculating the hashed dropout. Likewise, for the outputs of each block, we also need an index. The output of a residual block in our setup has shape [batch_size, d_model], the model dimension is of interest to us. Suppose our resnet has num_layers blocks (the parameter specified in config), and a d_model model dimension. Then the "node index" of a block output is given by its layer index l and model dim index j: l*d_model + j, So we have:
+0 <= node_index < num_layers * d_model. So every point has a unique index and every block output node has a unique node index.
 
+The Resnet model (and all parallel_models variants) should have a list of dropout modules, one per layer (not a single shared dropout). This allows each layer's dropout to know its layer index for computing node indices. Each HashedDropout is constructed with layer_index and d_model parameters.
+
+We will change the Dropout class and all its subclasses to have the following forward interface:
+
+```
+    def forward(self, x: torch.Tensor, x_indices: Optional[torch.Tensor] = None) -> torch.Tensor:
+```
+
+We will also introduce a new class HashedDropout(Dropout). In its forward method it will use a hash function taking the point index and the node index as inputs to calculate a number between 0 and 1. We use a fast vectorized prime-based hash: `hash = ((point_index * p1 + node_index * p2) % m) / m` where p1, p2 are large primes and m = 2^31 - 1. Essentially each point + node pair always needs to produce the same number (hence the hash function); once we have that number we can apply dropout as per usual. The intention is that no matter how many epochs, each node is trained on the same set of points, and each node likely has a different set of points.
+
+HashedDropout behavior is identical in training and evaluation modes - the same deterministic masking is applied based on (point_index, node_index) pairs. When x_indices is None, all neurons are used (no dropout applied). Validation sets do not pass indices, so dropout is not applied during validation.
+
+The Resnet.forward() signature changes to accept both x_indices and width_mask: `forward(self, x, x_indices=None, width_mask=None)`. 
