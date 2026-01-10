@@ -6,7 +6,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
 
-from jl.models import create_model
+from jl.model_creator import create_model
 from jl.config import Config
 from jl.feature_experiments.optimizer import RegAdamW, register_reg_adam_w_hooks
 from jl.scheduler import create_lr_scheduler
@@ -34,9 +34,15 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
     
     # Generate training data
     x_train, y_train, train_center_indices, px = problem.generate_dataset(c.n, shuffle=True, clean_mode=clean_mode)
+       
     
+    if c.is_hashed_dropout:
+        # Create training indices for hashed dropout (only when is_hashed_dropout=True)
+        train_indices = torch.arange(c.n, device=device)
+        train_dataset = TensorDataset(x_train, y_train, px, train_indices)
+    else:
+        train_dataset = TensorDataset(x_train, y_train, px)
     # Create data loader for batch training
-    train_dataset = TensorDataset(x_train, y_train, px)
     train_loader = DataLoader(train_dataset, batch_size=c.batch_size, shuffle=True)
 
     # Calculate training steps for scheduler
@@ -77,7 +83,7 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
     # Create learning rate scheduler if enabled
     scheduler = create_lr_scheduler(optimizer, training_steps, c.lr, c.lr_scheduler)
     
-    # Get validation set
+    # Get validation set (no indices needed - dropout not applied during validation)
     x_val, y_val, center_indices = validation_set
     
     # Training loop
@@ -85,7 +91,14 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
         # Training phase
         model.train()
         
-        for batch_x, batch_y, batch_px in train_loader:
+        for batch_data in train_loader:
+            # Unpack batch data (hashed dropout has indices, others don't)
+            if c.is_hashed_dropout:
+                batch_x, batch_y, batch_px, batch_indices = batch_data
+            else:
+                batch_x, batch_y, batch_px = batch_data
+                batch_indices = None
+            
             # Calculate validation accuracy and loss for tracker
             model.eval()
             with torch.no_grad():
@@ -104,7 +117,10 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
             
             # Training step
             optimizer.zero_grad()
-            logits = model(batch_x)
+            if c.is_hashed_dropout:
+                logits = model(batch_x, x_indices=batch_indices)
+            else:
+                logits = model(batch_x)
             if c.num_class == 2:
                 loss = criterion(logits, batch_y.float())
             else:
@@ -113,11 +129,12 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
             
             # Add logit regularization if c is specified
             if c.c is not None:
-                # p0 = torch.sigmoid(logits)
-                # p0 = p0.detach()
-                # p1 = 1 - p0
-                # logit_reg = c.c * torch.mean(logits ** 2 / (p0 + 1e-8) + logits ** 2 / (p1 + 1e-8))
-                logit_reg = c.c * torch.mean(logits ** 2)
+                if c.num_class == 2:
+                    logit_reg = c.c * torch.mean(logits ** 2)
+                else:
+                    # Use centered L2 for multi-class (softmax is shift-invariant)
+                    centered_logits = logits - logits.mean(dim=1, keepdim=True)
+                    logit_reg = c.c * torch.mean(centered_logits ** 2)
                 loss = loss + logit_reg
 
             train_loss = loss.item()
@@ -161,7 +178,7 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
     # Final evaluation
     model.eval()
     with torch.no_grad():
-        # Calculate final validation accuracy
+        # Calculate final validation accuracy (no dropout - x_indices not passed)
         val_logits = model(x_val)
         if c.num_class == 2:
             val_loss = criterion(val_logits, y_val.float()).item()
@@ -173,7 +190,10 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
             val_acc = (val_preds == y_val.long()).float().mean().item()
         
         # Calculate final training accuracy and loss
-        train_logits = model(x_train)
+        if c.is_hashed_dropout:
+            train_logits = model(x_train, x_indices=train_indices)
+        else:
+            train_logits = model(x_train)
         if c.num_class == 2:
             train_loss = criterion(train_logits, y_train.float()).item()
             train_preds = (torch.sigmoid(train_logits) >= 0.5).float()
@@ -183,11 +203,12 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
             train_preds = train_logits.argmax(dim=1)
             train_acc = (train_preds == y_train.long()).float().mean().item()
     
-    print(f"Final: Validation Loss = {val_loss:.6f}, Validation Accuracy = {val_acc:.4f}, Training Loss = {train_loss:.6f}, Training Accuracy = {train_acc:.4f}")
-    
-    # Show plots
+    # Show plots first
     print("Generating weight evolution plots...")
     tracker.plot()
+    
+    # Then print final metrics
+    print(f"Final: Validation Loss = {val_loss:.6f}, Validation Accuracy = {val_acc:.4f}, Training Loss = {train_loss:.6f}, Training Accuracy = {train_acc:.4f}")
     
     return model, tracker, x_train, y_train, train_center_indices, px
 

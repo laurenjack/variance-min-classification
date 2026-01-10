@@ -15,7 +15,8 @@ class Config:
                  k: Optional[int] = None, adam_eps: float = 1e-8, optimizer: str = "adam_w",
                  learnable_norm_parameters: bool = True, adam_betas: tuple = (0.9, 0.999),
                  sgd_momentum: float = 0.0, lr_scheduler: Optional[str] = None,
-                dropout_prob: Optional[float] = None):
+                dropout_prob: Optional[float] = None,
+                is_hashed_dropout: bool = False):
         # Validate model_type
         if model_type not in ['resnet', 'mlp', 'k-polynomial', 'multi-linear']:
             raise ValueError(f"model_type must be either 'resnet', 'mlp', 'k-polynomial', or 'multi-linear', got '{model_type}'")
@@ -92,6 +93,15 @@ class Config:
             if model_type == 'k-polynomial':
                 raise ValueError("dropout_prob cannot be set for 'k-polynomial' model_type")
 
+        # Validate is_hashed_dropout
+        if is_hashed_dropout:
+            if dropout_prob is None:
+                raise ValueError("dropout_prob must be set when is_hashed_dropout=True")
+            if model_type != 'resnet':
+                raise ValueError(f"is_hashed_dropout=True is only supported for model_type='resnet', got '{model_type}'")
+            if width_varyer is not None:
+                raise ValueError(f"is_hashed_dropout=True is incompatible with width_varyer={width_varyer}")
+
         self.model_type = model_type
         self.d = d
         self.n_val = n_val
@@ -117,3 +127,4 @@ class Config:
         self.sgd_momentum = sgd_momentum
         self.lr_scheduler = lr_scheduler
         self.dropout_prob = dropout_prob
+        self.is_hashed_dropout = is_hashed_dropout

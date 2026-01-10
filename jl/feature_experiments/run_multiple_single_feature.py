@@ -5,10 +5,10 @@ from jl.config import Config
 from jl.multi_runner import train_parallel
 
 # Number of validation examples to compare across models
-M = 32
+M = 10
 
 # Number of training runs
-NUM_RUNS = 1000
+NUM_RUNS = 20
 
 
 def main():
@@ -102,6 +102,8 @@ def main():
             mean_prob = probs.mean().item()
         
         print(f"Example {i+1} | y={y_i}: mean={mean_prob:.3f}")
+        print(probs)
+        print("")
 
 
 if __name__ == "__main__":

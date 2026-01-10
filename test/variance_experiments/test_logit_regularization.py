@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from jl.config import Config
-from jl.models import create_model
+from jl.model_creator import create_model
 
 
 def test_c_parameter_in_config():

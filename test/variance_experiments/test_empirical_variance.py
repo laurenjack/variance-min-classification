@@ -7,10 +7,7 @@ corresponding parameter equal to the mask length, when weights are aligned.
 
 import torch
 
-from jl.models import (
-    Resnet, ResnetH, ResnetDModel, ResnetDownRankDim,
-    MLP, MLPH, MLPDownRankDim
-)
+from jl.model_creator import create_resnet, create_mlp
 from jl.config import Config
 
 
@@ -24,8 +21,8 @@ def test_h_mask_forward_pass():
     c_reduced = Config(model_type='resnet', d=d, n_val=100, n=1000, batch_size=32, lr=0.001, epochs=1, weight_decay=0.0,
                        num_layers=2, num_class=2, h=h_star, d_model=None)
 
-    model_masked = ResnetH(c_full)
-    model_reduced = Resnet(c_reduced)
+    model_masked = create_resnet(c_full)
+    model_reduced = create_resnet(c_reduced)
 
     # Align weights for overlapping hidden dims
     with torch.no_grad():
@@ -53,8 +50,8 @@ def test_h_mask_gradients():
     c_reduced = Config(model_type='resnet', d=d, n_val=100, n=1000, batch_size=32, lr=0.001, epochs=1, weight_decay=0.0,
                        num_layers=1, num_class=2, h=h_star, d_model=None)
 
-    model_masked = ResnetH(c_full)
-    model_reduced = Resnet(c_reduced)
+    model_masked = create_resnet(c_full)
+    model_reduced = create_resnet(c_reduced)
 
     with torch.no_grad():
         model_reduced.blocks[0].weight_in.weight.data = model_masked.blocks[0].weight_in.weight.data[:h_star, :]
@@ -102,8 +99,8 @@ def test_d_model_mask_forward_pass():
     c_reduced = Config(model_type='resnet', d=d, n_val=10, n=10, batch_size=2, lr=1e-3, epochs=1, weight_decay=0.0,
                        num_layers=2, num_class=2, h=h, d_model=d_model_star)
 
-    model_masked = ResnetDModel(c_masked)
-    model_reduced = Resnet(c_reduced)
+    model_masked = create_resnet(c_masked)
+    model_reduced = create_resnet(c_reduced)
 
     with torch.no_grad():
         # Align input projection
@@ -136,8 +133,8 @@ def test_down_rank_dim_mask_forward_pass():
     c_reduced = Config(model_type='resnet', d=d, n_val=10, n=10, batch_size=2, lr=1e-3, epochs=1, weight_decay=0.0,
                        num_layers=2, num_class=2, h=h, d_model=d_model, down_rank_dim=dr_star)
 
-    model_masked = ResnetDownRankDim(c_masked)
-    model_reduced = Resnet(c_reduced)
+    model_masked = create_resnet(c_masked)
+    model_reduced = create_resnet(c_reduced)
 
     with torch.no_grad():
         # Align all pre-down-rank weights (blocks are same shape)
@@ -167,8 +164,8 @@ def test_h_mask_forward_pass_mlp():
     c_reduced = Config(model_type='mlp', d=d, n_val=10, n=10, batch_size=2, lr=1e-3, epochs=1, weight_decay=0.0,
                        num_layers=2, num_class=2, h=h_star)
 
-    model_masked = MLPH(c_masked)
-    model_reduced = MLP(c_reduced)
+    model_masked = create_mlp(c_masked)
+    model_reduced = create_mlp(c_reduced)
 
     with torch.no_grad():
         # Align input layer
@@ -208,8 +205,8 @@ def test_down_rank_dim_mask_forward_pass_mlp():
     c_reduced = Config(model_type='mlp', d=d, n_val=10, n=10, batch_size=2, lr=1e-3, epochs=1, weight_decay=0.0,
                        num_layers=2, num_class=2, h=h, down_rank_dim=dr_star)
 
-    model_masked = MLPDownRankDim(c_masked)
-    model_reduced = MLP(c_reduced)
+    model_masked = create_mlp(c_masked)
+    model_reduced = create_mlp(c_reduced)
 
     with torch.no_grad():
         # Align all pre-down-rank layers (they have same shape)

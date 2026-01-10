@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torch.func import vmap, stack_module_state, functional_call, grad_and_value
 
 from jl.config import Config
-from jl.models import create_model
+from jl.model_creator import create_model
 from jl.scheduler import create_lr_scheduler
 
 
