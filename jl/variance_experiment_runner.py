@@ -199,8 +199,6 @@ def run_list_experiment(
         title_parts.append(f"h={c.h}")
     if c.d_model is not None:
         title_parts.append(f"d_model={c.d_model}")
-    if c.down_rank_dim is not None:
-        title_parts.append(f"down_rank_dim={c.down_rank_dim}")
     if c.width_varyer is not None:
         title_parts.append(f"width_varyer={c.width_varyer}")
     if c.c is not None:

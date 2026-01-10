@@ -43,7 +43,6 @@ def main():
         h=h,
         d_model=10,
         weight_tracker=None,
-        down_rank_dim=None,
         width_varyer="h",
         is_norm=True
     )

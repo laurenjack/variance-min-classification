@@ -29,7 +29,6 @@ def main():
         num_class=problem.num_classes(),
         h=40,
         weight_tracker=None,
-        down_rank_dim=None,
         width_varyer=None,  
         is_norm=True,
         optimizer="adam_w",

@@ -49,8 +49,6 @@ def main():
     # d_model = max(width_range)
     width_range = list(range(2, 21, 2))
     d_model = max(width_range)
-    # down_rank_dim = max(width_range)
-    # down_rank_dim = 5
     num_runs = 20
     
     
@@ -69,7 +67,6 @@ def main():
         h=h,
         d_model=d_model,
         weight_tracker=None,
-        down_rank_dim=None,
         width_varyer="d_model",
         is_norm=True
     )

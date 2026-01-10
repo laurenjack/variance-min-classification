@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Pytest tests to verify width-mask functionality (h, d_model, down_rank_dim).
+Pytest tests to verify width-mask functionality (h, d_model).
 The masked models should behave like smaller base Resnet models with the
 corresponding parameter equal to the mask length, when weights are aligned.
 """
@@ -121,39 +121,6 @@ def test_d_model_mask_forward_pass():
     assert torch.allclose(out_masked, out_reduced, atol=1e-5)
 
 
-def test_down_rank_dim_mask_forward_pass():
-    """down_rank_dim mask simulates base Resnet with down_rank_dim*."""
-    d = 4
-    d_model = None
-    h = 6
-    dr_max = 8
-    dr_star = 5
-    c_masked = Config(model_type='resnet', d=d, n_val=10, n=10, batch_size=2, lr=1e-3, epochs=1, weight_decay=0.0,
-                      num_layers=2, num_class=2, h=h, d_model=d_model, down_rank_dim=dr_max, width_varyer="down_rank_dim")
-    c_reduced = Config(model_type='resnet', d=d, n_val=10, n=10, batch_size=2, lr=1e-3, epochs=1, weight_decay=0.0,
-                       num_layers=2, num_class=2, h=h, d_model=d_model, down_rank_dim=dr_star)
-
-    model_masked = create_resnet(c_masked)
-    model_reduced = create_resnet(c_reduced)
-
-    with torch.no_grad():
-        # Align all pre-down-rank weights (blocks are same shape)
-        for full_blk, red_blk in zip(model_masked.blocks, model_reduced.blocks):
-            red_blk.weight_in.weight.data = full_blk.weight_in.weight.data
-            red_blk.weight_out.weight.data = full_blk.weight_out.weight.data
-        # Align down-rank layer and final
-        model_reduced.down_rank_layer.weight.data = model_masked.down_rank_layer.weight.data[:dr_star, :]
-        model_reduced.final_layer.weight.data = model_masked.final_layer.weight.data[:, :dr_star]
-
-    dr_mask = torch.zeros(dr_max)
-    dr_mask[:dr_star] = 1.0
-
-    x = torch.randn(3, d)
-    out_masked = model_masked(x, width_mask=dr_mask)
-    out_reduced = model_reduced(x)
-    assert torch.allclose(out_masked, out_reduced, atol=1e-5)
-
-
 def test_h_mask_forward_pass_mlp():
     """h mask simulates a base MLP with h* (no down-rank)."""
     d = 5
@@ -194,39 +161,3 @@ def test_h_mask_forward_pass_mlp():
     assert torch.allclose(out_masked, out_reduced, atol=1e-5)
 
 
-def test_down_rank_dim_mask_forward_pass_mlp():
-    """down_rank_dim mask simulates base MLP with down_rank_dim*."""
-    d = 4
-    h = 8
-    dr_max = 10
-    dr_star = 6
-    c_masked = Config(model_type='mlp', d=d, n_val=10, n=10, batch_size=2, lr=1e-3, epochs=1, weight_decay=0.0,
-                      num_layers=2, num_class=2, h=h, down_rank_dim=dr_max, width_varyer="down_rank_dim")
-    c_reduced = Config(model_type='mlp', d=d, n_val=10, n=10, batch_size=2, lr=1e-3, epochs=1, weight_decay=0.0,
-                       num_layers=2, num_class=2, h=h, down_rank_dim=dr_star)
-
-    model_masked = create_mlp(c_masked)
-    model_reduced = create_mlp(c_reduced)
-
-    with torch.no_grad():
-        # Align all pre-down-rank layers (they have same shape)
-        # Both models have Sequential: [Linear, RMSNorm, ReLU, Linear, RMSNorm, ReLU, ...]
-        # Copy layer by layer for the sequential part
-        linear_idx = 0
-        for i, layer in enumerate(model_reduced.layers):
-            if isinstance(layer, torch.nn.Linear):
-                model_reduced.layers[i].weight.data = model_masked.layers[i].weight.data
-            elif hasattr(layer, 'weight'):  # RMSNorm
-                model_reduced.layers[i].weight.data = model_masked.layers[i].weight.data
-        
-        # Align down-rank layer and final
-        model_reduced.down_rank_layer.weight.data = model_masked.down_rank_layer.weight.data[:dr_star, :]
-        model_reduced.final_layer.weight.data = model_masked.final_layer.weight.data[:, :dr_star]
-
-    dr_mask = torch.zeros(dr_max)
-    dr_mask[:dr_star] = 1.0
-
-    x = torch.randn(3, d)
-    out_masked = model_masked(x, width_mask=dr_mask)
-    out_reduced = model_reduced(x)
-    assert torch.allclose(out_masked, out_reduced, atol=1e-5)

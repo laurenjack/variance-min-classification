@@ -31,7 +31,6 @@ def main():
         num_class=problem.num_classes(),
         h=50,
         weight_tracker=None,
-        down_rank_dim=None,
         is_norm=True
     )
 

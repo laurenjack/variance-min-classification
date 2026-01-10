@@ -34,7 +34,6 @@ def main(with_validation=False):
         h=None,
         weight_tracker=None,
         d_model=40,
-        down_rank_dim=None,
         is_norm=False,
         c=0.05
     )
@@ -185,7 +184,7 @@ class EffectiveWeightBlock(nn.Module):
 class EffectiveWeight(nn.Module):
     """
     A module that tracks the effective weight transformation through an MLP.
-    Only supports MLPs where is_norm=False and down_rank_dim=None.
+    Only supports MLPs where is_norm=False.
     """
     def __init__(self, trained_mlp, c: Config):
         """
@@ -201,8 +200,6 @@ class EffectiveWeight(nn.Module):
         if c.model_type != 'mlp':
             raise ValueError("EffectiveWeight only supports MLP models")
         
-        if c.down_rank_dim is not None:
-            raise ValueError("EffectiveWeight does not support down_rank_dim")
         
         self.input_dim = c.d
         self.d_model = c.d_model if c.d_model is not None else c.d

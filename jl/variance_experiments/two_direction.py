@@ -34,7 +34,6 @@ def main(analyze_weights: bool = True):
         h=None,
         weight_tracker=None,
         d_model=100,
-        down_rank_dim=None,
         is_norm=False
     )
 

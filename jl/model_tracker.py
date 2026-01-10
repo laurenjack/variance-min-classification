@@ -112,16 +112,14 @@ class BaseTracker(TrackerInterface):
 
 
 class ResnetTracker(BaseTracker):
-    def __init__(self, c: Config, num_layers: int, has_down_rank_layer: bool):
+    def __init__(self, c: Config, num_layers: int):
         """
         Parameters:
             c: Config object containing training parameters.
             num_layers (int): Number of residual blocks in the model.
-            has_down_rank_layer (bool): Whether the model has a down-rank layer.
         """
         super().__init__(c)
         self.num_layers = num_layers
-        self.has_down_rank_layer = has_down_rank_layer
         self.learnable_norm_parameters = c.learnable_norm_parameters
         self.norm_history = []
 
@@ -133,8 +131,6 @@ class ResnetTracker(BaseTracker):
             for block in model.blocks:
                 linear_data.append(self._get_tensor_data(block.weight_in.weight))
                 linear_data.append(self._get_tensor_data(block.weight_out.weight))
-            if model.down_rank_layer is not None:
-                linear_data.append(self._get_tensor_data(model.down_rank_layer.weight))
             linear_data.append(self._get_tensor_data(model.final_layer.weight))
             self.weight_history.append(linear_data)
             
@@ -161,8 +157,6 @@ class ResnetTracker(BaseTracker):
             for i in range(self.num_layers):
                 titles.append(f"Hidden Layer: Block {i + 1} Weight_in (d→h) {suffix}")
                 titles.append(f"Hidden Layer: Block {i + 1} Weight_out (h→d) {suffix}")
-            if self.has_down_rank_layer:
-                titles.append(f"Final Layer: Down-rank (d→down_rank) {suffix}")
             titles.append(f"Final Layer: Output {suffix}")
         return titles
 
@@ -206,16 +200,14 @@ class ResnetTracker(BaseTracker):
 
 
 class MLPTracker(BaseTracker):
-    def __init__(self, c: Config, num_layers: int, has_down_rank_layer: bool):
+    def __init__(self, c: Config, num_layers: int):
         """
         Parameters:
             c: Config object containing training parameters.
             num_layers (int): Number of hidden layers in the model.
-            has_down_rank_layer (bool): Whether the model has a down-rank layer.
         """
         super().__init__(c)
         self.num_layers = num_layers
-        self.has_down_rank_layer = has_down_rank_layer
         self.learnable_norm_parameters = c.learnable_norm_parameters
         self.norm_history = []
 
@@ -227,8 +219,6 @@ class MLPTracker(BaseTracker):
             for i in range(len(model.hidden_linear1)):
                 linear_data.append(self._get_tensor_data(model.hidden_linear1[i].weight))
                 linear_data.append(self._get_tensor_data(model.hidden_linear2[i].weight))
-            if model.down_rank_layer is not None:
-                linear_data.append(self._get_tensor_data(model.down_rank_layer.weight))
             linear_data.append(self._get_tensor_data(model.final_layer.weight))
             self.weight_history.append(linear_data)
             
@@ -257,8 +247,6 @@ class MLPTracker(BaseTracker):
             for i in range(self.num_layers):
                 titles.append(f"Hidden Layer {i + 1} - Linear 1 {suffix}")
                 titles.append(f"Hidden Layer {i + 1} - Linear 2 {suffix}")
-            if self.has_down_rank_layer:
-                titles.append(f"Final Layer: Down-rank {suffix}")
             titles.append(f"Final Layer: Output {suffix}")
         return titles
 
@@ -303,7 +291,7 @@ class MLPTracker(BaseTracker):
 
 
 class MultiLinearTracker(BaseTracker):
-    def __init__(self, c: Config, num_layers: int, has_down_rank_layer: bool):
+    def __init__(self, c: Config, num_layers: int):
         """
         Tracker for MultiLinear model that tracks only linear layer weights/steps.
         Since MultiLinear uses RMSNorm with has_parameters=False (constant weights),
@@ -312,11 +300,9 @@ class MultiLinearTracker(BaseTracker):
         Parameters:
             c: Config object containing training parameters.
             num_layers (int): Number of hidden layers in the model.
-            has_down_rank_layer (bool): Whether the model has a down-rank layer.
         """
         super().__init__(c)
         self.num_layers = num_layers
-        self.has_down_rank_layer = has_down_rank_layer
 
     def update(self, model, val_acc, train_acc=None, val_loss=None, train_loss=None):
         """Record weights/steps and metrics for a MultiLinear model."""
@@ -326,8 +312,6 @@ class MultiLinearTracker(BaseTracker):
             for layer in model.layers:
                 if isinstance(layer, nn.Linear):
                     linear_data.append(self._get_tensor_data(layer.weight))
-            if model.down_rank_layer is not None:
-                linear_data.append(self._get_tensor_data(model.down_rank_layer.weight))
             linear_data.append(self._get_tensor_data(model.final_layer.weight))
             self.weight_history.append(linear_data)
         else:
@@ -342,8 +326,6 @@ class MultiLinearTracker(BaseTracker):
         if self._tracks_weights() and self.weight_history and self.weight_history[0]:
             for i in range(self.num_layers):
                 titles.append(f"Hidden Layer {i + 1} {suffix}")
-            if self.has_down_rank_layer:
-                titles.append(f"Final Layer: Down-rank {suffix}")
             titles.append(f"Final Layer: Output {suffix}")
         return titles
 
