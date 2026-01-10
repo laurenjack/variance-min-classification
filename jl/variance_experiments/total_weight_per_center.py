@@ -81,8 +81,6 @@ class TotalWeight(nn.Module):
         if c.model_type != 'mlp':
             raise ValueError("TotalWeight only supports MLP models")
         
-        if c.down_rank_dim is not None:
-            raise ValueError("TotalWeight does not support down_rank_dim")
         
         self.input_dim = c.d
         self.d_model = c.d_model if c.d_model is not None else c.d
@@ -193,8 +191,7 @@ def main() -> None:
         num_class=problem.num_classes(),
         d_model=20,
         weight_tracker=None,
-        is_norm=False,
-        down_rank_dim=None
+        is_norm=False
     )
     
     # Generate validation set

@@ -41,7 +41,6 @@ def main():
         h=h,
         d_model=None,
         weight_tracker=None,
-        down_rank_dim=None,
         width_varyer="h",
         is_norm=True
     )

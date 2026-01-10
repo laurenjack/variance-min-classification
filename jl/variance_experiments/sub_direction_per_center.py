@@ -56,7 +56,6 @@ def main() -> None:
         h=80,
         weight_tracker=None,
         d_model=40,
-        down_rank_dim=None
     )
 
     # Generate validation set with requested label noise

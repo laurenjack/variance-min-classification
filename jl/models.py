@@ -75,7 +75,6 @@ class Resnet(nn.Module):
         super(Resnet, self).__init__()
         self.input_dim = c.d
         self.d_model = c.d if c.d_model is None else c.d_model
-        self.down_rank_dim = c.down_rank_dim
         self.num_class = c.num_class
         
         # Determine output dimension: 1 for binary, num_class for multi-class
@@ -94,21 +93,13 @@ class Resnet(nn.Module):
             for _ in range(c.num_layers)
         ])
         
-        # Optionally add the down-ranking layer (in d_model space)
-        if c.down_rank_dim is not None:
-            self.down_rank_layer = nn.Linear(self.d_model, c.down_rank_dim, bias=False)
-            self.final_layer = nn.Linear(c.down_rank_dim, output_dim, bias=False)
-            final_norm_dim = c.down_rank_dim
-        else:
-            self.down_rank_layer = None
-            self.final_layer = nn.Linear(self.d_model, output_dim, bias=False)
-            final_norm_dim = self.d_model
+        # Final layer connects directly from d_model to output
+        self.final_layer = nn.Linear(self.d_model, output_dim, bias=False)
         
         # Add final layer normalization (pre-logit) as in transformers
-        # Applied after down-rank layer if it exists
         self.is_norm = c.is_norm
         if c.is_norm:
-            self.final_rms_norm = RMSNorm(final_norm_dim, learnable_norm_parameters=c.learnable_norm_parameters)
+            self.final_rms_norm = RMSNorm(self.d_model, learnable_norm_parameters=c.learnable_norm_parameters)
         else:
             self.final_rms_norm = None
     
@@ -119,8 +110,7 @@ class Resnet(nn.Module):
             return TrackerInterface()
         return ResnetTracker(
             c=c,
-            num_layers=len(self.blocks),
-            has_down_rank_layer=self.down_rank_layer is not None
+            num_layers=len(self.blocks)
         )
 
     def forward(self, x, x_indices: Optional[torch.Tensor] = None, width_mask: Optional[torch.Tensor] = None):
@@ -144,10 +134,6 @@ class Resnet(nn.Module):
             # Apply dropout to block output before adding to residual stream
             block_out = dropout(block_out, x_indices)
             current = current + block_out
-        
-        # Apply optional down-ranking layer
-        if self.down_rank_layer is not None:
-            current = self.down_rank_layer(current)
         
         # Apply final layer normalization (pre-logit)
         if self.is_norm:
@@ -173,7 +159,6 @@ class MLP(nn.Module):
         super(MLP, self).__init__()
         self.input_dim = c.d
         self.h = c.h if c.h is not None else c.d
-        self.down_rank_dim = c.down_rank_dim
         self.num_layers = c.num_layers
         self.is_norm = c.is_norm
         self.num_class = c.num_class
@@ -204,23 +189,13 @@ class MLP(nn.Module):
             # Linear 2: h→h
             self.hidden_linear2.append(nn.Linear(self.h, self.h, bias=False))
         
-        # Optionally add the down-ranking layer
-        if c.down_rank_dim is not None:
-            # When num_layers=0, down_rank takes input directly from input_dim
-            down_rank_input = self.input_dim if self.num_layers == 0 else self.h
-            self.down_rank_layer = nn.Linear(down_rank_input, c.down_rank_dim, bias=False)
-            self.final_layer = nn.Linear(c.down_rank_dim, output_dim, bias=False)
-            final_norm_dim = c.down_rank_dim
-        else:
-            self.down_rank_layer = None
-            # When num_layers=0, final layer takes input directly from input_dim
-            final_input = self.input_dim if self.num_layers == 0 else self.h
-            self.final_layer = nn.Linear(final_input, output_dim, bias=False)
-            final_norm_dim = final_input
+        # Final layer connects directly from h (or input_dim if num_layers=0) to output
+        final_input = self.input_dim if self.num_layers == 0 else self.h
+        self.final_layer = nn.Linear(final_input, output_dim, bias=False)
         
         # Add final layer normalization (pre-logit)
         if c.is_norm:
-            self.final_rms_norm = RMSNorm(final_norm_dim, learnable_norm_parameters=c.learnable_norm_parameters)
+            self.final_rms_norm = RMSNorm(final_input, learnable_norm_parameters=c.learnable_norm_parameters)
         else:
             self.final_rms_norm = None
         self.dropouts = dropouts
@@ -230,8 +205,7 @@ class MLP(nn.Module):
             return TrackerInterface()
         return MLPTracker(
             c=c,
-            num_layers=self.num_layers,
-            has_down_rank_layer=self.down_rank_layer is not None
+            num_layers=self.num_layers
         )
     
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):
@@ -264,10 +238,6 @@ class MLP(nn.Module):
             if i > 0:
                 current = self.dropouts[i - 1](current)
         
-        # Apply optional down-ranking layer before final norm
-        if self.down_rank_layer is not None:
-            current = self.down_rank_layer(current)
-        
         # Apply final norm
         if self.is_norm and self.final_rms_norm is not None:
             current = self.final_rms_norm(current)
@@ -292,7 +262,6 @@ class MultiLinear(nn.Module):
         super(MultiLinear, self).__init__()
         self.input_dim = c.d
         self.h = c.h if c.h is not None else c.d
-        self.down_rank_dim = c.down_rank_dim
         self.num_layers = c.num_layers
         self.is_norm = c.is_norm
         self.num_class = c.num_class
@@ -321,23 +290,13 @@ class MultiLinear(nn.Module):
                     self.hidden_norms.append(None)
                 self.hidden_linears.append(nn.Linear(self.h, self.h, bias=False))
         
-        # Optionally add the down-ranking layer
-        if c.down_rank_dim is not None:
-            # When num_layers=0, down_rank takes input directly from input_dim
-            down_rank_input = self.input_dim if self.num_layers == 0 else self.h
-            self.down_rank_layer = nn.Linear(down_rank_input, c.down_rank_dim, bias=False)
-            self.final_layer = nn.Linear(c.down_rank_dim, output_dim, bias=False)
-            final_norm_dim = c.down_rank_dim
-        else:
-            self.down_rank_layer = None
-            # When num_layers=0, final layer takes input directly from input_dim
-            final_input = self.input_dim if self.num_layers == 0 else self.h
-            self.final_layer = nn.Linear(final_input, output_dim, bias=False)
-            final_norm_dim = final_input
+        # Final layer connects directly from h (or input_dim if num_layers=0) to output
+        final_input = self.input_dim if self.num_layers == 0 else self.h
+        self.final_layer = nn.Linear(final_input, output_dim, bias=False)
         
         # Add final layer normalization (pre-logit)
         if c.is_norm:
-            self.final_rms_norm = RMSNorm(final_norm_dim, learnable_norm_parameters=c.learnable_norm_parameters)
+            self.final_rms_norm = RMSNorm(final_input, learnable_norm_parameters=c.learnable_norm_parameters)
         else:
             self.final_rms_norm = None
     
@@ -348,8 +307,7 @@ class MultiLinear(nn.Module):
             return TrackerInterface()
         return MultiLinearTracker(
             c=c,
-            num_layers=self.num_layers,
-            has_down_rank_layer=self.down_rank_layer is not None
+            num_layers=self.num_layers
         )
     
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):
@@ -371,10 +329,6 @@ class MultiLinear(nn.Module):
             # Apply dropout only after first layer (skip i=0)
             if i > 0:
                 current = self.dropouts[i - 1](current)
-        
-        # Apply optional down-ranking layer
-        if self.down_rank_layer is not None:
-            current = self.down_rank_layer(current)
         
         # Apply final layer normalization (pre-logit)
         if self.is_norm:

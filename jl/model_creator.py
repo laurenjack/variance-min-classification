@@ -1,9 +1,7 @@
 from jl.models import Resnet, MLP, MultiLinear, KPolynomial
 from jl.parallel_models import (
     ResnetH,
-    ResnetDownRankDim,
     ResnetDModel,
-    MLPDownRankDim,
     MLPH,
 )
 from jl.config import Config
@@ -39,12 +37,10 @@ def create_resnet(c: Config):
         return Resnet(c, dropouts=dropouts)
     elif c.width_varyer == "h":
         return ResnetH(c, dropouts=dropouts)
-    elif c.width_varyer == "down_rank_dim":
-        return ResnetDownRankDim(c, dropouts=dropouts)
     elif c.width_varyer == "d_model":
         return ResnetDModel(c, dropouts=dropouts)
     else:
-        raise ValueError(f"Invalid width_varyer: {c.width_varyer}. Must be None, 'h', 'down_rank_dim', or 'd_model'.")
+        raise ValueError(f"Invalid width_varyer: {c.width_varyer}. Must be None, 'h', or 'd_model'.")
 
 
 def create_mlp(c: Config):
@@ -75,12 +71,10 @@ def create_mlp(c: Config):
     
     if c.width_varyer is None:
         return MLP(c, dropouts=dropouts)
-    elif c.width_varyer == "down_rank_dim":
-        return MLPDownRankDim(c, dropouts=dropouts)
     elif c.width_varyer == "h":
         return MLPH(c, dropouts=dropouts)
     else:
-        raise ValueError(f"Invalid width_varyer for MLP: {c.width_varyer}. Must be None, 'down_rank_dim', or 'h'.")
+        raise ValueError(f"Invalid width_varyer for MLP: {c.width_varyer}. Must be None or 'h'.")
 
 
 def create_model(c: Config):

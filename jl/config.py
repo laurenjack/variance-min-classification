@@ -10,7 +10,7 @@ class Config:
                  num_class: int,
                  h: Optional[int] = None,
                  d_model: Optional[int] = None,
-                 weight_tracker: Optional[str] = "accuracy", down_rank_dim: Optional[int] = None,
+                 weight_tracker: Optional[str] = "accuracy",
                  width_varyer: Optional[str] = None, is_norm: bool = True, c: Optional[float] = None,
                  k: Optional[int] = None, adam_eps: float = 1e-8, optimizer: str = "adam_w",
                  learnable_norm_parameters: bool = True, adam_betas: tuple = (0.9, 0.999),
@@ -115,7 +115,6 @@ class Config:
         self.num_layers = num_layers
         self.d_model = d_model
         self.weight_tracker = weight_tracker
-        self.down_rank_dim = down_rank_dim
         self.width_varyer = width_varyer
         self.is_norm = is_norm
         self.c = c
