@@ -3,7 +3,7 @@ import torch
 
 from jl.config import Config
 from jl.variance_experiment_runner import run_list_experiment
-from jl.variance_experiments.data_generator import SubDirections
+from jl.variance_experiments.data_generator import SubDirections, Gaussian
 
 
 def main():
@@ -28,27 +28,27 @@ def main():
         centers=6,
         num_class=2,
         sigma=0.2,
-        noisy_d=0,
+        noisy_d=10,
         random_basis=True,
         percent_correct=percent_correct,
         device=device
     )   
 
     # d = 10
-    # problem = Gaussian(d=d, perfect_class_balance=True)
+    # problem = Gaussian(d=20, perfect_class_balance=True)
     
     # Experiment parameters
     # h_range = list(range(2, 31, 2))
     # h = max(h_range)
     # d_model = 20
-    h = 20
+    # h = 160
     # d_model = 20
-    # width_range = list(range(2, 21, 2))
-    #h = max(width_range)
-    d_model = 20
+    width_range = list(range(2, 41, 2))
+    h = max(width_range)
+    d_model = 10
     # d_model = max(width_range)
-    width_range = list(range(2, 21, 2))
-    d_model = max(width_range)
+    #width_range = list(range(2, 41, 2))
+    # d_model = max(width_range)
     num_runs = 20
     
     
@@ -58,16 +58,17 @@ def main():
         d=problem.d,
         n_val=1000,
         n=256,
-        batch_size=32,
-        lr=1e-3,
-        epochs=300,
+        adam_eps=1e-8,
+        batch_size=64,
+        lr=3e-3,
+        epochs=100,
         weight_decay=0.001,
         num_layers=2,
         num_class=problem.num_classes(),
         h=h,
         d_model=d_model,
         weight_tracker=None,
-        width_varyer="d_model",
+        width_varyer="h",
         is_norm=True
     )
     c2 = deepcopy(c)
@@ -92,7 +93,7 @@ def main():
         device,
         problem,
         validation_set,
-        [c, c2, c3],
+        [c],
         width_range,
         num_runs,
         clean_mode,

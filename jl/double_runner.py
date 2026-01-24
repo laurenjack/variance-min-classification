@@ -154,9 +154,9 @@ def train_double(device, problem, validation_set, c: Config):
             y_onehot1 = F.one_hot(batch_y1.long(), num_classes=c.num_class).float()
             y_onehot2 = F.one_hot(batch_y2.long(), num_classes=c.num_class).float()
             
-            # Create soft targets by averaging true label and cross-model prediction
-            soft_target1 = (y_onehot1 + p2_from_1) / 2
-            soft_target2 = (y_onehot2 + p1_from_2) / 2
+            # Create soft targets by weighted averaging true label and cross-model prediction
+            soft_target1 = (y_onehot1 + c.prob_weight * p2_from_1) / (1.0 + c.prob_weight)
+            soft_target2 = (y_onehot2 + c.prob_weight * p1_from_2) / (1.0 + c.prob_weight)
             
             # Training step for model 1
             optimizer1.zero_grad()

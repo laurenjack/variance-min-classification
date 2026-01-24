@@ -5,7 +5,7 @@ from jl.parallel_models import (
     MLPH,
 )
 from jl.config import Config
-from jl.feature_experiments.dropout import create_dropout_list
+from jl.feature_experiments.dropout import create_dropout_modules
 from torch import nn
 
 
@@ -22,23 +22,24 @@ def create_resnet(c: Config):
     Raises:
         ValueError: If width_varyer is not a recognized value
     """
-    # Determine d_model for dropout list
+    # Determine d_model for dropout modules
     d_model = c.d if c.d_model is None else c.d_model
     
-    # Create list of dropouts, one per layer
-    dropouts = create_dropout_list(
+    # Create dropout modules (for blocks and final layer)
+    dropout_modules = create_dropout_modules(
         num_layers=c.num_layers,
         dropout_prob=c.dropout_prob,
         is_hashed_dropout=c.is_hashed_dropout,
         d_model=d_model,
+        final_dim=d_model,  # Final layer also uses d_model for Resnet
     )
     
     if c.width_varyer is None:
-        return Resnet(c, dropouts=dropouts)
+        return Resnet(c, dropout_modules=dropout_modules)
     elif c.width_varyer == "h":
-        return ResnetH(c, dropouts=dropouts)
+        return ResnetH(c, dropout_modules=dropout_modules)
     elif c.width_varyer == "d_model":
-        return ResnetDModel(c, dropouts=dropouts)
+        return ResnetDModel(c, dropout_modules=dropout_modules)
     else:
         raise ValueError(f"Invalid width_varyer: {c.width_varyer}. Must be None, 'h', or 'd_model'.")
 
@@ -60,19 +61,23 @@ def create_mlp(c: Config):
     if c.num_layers == 0 and c.width_varyer is not None:
         raise ValueError(f"num_layers=0 is only supported when width_varyer=None. Got width_varyer={c.width_varyer}")
     
-    # Create list of dropouts, one per hidden layer (skip first layer, so num_layers - 1)
+    # Determine final dimension (h or input_dim if num_layers=0)
+    final_dim = c.d if c.num_layers == 0 else (c.h if c.h is not None else c.d)
+    
+    # Create dropout modules (for hidden layers and final layer)
     # MLP doesn't support hashed dropout
-    dropouts = create_dropout_list(
-        num_layers=max(0, c.num_layers - 1),
+    dropout_modules = create_dropout_modules(
+        num_layers=max(0, c.num_layers - 1),  # Skip first layer
         dropout_prob=c.dropout_prob,
         is_hashed_dropout=False,
         d_model=None,
+        final_dim=final_dim,
     )
     
     if c.width_varyer is None:
-        return MLP(c, dropouts=dropouts)
+        return MLP(c, dropout_modules=dropout_modules)
     elif c.width_varyer == "h":
-        return MLPH(c, dropouts=dropouts)
+        return MLPH(c, dropout_modules=dropout_modules)
     else:
         raise ValueError(f"Invalid width_varyer for MLP: {c.width_varyer}. Must be None or 'h'.")
 
@@ -95,15 +100,19 @@ def create_model(c: Config):
     elif c.model_type == 'mlp':
         return create_mlp(c)
     elif c.model_type == 'multi-linear':
-        # Create list of dropouts, one per hidden layer (skip first layer, so num_layers - 1)
+        # Determine final dimension (h or input_dim if num_layers=0)
+        final_dim = c.d if c.num_layers == 0 else (c.h if c.h is not None else c.d)
+        
+        # Create dropout modules (for hidden layers and final layer)
         # MultiLinear doesn't support hashed dropout
-        dropouts = create_dropout_list(
-            num_layers=max(0, c.num_layers - 1),
+        dropout_modules = create_dropout_modules(
+            num_layers=max(0, c.num_layers - 1),  # Skip first layer
             dropout_prob=c.dropout_prob,
             is_hashed_dropout=False,
             d_model=None,
+            final_dim=final_dim,
         )
-        return MultiLinear(c, dropouts=dropouts)
+        return MultiLinear(c, dropout_modules=dropout_modules)
     elif c.model_type == 'k-polynomial':
         return KPolynomial(c)
     else:
