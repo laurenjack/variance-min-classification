@@ -10,6 +10,15 @@ from jl.model_tracker import MultiLinearTracker
 from jl.model_tracker import PolynomialTracker
 from jl.config import Config
 from jl.feature_experiments.dropout import Dropout, DropoutModules
+from jl.feature_experiments.scaled_regularization import ScaledRegLinear
+
+
+def _make_linear(in_features, out_features, scaled_reg_k):
+    """Create nn.Linear or ScaledRegLinear based on whether scaled_reg_k is set."""
+    if scaled_reg_k is not None:
+        return ScaledRegLinear(in_features, out_features, scaled_reg_k)
+    return nn.Linear(in_features, out_features, bias=False)
+
 
 
 class RMSNorm(nn.Module):
@@ -34,12 +43,13 @@ class RMSNorm(nn.Module):
 
 
 class ResidualBlock(nn.Module):
-    def __init__(self, d, h, is_norm=True, learnable_norm_parameters=True):
+    def __init__(self, d, h, is_norm=True, learnable_norm_parameters=True, scaled_reg_k=None):
         """
         d: Dimension of the residual stream.
         h: Hidden dimension for the block.
         is_norm: Whether to apply RMSNorm (default True).
         learnable_norm_parameters: Whether RMSNorm weights are learnable.
+        scaled_reg_k: If set, use ScaledRegLinear instead of nn.Linear.
         """
         super(ResidualBlock, self).__init__()
 
@@ -49,8 +59,8 @@ class ResidualBlock(nn.Module):
         else:
             self.rms_norm = None
 
-        self.weight_in = nn.Linear(d, h, bias=False)
-        self.weight_out = nn.Linear(h, d, bias=False)
+        self.weight_in = _make_linear(d, h, scaled_reg_k)
+        self.weight_out = _make_linear(h, d, scaled_reg_k)
 
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):
         # Base ResidualBlock ignores width_mask
@@ -84,17 +94,17 @@ class Resnet(nn.Module):
         # Only use if a separate d_model is specified
         if c.d_model is not None:
             # First, project inputs from d -> d_model
-            self.input_projection = nn.Linear(self.input_dim, self.d_model, bias=False)
-            
+            self.input_projection = _make_linear(self.input_dim, self.d_model, c.scaled_reg_k)
+
 
         # Residual blocks operate in d_model space
         self.blocks = nn.ModuleList([
-            block_class(self.d_model, c.h, is_norm=c.is_norm, learnable_norm_parameters=c.learnable_norm_parameters)
+            block_class(self.d_model, c.h, is_norm=c.is_norm, learnable_norm_parameters=c.learnable_norm_parameters, scaled_reg_k=c.scaled_reg_k)
             for _ in range(c.num_layers)
         ])
-        
+
         # Final layer connects directly from d_model to output
-        self.final_layer = nn.Linear(self.d_model, output_dim, bias=False)
+        self.final_layer = _make_linear(self.d_model, output_dim, c.scaled_reg_k)
         
         # Add final layer normalization (pre-logit) as in transformers
         self.is_norm = c.is_norm
@@ -184,19 +194,19 @@ class MLP(nn.Module):
                 self.hidden_norms.append(RMSNorm(norm_dim, learnable_norm_parameters=c.learnable_norm_parameters))
             else:
                 self.hidden_norms.append(None)
-            
+
             # Linear 1: input_dim→h for first layer, h→h for rest
             if i == 0:
-                self.hidden_linear1.append(nn.Linear(self.input_dim, self.h, bias=False))
+                self.hidden_linear1.append(_make_linear(self.input_dim, self.h, c.scaled_reg_k))
             else:
-                self.hidden_linear1.append(nn.Linear(self.h, self.h, bias=False))
-            
+                self.hidden_linear1.append(_make_linear(self.h, self.h, c.scaled_reg_k))
+
             # Linear 2: h→h
-            self.hidden_linear2.append(nn.Linear(self.h, self.h, bias=False))
-        
+            self.hidden_linear2.append(_make_linear(self.h, self.h, c.scaled_reg_k))
+
         # Final layer connects directly from h (or input_dim if num_layers=0) to output
         final_input = self.input_dim if self.num_layers == 0 else self.h
-        self.final_layer = nn.Linear(final_input, output_dim, bias=False)
+        self.final_layer = _make_linear(final_input, output_dim, c.scaled_reg_k)
         
         # Add final layer normalization (pre-logit)
         if c.is_norm:
@@ -291,19 +301,19 @@ class MultiLinear(nn.Module):
                 self.hidden_norms.append(RMSNorm(self.input_dim, learnable_norm_parameters=c.learnable_norm_parameters))
             else:
                 self.hidden_norms.append(None)
-            self.hidden_linears.append(nn.Linear(self.input_dim, self.h, bias=False))
-            
+            self.hidden_linears.append(_make_linear(self.input_dim, self.h, c.scaled_reg_k))
+
             # Hidden layers (no ReLU)
             for _ in range(self.num_layers - 1):
                 if c.is_norm:
                     self.hidden_norms.append(RMSNorm(self.h, learnable_norm_parameters=c.learnable_norm_parameters))
                 else:
                     self.hidden_norms.append(None)
-                self.hidden_linears.append(nn.Linear(self.h, self.h, bias=False))
-        
+                self.hidden_linears.append(_make_linear(self.h, self.h, c.scaled_reg_k))
+
         # Final layer connects directly from h (or input_dim if num_layers=0) to output
         final_input = self.input_dim if self.num_layers == 0 else self.h
-        self.final_layer = nn.Linear(final_input, output_dim, bias=False)
+        self.final_layer = _make_linear(final_input, output_dim, c.scaled_reg_k)
         
         # Add final layer normalization (pre-logit)
         if c.is_norm:
