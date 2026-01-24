@@ -1,12 +1,14 @@
 import torch
 
 from jl.feature_experiments.feature_problem import SingleFeatures
+from jl.feature_experiments.report import print_validation_probs, print_grouped_by_percent_correct
 from jl.config import Config
 from jl.single_runner import train_once
 
 
 def main():
     VAL_TO_SHOW = 32
+    GROUP_BY_PERCENT_CORRECT = False
     
     # torch.manual_seed(38175)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -34,9 +36,9 @@ def main():
         lr=0.03,
         epochs=100,
         weight_decay=0.03,
-        num_layers=4,
+        num_layers=8,
         num_class=problem.num_classes(),
-        h=40,
+        h=80,
         weight_tracker="accuracy",
         width_varyer=None,
         is_norm=True,
@@ -44,7 +46,7 @@ def main():
         learnable_norm_parameters=True,
         lr_scheduler=None,
         # c=0.5,
-        # dropout_prob=0.5,
+        # dropout_prob=0.2,
         is_hashed_dropout=False,
     )
 
@@ -67,52 +69,22 @@ def main():
     else:
         prob_fn = lambda x: torch.softmax(x, dim=1)
     
-    def print_validation_probs(probs_tensor, labels, model_name, num_classes, samples_per_row=8):
-        """
-        Print validation probabilities in rows for easy viewing.
-        
-        Args:
-            probs_tensor: Probability tensor of shape [num_samples, num_classes] or [num_samples] for binary
-            labels: True labels of shape [num_samples]
-            model_name: Name of the model (for header)
-            num_classes: Number of classes (2 for binary, >2 for multi-class)
-            samples_per_row: Number of samples to print per row
-        """
-        labels_list = labels.cpu().tolist()
-        
-        if num_classes == 2:
-            # Binary classification: probs_tensor is [num_samples]
-            # For binary, we show the probability of the positive class
-            # If label is 1, show prob directly; if label is 0, show 1-prob
-            probs_list = probs_tensor.cpu().tolist()
-            correct_probs_list = [prob if label == 1 else 1 - prob 
-                                 for prob, label in zip(probs_list, labels_list)]
-        else:
-            # Multi-class: select probability of correct class for each example
-            sample_indices = torch.arange(len(labels))
-            correct_probs = probs_tensor[sample_indices, labels]
-            correct_probs_list = correct_probs.cpu().tolist()
-        
-        print(f"\n{model_name} - Validation Probabilities (correct class)")
-        print("-" * 60)
-        
-        num_samples = len(correct_probs_list)
-        for i in range(0, num_samples, samples_per_row):
-            row_end = min(i + samples_per_row, num_samples)
-            row_probs = correct_probs_list[i:row_end]
-            row_labels = labels_list[i:row_end]
-            
-            # Format: "sample_idx:label=prob"
-            row_str = "  ".join([f"{i+j}:{lab}={prob:.3f}" 
-                                for j, (lab, prob) in enumerate(zip(row_labels, row_probs))])
-            print(row_str)
-    
-    # Validation predictions
-    print("\n" + "=" * 60)
-    print("VALIDATION PREDICTIONS")
-    print("=" * 60)
-    val_probs = prob_fn(model(x_val[:VAL_TO_SHOW]))
-    print_validation_probs(val_probs, y_val[:VAL_TO_SHOW], "Model", num_classes)
+    if GROUP_BY_PERCENT_CORRECT:
+        # Validation predictions grouped by percent_correct
+        print("\n" + "=" * 60)
+        print("VALIDATION PREDICTIONS (GROUPED BY percent_correct)")
+        print("=" * 60)
+        with torch.no_grad():
+            model.eval()
+            val_probs = prob_fn(model(x_val))
+        print_grouped_by_percent_correct(val_probs, y_val, center_indices, problem, "Model", num_classes, val_to_show=VAL_TO_SHOW)
+    else:
+        # Validation predictions
+        print("\n" + "=" * 60)
+        print("VALIDATION PREDICTIONS")
+        print("=" * 60)
+        val_probs = prob_fn(model(x_val[:VAL_TO_SHOW]))
+        print_validation_probs(val_probs, y_val[:VAL_TO_SHOW], "Model", num_classes)
 
 
 

@@ -1,6 +1,7 @@
 from torch import nn
 import torch
-from typing import Optional
+from typing import Optional, List
+from dataclasses import dataclass
 
 
 class Dropout(nn.Module):
@@ -154,26 +155,45 @@ class HashedDropout(Dropout):
         return x * keep_mask * scale
 
 
-def create_dropout_list(
+@dataclass
+class DropoutModules:
+    """
+    Container for dropout modules used in models.
+    
+    Attributes:
+        dropouts: List of Dropout modules for hidden/block layers
+        dropout_final: Dropout module for the final layer (pre-logits)
+    """
+    dropouts: List[Dropout]
+    dropout_final: Dropout
+
+
+def create_dropout_modules(
     num_layers: int,
     dropout_prob: Optional[float],
     is_hashed_dropout: bool = False,
     d_model: Optional[int] = None,
-) -> nn.ModuleList:
+    final_dim: Optional[int] = None,
+) -> DropoutModules:
     """
-    Factory function to create a list of dropout layers, one per layer.
+    Factory function to create dropout modules for a model.
+    
+    Creates dropouts for hidden/block layers and a separate dropout for the final layer.
     
     Args:
-        num_layers: Number of layers (number of dropouts to create)
+        num_layers: Number of hidden/block layers (number of dropouts to create for these layers)
         dropout_prob: Dropout probability. If None, creates NoOpDropout instances.
         is_hashed_dropout: If True, creates HashedDropout instances (requires d_model).
-        d_model: Model dimension, required when is_hashed_dropout=True.
+        d_model: Model dimension for hidden/block layers, required when is_hashed_dropout=True.
+        final_dim: Dimension for final layer dropout. If None, uses d_model (for Resnet) or 
+                   must be provided separately (for MLP/MultiLinear).
     
     Returns:
-        nn.ModuleList: List of Dropout instances, one per layer
+        DropoutModules: Container with dropouts for hidden/block layers and final layer
     """
     dropouts = []
     
+    # Create dropouts for hidden/block layers
     for layer_idx in range(num_layers):
         if dropout_prob is None:
             dropouts.append(NoOpDropout())
@@ -184,4 +204,16 @@ def create_dropout_list(
         else:
             dropouts.append(StandardDropout(p=dropout_prob))
     
-    return nn.ModuleList(dropouts)
+    # Create final layer dropout
+    # For hashed dropout, final layer uses layer_index=num_layers (blocks are 0 to num_layers-1)
+    if dropout_prob is None:
+        dropout_final = NoOpDropout()
+    elif is_hashed_dropout:
+        if d_model is None:
+            raise ValueError("d_model must be provided when is_hashed_dropout=True")
+        # Final layer uses num_layers as layer_index (blocks use 0 to num_layers-1)
+        dropout_final = HashedDropout(p=dropout_prob, layer_index=num_layers, d_model=d_model)
+    else:
+        dropout_final = StandardDropout(p=dropout_prob)
+    
+    return DropoutModules(dropouts=dropouts, dropout_final=dropout_final)

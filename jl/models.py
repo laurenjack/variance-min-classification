@@ -9,7 +9,7 @@ from jl.model_tracker import MLPTracker
 from jl.model_tracker import MultiLinearTracker
 from jl.model_tracker import PolynomialTracker
 from jl.config import Config
-from jl.feature_experiments.dropout import Dropout
+from jl.feature_experiments.dropout import Dropout, DropoutModules
 
 
 class RMSNorm(nn.Module):
@@ -63,11 +63,11 @@ class ResidualBlock(nn.Module):
 
 
 class Resnet(nn.Module):
-    def __init__(self, c: Config, dropouts: nn.ModuleList, block_class=None):
+    def __init__(self, c: Config, dropout_modules: DropoutModules, block_class=None):
         """
         Base Resnet class that can use different residual block types.
         c: Configuration object containing all model parameters
-        dropouts: ModuleList of Dropout modules, one per layer
+        dropout_modules: DropoutModules container with dropouts for blocks and final layer
         block_class: Class to use for residual blocks (defaults to ResidualBlock)
         """
         if block_class is None:
@@ -103,7 +103,9 @@ class Resnet(nn.Module):
         else:
             self.final_rms_norm = None
     
-        self.dropouts = dropouts
+        # Convert dropout list to ModuleList and store final dropout separately
+        self.dropouts = nn.ModuleList(dropout_modules.dropouts)
+        self.dropout_final = dropout_modules.dropout_final
 
     def get_tracker(self, c: Config):
         if c.weight_tracker is None:
@@ -138,6 +140,9 @@ class Resnet(nn.Module):
         # Apply final layer normalization (pre-logit)
         if self.is_norm:
             current = self.final_rms_norm(current)
+        
+        # Apply dropout before final layer (pre-logits)
+        current = self.dropout_final(current, x_indices)
             
         output = self.final_layer(current)
         # Squeeze only for binary classification (output dim is 1)
@@ -147,14 +152,14 @@ class Resnet(nn.Module):
 
 
 class MLP(nn.Module):
-    def __init__(self, c: Config, dropouts: nn.ModuleList):
+    def __init__(self, c: Config, dropout_modules: DropoutModules):
         """
         Multi-Layer Perceptron (MLP) without residual connections.
         Uses pre-norm architecture: Norm → Linear → ReLU → Linear per hidden layer.
         
         Args:
             c: Configuration object containing model parameters
-            dropouts: ModuleList of Dropout modules, one per layer
+            dropout_modules: DropoutModules container with dropouts for hidden layers and final layer
         """
         super(MLP, self).__init__()
         self.input_dim = c.d
@@ -198,7 +203,10 @@ class MLP(nn.Module):
             self.final_rms_norm = RMSNorm(final_input, learnable_norm_parameters=c.learnable_norm_parameters)
         else:
             self.final_rms_norm = None
-        self.dropouts = dropouts
+        
+        # Convert dropout list to ModuleList and store final dropout separately
+        self.dropouts = nn.ModuleList(dropout_modules.dropouts)
+        self.dropout_final = dropout_modules.dropout_final
     
     def get_tracker(self, c: Config):
         if c.weight_tracker is None:
@@ -242,6 +250,9 @@ class MLP(nn.Module):
         if self.is_norm and self.final_rms_norm is not None:
             current = self.final_rms_norm(current)
         
+        # Apply dropout before final layer (pre-logits)
+        current = self.dropout_final(current)
+        
         output = self.final_layer(current)
         # Squeeze only for binary classification (output dim is 1)
         if self.num_class == 2:
@@ -250,14 +261,14 @@ class MLP(nn.Module):
 
 
 class MultiLinear(nn.Module):
-    def __init__(self, c: Config, dropouts: nn.ModuleList):
+    def __init__(self, c: Config, dropout_modules: DropoutModules):
         """
         Multi-Linear model without activations (no ReLU).
         Just a stack of linear layers with optional normalization.
         
         Args:
             c: Configuration object containing model parameters
-            dropouts: ModuleList of Dropout modules, one per layer
+            dropout_modules: DropoutModules container with dropouts for hidden layers and final layer
         """
         super(MultiLinear, self).__init__()
         self.input_dim = c.d
@@ -300,7 +311,9 @@ class MultiLinear(nn.Module):
         else:
             self.final_rms_norm = None
     
-        self.dropouts = dropouts
+        # Convert dropout list to ModuleList and store final dropout separately
+        self.dropouts = nn.ModuleList(dropout_modules.dropouts)
+        self.dropout_final = dropout_modules.dropout_final
     
     def get_tracker(self, c: Config):
         if c.weight_tracker is None:
@@ -333,6 +346,9 @@ class MultiLinear(nn.Module):
         # Apply final layer normalization (pre-logit)
         if self.is_norm:
             current = self.final_rms_norm(current)
+        
+        # Apply dropout before final layer (pre-logits)
+        current = self.dropout_final(current)
         
         output = self.final_layer(current)
         # Squeeze only for binary classification (output dim is 1)

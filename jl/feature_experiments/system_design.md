@@ -128,7 +128,7 @@ Let us make sure to write unit tests in @test_feature_combinations.py that expli
 
 ### Final Layer
 
-This continues until the last layer, where there is just a single subsection with 4 possible consolidated features. At the final layer, the 4 features are randomly assigned to one of 2 classes. This allocation determines the class for all generated points.
+This continues until the last layer, where there is just a single subsection with 4 possible consolidated features. At the final layer, the 4 features are randomly assigned to one of 4 classes via permutation (each feature maps to exactly one unique class). This allocation determines the class for all generated points.
 
 ### Constructor Arguments
 
@@ -233,4 +233,17 @@ We will also introduce a new class HashedDropout(Dropout). In its forward method
 
 HashedDropout behavior is identical in training and evaluation modes - the same deterministic masking is applied based on (point_index, node_index) pairs. When x_indices is None, all neurons are used (no dropout applied). Validation sets do not pass indices, so dropout is not applied during validation.
 
-The Resnet.forward() signature changes to accept both x_indices and width_mask: `forward(self, x, x_indices=None, width_mask=None)`. 
+The Resnet.forward() signature changes to accept both x_indices and width_mask: `forward(self, x, x_indices=None, width_mask=None)`.
+
+## Final Layer Dropout
+
+All models (Resnet, MLP, MultiLinear, and their variants) now apply dropout at the final layer, pre-logits. This dropout is applied after the final layer normalization (if enabled) and before the final linear layer that produces logits.
+
+For Resnet models with hashed dropout, the final layer dropout uses `layer_index=num_layers` (since block layers use indices 0 to num_layers-1). The node indices for the final layer are computed as: `node_index = num_layers * d_model + j` for j in [0, d_model), extending the range to:
+0 <= node_index < (num_layers + 1) * d_model.
+
+The dropout modules are organized using a `DropoutModules` dataclass (defined in @dropout.py) that contains:
+- `dropouts`: A list of Dropout modules for hidden/block layers
+- `dropout_final`: A Dropout module for the final layer (pre-logits)
+
+Models convert the `dropouts` list to a `nn.ModuleList` internally and store `dropout_final` separately for use in the forward pass. 

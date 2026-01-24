@@ -5,6 +5,7 @@ from typing import Optional
 
 from jl.models import RMSNorm, ResidualBlock, Resnet, MLP
 from jl.config import Config
+from jl.feature_experiments.dropout import DropoutModules
 
 
 class MaskedRMSNorm(RMSNorm):
@@ -106,16 +107,16 @@ class ResidualBlockDModel(nn.Module):
 
 
 class ResnetH(Resnet):
-    def __init__(self, c: Config, dropouts: nn.ModuleList):
+    def __init__(self, c: Config, dropout_modules: DropoutModules):
         """
         ResnetH class that uses width_mask to vary the hidden dimension h.
         Uses ResidualBlockH and inherits all behavior from base Resnet class.
         """
-        super(ResnetH, self).__init__(c, dropouts=dropouts, block_class=ResidualBlockH)
+        super(ResnetH, self).__init__(c, dropout_modules=dropout_modules, block_class=ResidualBlockH)
 
 
 class ResnetDModel(Resnet):
-    def __init__(self, c: Config, dropouts: nn.ModuleList):
+    def __init__(self, c: Config, dropout_modules: DropoutModules):
         """
         ResnetDModel class that uses width_mask to vary the d_model dimension.
         The width_mask is applied to the model dimension throughout the network.
@@ -145,8 +146,11 @@ class ResnetDModel(Resnet):
         if c.is_norm:
             self.final_rms_norm = MaskedRMSNorm(self.d_model, learnable_norm_parameters=c.learnable_norm_parameters)
         else:
-            self.final_rms_norm = None    
-        self.dropouts = dropouts
+            self.final_rms_norm = None
+        
+        # Convert dropout list to ModuleList and store final dropout separately
+        self.dropouts = nn.ModuleList(dropout_modules.dropouts)
+        self.dropout_final = dropout_modules.dropout_final
         
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):
         """
@@ -172,6 +176,10 @@ class ResnetDModel(Resnet):
         # Apply final layer normalization (pre-logit) with mask
         if self.is_norm:
             current = self.final_rms_norm(current, mask=width_mask)
+        
+        # Apply dropout before final layer (pre-logits)
+        # Note: ResnetDModel doesn't use x_indices in forward, so pass None
+        current = self.dropout_final(current, x_indices=None)
             
         output = self.final_layer(current)
         # Squeeze only for binary classification (output dim is 1)
@@ -181,7 +189,7 @@ class ResnetDModel(Resnet):
 
 
 class MLPH(nn.Module):
-    def __init__(self, c: Config, dropouts: nn.ModuleList):
+    def __init__(self, c: Config, dropout_modules: DropoutModules):
         """
         MLP that uses width_mask to vary the h dimension.
         The width_mask is applied to the hidden dimension throughout the network.
@@ -222,7 +230,9 @@ class MLPH(nn.Module):
         else:
             self.final_rms_norm = None
     
-        self.dropouts = dropouts
+        # Convert dropout list to ModuleList and store final dropout separately
+        self.dropouts = nn.ModuleList(dropout_modules.dropouts)
+        self.dropout_final = dropout_modules.dropout_final
     
     def get_tracker(self, track_weights):
         raise NotImplementedError("Weight tracking is not supported for MLPH. Use base MLP instead.")
@@ -257,6 +267,9 @@ class MLPH(nn.Module):
         # Apply final layer normalization with mask
         if self.is_norm:
             current = self.final_rms_norm(current, mask=width_mask)
+        
+        # Apply dropout before final layer (pre-logits)
+        current = self.dropout_final(current)
         
         output = self.final_layer(current)
         # Squeeze only for binary classification (output dim is 1)
