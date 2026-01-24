@@ -21,8 +21,8 @@ class Config:
                 num_models: Optional[int] = None,
                 scaled_reg_k: Optional[float] = None):
         # Validate model_type
-        if model_type not in ['resnet', 'mlp', 'k-polynomial', 'multi-linear']:
-            raise ValueError(f"model_type must be either 'resnet', 'mlp', 'k-polynomial', or 'multi-linear', got '{model_type}'")
+        if model_type not in ['resnet', 'mlp', 'k-polynomial', 'multi-linear', 'simple-mlp']:
+            raise ValueError(f"model_type must be 'resnet', 'mlp', 'k-polynomial', 'multi-linear', or 'simple-mlp', got '{model_type}'")
         
         # Validate num_class
         if num_class < 2:
@@ -37,6 +37,15 @@ class Config:
             raise ValueError("h parameter cannot be set for 'k-polynomial' model_type.")
         if model_type == 'resnet' and h is None:
             raise ValueError("h parameter is required for 'resnet' model_type")
+        if model_type == 'simple-mlp':
+            if d_model is not None:
+                raise ValueError("d_model parameter cannot be set for 'simple-mlp' model_type")
+            if width_varyer is not None:
+                raise ValueError("width_varyer must be None for 'simple-mlp' model_type")
+            if num_layers > 0 and h is None:
+                raise ValueError("h parameter is required for 'simple-mlp' when num_layers > 0")
+            if weight_tracker not in [None, 'accuracy']:
+                raise ValueError(f"simple-mlp only supports weight_tracker=None or 'accuracy', got '{weight_tracker}'")
         
         # Validate k parameter based on model_type
         if model_type == 'k-polynomial':

@@ -421,5 +421,42 @@ class KPolynomial(nn.Module):
         
         # Sum over dimensions d and polynomial degrees k to get scalar logit per sample
         logits = weighted.sum(dim=(1, 2))  # Shape: (batch_size,)
-        
+
         return logits
+
+
+class SimpleMLP(nn.Module):
+    def __init__(self, c: Config):
+        """
+        Standard MLP: num_layers hidden layers with ReLU, no normalization.
+        0 layers: Linear(d, num_class)
+        1 layer:  Linear(d, h) -> ReLU -> Linear(h, num_class)
+        N layers: Linear(d, h) -> ReLU -> [Linear(h, h) -> ReLU] * (N-1) -> Linear(h, num_class)
+        """
+        super(SimpleMLP, self).__init__()
+        self.num_layers = c.num_layers
+        self.num_class = c.num_class
+        output_dim = 1 if c.num_class == 2 else c.num_class
+
+        if self.num_layers == 0:
+            self.final_layer = _make_linear(c.d, output_dim, c.scaled_reg_k)
+        else:
+            layers = []
+            layers.append(_make_linear(c.d, c.h, c.scaled_reg_k))
+            for _ in range(self.num_layers - 1):
+                layers.append(_make_linear(c.h, c.h, c.scaled_reg_k))
+            self.hidden_layers = nn.ModuleList(layers)
+            self.final_layer = _make_linear(c.h, output_dim, c.scaled_reg_k)
+
+    def get_tracker(self, c: Config):
+        return TrackerInterface()
+
+    def forward(self, x, width_mask: Optional[torch.Tensor] = None):
+        current = x
+        if self.num_layers > 0:
+            for layer in self.hidden_layers:
+                current = torch.relu(layer(current))
+        output = self.final_layer(current)
+        if self.num_class == 2:
+            output = output.squeeze(1)
+        return output

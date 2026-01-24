@@ -1,4 +1,4 @@
-from jl.models import Resnet, MLP, MultiLinear, KPolynomial
+from jl.models import Resnet, MLP, MultiLinear, KPolynomial, SimpleMLP
 from jl.parallel_models import (
     ResnetH,
     ResnetDModel,
@@ -115,6 +115,8 @@ def create_model(c: Config):
         return MultiLinear(c, dropout_modules=dropout_modules)
     elif c.model_type == 'k-polynomial':
         return KPolynomial(c)
+    elif c.model_type == 'simple-mlp':
+        return SimpleMLP(c)
     else:
-        raise ValueError(f"Invalid model_type: {c.model_type}. Must be 'resnet', 'mlp', 'multi-linear', or 'k-polynomial'.")
+        raise ValueError(f"Invalid model_type: {c.model_type}. Must be 'resnet', 'mlp', 'multi-linear', 'k-polynomial', or 'simple-mlp'.")
 
