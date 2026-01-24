@@ -2,7 +2,6 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -10,7 +9,6 @@ from torch.utils.data import DataLoader, TensorDataset
 from jl.model_creator import create_model
 from jl.config import Config
 from jl.feature_experiments.optimizer import RegAdamW, register_reg_adam_w_hooks
-from jl.feature_experiments.scaled_regularization import set_reg_mode
 from jl.scheduler import create_lr_scheduler
 
 
@@ -151,15 +149,6 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
                     train_acc = (train_preds == batch_y.long()).float().mean().item()
             
             loss.backward()
-
-            # Scaled regularization: second pass with "gradient when uniform"
-            if c.scaled_reg_k is not None:
-                y_onehot = F.one_hot(batch_y.long(), num_classes=c.num_class).float()
-                uniform_grad = (1.0 / c.num_class) - y_onehot
-                set_reg_mode(model, True)
-                logits2 = model(batch_x)
-                logits2.backward(gradient=uniform_grad)
-                set_reg_mode(model, False)
 
             # For 'full_step' mode, compute the optimizer step direction (excluding lr and weight_decay)
             if c.weight_tracker == 'full_step':

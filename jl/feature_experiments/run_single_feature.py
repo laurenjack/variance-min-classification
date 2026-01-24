@@ -46,7 +46,6 @@ def main():
         learnable_norm_parameters=False,
         lr_scheduler=None,
         d_model=12,
-        # scaled_reg_k=0.03,
     )
 
     # Generate validation set with class-balanced sampling
