@@ -20,7 +20,7 @@ def main():
         f=4,
         device=device,
         is_orthogonal=False,
-        percent_correct_per_f=[0.8] * 8,
+        percent_correct_per_f=[0.8] * 4,
         noisy_d=8,
     )
     n = 64
