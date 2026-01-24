@@ -10,7 +10,7 @@ def main():
     VAL_TO_SHOW = 32
     GROUP_BY_PERCENT_CORRECT = False
     
-    # torch.manual_seed(38175)
+    torch.manual_seed(38175)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Problem: SingleFeatures
@@ -23,7 +23,7 @@ def main():
         percent_correct_per_f=[0.8] * 8,
         noisy_d=8,
     )
-    n = 256
+    n = 64
     # n = sum(problem.n_per_f)
 
     # Model configuration
@@ -32,22 +32,21 @@ def main():
         d=problem.d,
         n_val=128,
         n=n,
-        batch_size=n // 4,
-        lr=0.03,
-        epochs=100,
-        weight_decay=0.03,
-        num_layers=8,
+        batch_size=n // 2,
+        lr=0.003,
+        epochs=200,
+        weight_decay=0.001,
+        num_layers=1,
         num_class=problem.num_classes(),
         h=80,
         weight_tracker="accuracy",
         width_varyer=None,
         is_norm=True,
         optimizer="adam_w",
-        learnable_norm_parameters=True,
+        learnable_norm_parameters=False,
         lr_scheduler=None,
-        # c=0.5,
-        # dropout_prob=0.2,
-        is_hashed_dropout=False,
+        d_model=12,
+        # scaled_reg_k=0.03,
     )
 
     # Generate validation set with class-balanced sampling

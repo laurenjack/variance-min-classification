@@ -18,7 +18,8 @@ class Config:
                 dropout_prob: Optional[float] = None,
                 is_hashed_dropout: bool = False,
                 prob_weight: float = 1.0,
-                num_models: Optional[int] = None):
+                num_models: Optional[int] = None,
+                scaled_reg_k: Optional[float] = None):
         # Validate model_type
         if model_type not in ['resnet', 'mlp', 'k-polynomial', 'multi-linear']:
             raise ValueError(f"model_type must be either 'resnet', 'mlp', 'k-polynomial', or 'multi-linear', got '{model_type}'")
@@ -104,6 +105,19 @@ class Config:
             if width_varyer is not None:
                 raise ValueError(f"is_hashed_dropout=True is incompatible with width_varyer={width_varyer}")
 
+        # Validate scaled_reg_k
+        if scaled_reg_k is not None:
+            if dropout_prob is not None:
+                raise ValueError("scaled_reg_k is incompatible with dropout_prob")
+            if is_hashed_dropout:
+                raise ValueError("scaled_reg_k is incompatible with is_hashed_dropout=True")
+            if model_type == 'k-polynomial':
+                raise ValueError("scaled_reg_k is incompatible with model_type='k-polynomial'")
+            if width_varyer is not None:
+                raise ValueError(f"scaled_reg_k is incompatible with width_varyer={width_varyer}")
+            if num_class == 2:
+                raise ValueError("scaled_reg_k requires num_class > 2 (multi-class classification)")
+
         self.model_type = model_type
         self.d = d
         self.n_val = n_val
@@ -131,3 +145,4 @@ class Config:
         self.is_hashed_dropout = is_hashed_dropout
         self.prob_weight = prob_weight
         self.num_models = num_models
+        self.scaled_reg_k = scaled_reg_k

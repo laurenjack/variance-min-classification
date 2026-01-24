@@ -9,7 +9,7 @@ from jl.ten_runner import train_multi
 
 
 def main():
-    IS_MULTI = False  # Set to True to train ensemble of 10 models
+    IS_MULTI = True  # Set to True to train ensemble of 10 models
     VAL_TO_SHOW = 32
     
     torch.manual_seed(659)
@@ -32,7 +32,7 @@ def main():
         d=problem.d,
         n_val=n,
         n=n,
-        batch_size=n // 5,
+        batch_size=n // 2,
         lr=0.01,
         epochs=100,
         weight_decay=0.01,

@@ -1,0 +1,1 @@
+The user has given you instructions but they want to check you understand them, confirm what you will do, if it is not clear to you can also use /clarify.
