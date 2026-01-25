@@ -7,8 +7,6 @@ from jl.single_runner import train_once
 
 
 def main():
-    VAL_TO_SHOW = 32
-    GROUP_BY_PERCENT_CORRECT = False
 
     torch.manual_seed(38175)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -23,7 +21,7 @@ def main():
         percent_correct_per_f=[0.8] * 4,
         noisy_d=8,
     )
-    n = 64
+    n = 40
 
     # Model configuration
     model_config = Config(
@@ -50,31 +48,11 @@ def main():
     )
     validation_set = (x_val, y_val, center_indices)
 
-    # Train the model using single_runner
+
+ # Train the model using single_runner
     model, tracker, x_train, y_train, train_center_indices, _ = train_once(
         device, problem, validation_set, model_config, clean_mode=clean_mode
     )
-
-    num_classes = model_config.num_class
-    if num_classes == 2:
-        prob_fn = torch.sigmoid
-    else:
-        prob_fn = lambda x: torch.softmax(x, dim=1)
-
-    if GROUP_BY_PERCENT_CORRECT:
-        print("\n" + "=" * 60)
-        print("VALIDATION PREDICTIONS (GROUPED BY percent_correct)")
-        print("=" * 60)
-        with torch.no_grad():
-            model.eval()
-            val_probs = prob_fn(model(x_val))
-        print_grouped_by_percent_correct(val_probs, y_val, center_indices, problem, "Model", num_classes, val_to_show=VAL_TO_SHOW)
-    else:
-        print("\n" + "=" * 60)
-        print("VALIDATION PREDICTIONS")
-        print("=" * 60)
-        val_probs = prob_fn(model(x_val[:VAL_TO_SHOW]))
-        print_validation_probs(val_probs, y_val[:VAL_TO_SHOW], "Model", num_classes)
 
 
 if __name__ == "__main__":
