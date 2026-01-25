@@ -247,3 +247,18 @@ The dropout modules are organized using a `DropoutModules` dataclass (defined in
 - `dropout_final`: A Dropout module for the final layer (pre-logits)
 
 Models convert the `dropouts` list to a `nn.ModuleList` internally and store `dropout_final` separately for use in the forward pass. 
+
+# Total Activation
+
+Now we will add new funcitionality that is only supported by SimpleMlp. We will compute what is called the total activation. We calculate it in the forward, For every activation we:
+- Square it, then suum across the output dimension
+- add it to the total_actiavtion tensor which is of shape [batch_size]
+
+We will have a single shared tensor total_activation which all the SimpleMlp will keep as a property, and this is what we will add to. The total_actiavtion is purely kept for reporting. For each forward for the whole model, it must be set to zero. Also, the SimpleMlp will have a property use_total_activation=False. The user has to explictly set it to True, for any of the total_actiavtion functionality to be activated. When it is False we need not compute it nor set it to zero.
+
+In run_simple_mlp.py, we will set it after training, we should set use_total_activation=True, feed forward the entire training set, and report total_actiavtion print the correct points first, then the incorrect points.
+  
+  
+# For future (please ignore)
+
+Divide it by the number of "active points" this is the number of points where the activation fired, since it is for simple MLP, it is where the relu != 0, the final layer it is just batch size. We should have a plus 1 to the denominator, to prevent dividing by zero.
