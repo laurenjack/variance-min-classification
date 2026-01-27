@@ -10,7 +10,7 @@ We need to implement `generate_dataset`, every example has exactly 1 and only on
 
 ### Percent Correct
 
-We want to introduce some noise to the problem, optionally. Much like the constructor arg n_per_f we have an optional list percent_correct_per_f, which also must be of length f if it is specified. Each element is a number between 1/f <= pc_j <= 1.0. When it is specified, for all examples from a given feature, we "flip" the exact percentage 1-pc_j (where j is the jth feature). If the label is flipped the jth feature gets the j+1th label instead (wrapping around to feature 0 for the last feature). So if pc_j=0.7 and feature j has 20 data points we flip (1 - pc_j) * 20 = 0.3 * 20 = 6 data points to class j+1.
+We want to introduce some noise to the problem, optionally. We have an optional list percent_correct_per_f, which must be of length f if it is specified. Each element is a number between 1/f <= pc_j <= 1.0. When it is specified, for all examples from a given feature, we "flip" the exact percentage 1-pc_j (where j is the jth feature). If the label is flipped the jth feature gets the j+1th label instead (wrapping around to feature 0 for the last feature). So if pc_j=0.7 and feature j has 20 data points we flip (1 - pc_j) * 20 = 0.3 * 20 = 6 data points to class j+1.
 
 ### Noisy d
 
@@ -254,9 +254,9 @@ Now we will add new funcitionality that is only supported by SimpleMlp. We will 
 - Square it, then suum across the output dimension
 - add it to the total_actiavtion tensor which is of shape [batch_size]
 
-We will have a single shared tensor total_activation which all the SimpleMlp will keep as a property, and this is what we will add to. The total_actiavtion is purely kept for reporting. For each forward for the whole model, it must be set to zero. Also, the SimpleMlp will have a property use_total_activation=False. The user has to explictly set it to True, for any of the total_actiavtion functionality to be activated. When it is False we need not compute it nor set it to zero.
+We will have a single tensor total_activation which SimpleMlp will keep as a property. The total_activation is purely kept for reporting and is recreated each forward pass (shape [batch_size]). The SimpleMlp will have a property use_total_activation=False. The user has to explicitly set it to True for any of the total_activation functionality to be activated. When it is False we need not compute it.
 
-In run_simple_mlp.py, we will set it after training, we should set use_total_activation=True, feed forward the entire training set, and report total_actiavtion print the correct points first, then the incorrect points.
+In run_simple_mlp.py, we will set it after training, we should set use_total_activation=True, feed forward the entire training set, and report total_activation. Print the correctly labeled points first (where y == center_indices), then the mislabeled points (where y != center_indices due to label noise from percent_correct_per_f).
   
   
 # For future (please ignore)
