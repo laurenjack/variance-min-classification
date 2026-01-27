@@ -3,6 +3,7 @@ from jl.parallel_models import (
     ResnetH,
     ResnetDModel,
     MLPH,
+    SimpleMLPH,
 )
 from jl.config import Config
 from jl.feature_experiments.dropout import create_dropout_modules
@@ -116,7 +117,12 @@ def create_model(c: Config):
     elif c.model_type == 'k-polynomial':
         return KPolynomial(c)
     elif c.model_type == 'simple-mlp':
-        return SimpleMLP(c)
+        if c.width_varyer is None:
+            return SimpleMLP(c)
+        elif c.width_varyer == 'h':
+            return SimpleMLPH(c)
+        else:
+            raise ValueError(f"Invalid width_varyer for simple-mlp: {c.width_varyer}. Must be None or 'h'.")
     else:
         raise ValueError(f"Invalid model_type: {c.model_type}. Must be 'resnet', 'mlp', 'multi-linear', 'k-polynomial', or 'simple-mlp'.")
 
