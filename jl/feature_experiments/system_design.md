@@ -246,5 +246,18 @@ The dropout modules are organized using a `DropoutModules` dataclass (defined in
 - `dropouts`: A list of Dropout modules for hidden/block layers
 - `dropout_final`: A Dropout module for the final layer (pre-logits)
 
-Models convert the `dropouts` list to a `nn.ModuleList` internally and store `dropout_final` separately for use in the forward pass. 
+Models convert the `dropouts` list to a `nn.ModuleList` internally and store `dropout_final` separately for use in the forward pass.
+
+# SimpleMLPH (Width-Varying SimpleMLP)
+
+SimpleMLPH is a width-varying variant of SimpleMLP that supports masking the hidden dimension h. It is defined in parallel_models.py alongside other width-varying model variants (ResnetH, MLPH, etc.).
+
+SimpleMLPH:
+- Applies width_mask to the hidden dimension after each linear layer (before ReLU)
+- Does NOT use normalization (same as SimpleMLP)
+- Does NOT use dropout
+- Works with variance_experiment_runner.py for width-varying experiments
+- Forward signature: `forward(self, x, width_mask=None)` - compatible with multi_runner.py
+
+When width_varyer='h' is set in Config with model_type='simple-mlp', model_creator.py returns a SimpleMLPH instance.
 

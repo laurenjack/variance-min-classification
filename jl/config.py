@@ -39,8 +39,8 @@ class Config:
         if model_type == 'simple-mlp':
             if d_model is not None:
                 raise ValueError("d_model parameter cannot be set for 'simple-mlp' model_type")
-            if width_varyer is not None:
-                raise ValueError("width_varyer must be None for 'simple-mlp' model_type")
+            if width_varyer is not None and width_varyer != 'h':
+                raise ValueError("width_varyer must be None or 'h' for 'simple-mlp' model_type")
             if num_layers > 0 and h is None:
                 raise ValueError("h parameter is required for 'simple-mlp' when num_layers > 0")
             if weight_tracker not in [None, 'accuracy']:

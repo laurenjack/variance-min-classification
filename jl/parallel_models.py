@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 from typing import Optional
 
-from jl.models import RMSNorm, ResidualBlock, Resnet, MLP
+from jl.models import RMSNorm, ResidualBlock, Resnet, MLP, SimpleMLP
 from jl.config import Config
 from jl.feature_experiments.dropout import DropoutModules
 
@@ -270,10 +270,62 @@ class MLPH(nn.Module):
         
         # Apply dropout before final layer (pre-logits)
         current = self.dropout_final(current)
-        
+
         output = self.final_layer(current)
         # Squeeze only for binary classification (output dim is 1)
         if self.num_class == 2:
             output = output.squeeze(1)
         return output
 
+
+class SimpleMLPH(nn.Module):
+    def __init__(self, c: Config):
+        """
+        Width-varying SimpleMLP that applies width_mask to the hidden dimension h.
+        No normalization, no dropout - same as SimpleMLP but with width masking support.
+
+        0 layers: Linear(d, num_class) - no width masking possible
+        1 layer:  Linear(d, h) -> mask -> ReLU -> Linear(h, num_class)
+        N layers: Linear(d, h) -> mask -> ReLU -> [Linear(h, h) -> mask -> ReLU] * (N-1) -> Linear(h, num_class)
+        """
+        super(SimpleMLPH, self).__init__()
+        self.num_layers = c.num_layers
+        self.num_class = c.num_class
+        self.h = c.h
+        output_dim = 1 if c.num_class == 2 else c.num_class
+
+        if self.num_layers == 0:
+            self.hidden_layers = None
+            self.final_layer = nn.Linear(c.d, output_dim, bias=False)
+        else:
+            layers = []
+            layers.append(nn.Linear(c.d, c.h, bias=False))
+            for _ in range(self.num_layers - 1):
+                layers.append(nn.Linear(c.h, c.h, bias=False))
+            self.hidden_layers = nn.ModuleList(layers)
+            self.final_layer = nn.Linear(c.h, output_dim, bias=False)
+
+    def get_tracker(self, c: Config):
+        raise NotImplementedError("Weight tracking is not supported for SimpleMLPH. Use SimpleMLP instead.")
+
+    def forward(self, x, width_mask: Optional[torch.Tensor] = None):
+        """
+        Forward pass with optional width masking on hidden dimension h.
+
+        Args:
+            x: Input tensor of shape [batch_size, d]
+            width_mask: Optional tensor of shape [h] containing 0.0 or 1.0 values.
+                       Applied to h dimensions throughout the network.
+        """
+        current = x
+        if self.num_layers > 0:
+            for layer in self.hidden_layers:
+                current = layer(current)
+                if width_mask is not None:
+                    current = current * width_mask.unsqueeze(0)
+                current = torch.relu(current)
+
+        output = self.final_layer(current)
+        if self.num_class == 2:
+            output = output.squeeze(1)
+        return output
