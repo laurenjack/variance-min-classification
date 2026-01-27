@@ -427,8 +427,6 @@ class SimpleMLP(nn.Module):
         super(SimpleMLP, self).__init__()
         self.num_layers = c.num_layers
         self.num_class = c.num_class
-        self.use_total_activation = False
-        self.total_activation: Optional[torch.Tensor] = None
         output_dim = 1 if c.num_class == 2 else c.num_class
 
         if self.num_layers == 0:
@@ -447,23 +445,12 @@ class SimpleMLP(nn.Module):
         return TrackerInterface()
 
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):
-        batch_size = x.shape[0]
-        if self.use_total_activation:
-            self.total_activation = torch.zeros(batch_size, device=x.device)
-
         current = x
         if self.num_layers > 0:
             for layer in self.hidden_layers:
                 current = torch.relu(layer(current))
-                if self.use_total_activation:
-                    self.total_activation = self.total_activation + torch.abs(current).sum(dim=1)
 
         output = self.final_layer(current)
-        if self.use_total_activation:
-            if output.dim() == 1:
-                self.total_activation = self.total_activation + torch.abs(output)
-            else:
-                self.total_activation = self.total_activation + torch.abs(output).sum(dim=1)
 
         if self.num_class == 2:
             output = output.squeeze(1)
