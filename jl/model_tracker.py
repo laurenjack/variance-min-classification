@@ -388,3 +388,20 @@ class PolynomialTracker(BaseTracker):
                 title_suffix = self._get_tracking_suffix()
                 plt.title(f"Polynomial Coefficient Matrix {title_suffix} Frobenius Norm")
                 plt.show()
+
+
+class SimpleMLPTracker(BaseTracker):
+    """Tracker for SimpleMLP that only supports accuracy tracking (no weight tracking)."""
+
+    def __init__(self, c: Config):
+        super().__init__(c)
+
+    def update(self, model, val_acc, train_acc=None, val_loss=None, train_loss=None):
+        """Record metrics only (SimpleMLP doesn't support weight tracking)."""
+        self._update_metrics(val_acc, train_acc, val_loss, train_loss)
+
+    def plot(self):
+        """Generate plots for accuracy and loss."""
+        training_steps = range(len(self.val_acc_history))
+        self._plot_accuracy(training_steps)
+        self._plot_loss(training_steps)

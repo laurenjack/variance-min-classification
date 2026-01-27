@@ -119,7 +119,6 @@ class SingleFeatures(Problem):
         true_d: int,
         f: int,
         is_orthogonal: bool = True,
-        n_per_f: Optional[List[int]] = None,
         percent_correct_per_f: Optional[List[float]] = None,
         noisy_d: int = 0,
         device: Optional[torch.device] = None,
@@ -132,7 +131,6 @@ class SingleFeatures(Problem):
             is_orthogonal: If True, generate orthonormal features (requires f <= true_d).
                            If False, generate random unit-norm features with rejection sampling
                            to avoid features that are too close (dot product > cos(2π/true_d)).
-            n_per_f: The frequency of each feature in the dataset. If None, all features are equally frequent.
             percent_correct_per_f: Optional list of length f specifying the probability that
                                    samples of each feature retain their correct label.
                                    Each element must be in [1/f, 1.0]. When a label is flipped,
@@ -154,15 +152,7 @@ class SingleFeatures(Problem):
         if noisy_d < 0:
             raise ValueError("noisy_d must be non-negative")
         self.noisy_d: int = int(noisy_d)
-        
-        # Validate and store n_per_f
-        if n_per_f is not None:
-            if len(n_per_f) != self.f:
-                raise ValueError(f"n_per_f must have length f={self.f}, got length {len(n_per_f)}")
-            if any(x <= 0 for x in n_per_f):
-                raise ValueError("All elements of n_per_f must be positive")
-        self.n_per_f = n_per_f
-        
+
         # Validate and store percent_correct_per_f
         if percent_correct_per_f is not None:
             if len(percent_correct_per_f) != self.f:
@@ -227,88 +217,44 @@ class SingleFeatures(Problem):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Generate a dataset of size n.
-        
+
         Each sample has exactly one active feature, corresponding to one class.
-        
-        If n_per_f is None (default):
-            Samples are class-balanced (each class gets approximately n/f samples).
-        
-        If n_per_f is specified:
-            Feature i appears with relative frequency n_per_f[i].
-            n must be a multiple of sum(n_per_f), otherwise an error is raised.
-        
+        Samples are class-balanced (each class gets approximately n/f samples).
+
         Args:
             n: Number of samples to generate.
             clean_mode: If True, generate clean samples with no label noise.
                         If False (default), apply label noise according to percent_correct_per_f.
             shuffle: If True, randomly permute the resulting dataset.
-        
+
         Returns:
             (x, y, center_indices, px):
               - x: shape (n, d) float32 tensor of features (d = true_d + noisy_d)
               - y: shape (n,) int64 tensor of class labels (in range [0, f))
               - center_indices: shape (n,) int64 tensor, the true feature index for each sample
-              - px: shape (n,) float32 tensor. If n_per_f is None, all ones (uniform).
-                    If n_per_f is specified, each sample's value is n_per_f[feature_idx] as float.
+              - px: shape (n,) float32 tensor, all ones (uniform).
         """
         if n <= 0:
             raise ValueError("n must be positive")
-        
-        if self.n_per_f is not None:
-            # Validate that n is a multiple of sum(n_per_f)
-            total_freq = sum(self.n_per_f)
-            if n % total_freq != 0:
-                raise ValueError(
-                    f"When n_per_f is specified, n must be a multiple of sum(n_per_f)={total_freq}. "
-                    f"Got n={n}."
-                )
-            
-            # Generate samples according to specified frequencies
-            multiplier = n // total_freq
-            
-            # Build x_standard by stacking one-hot vectors according to frequencies
-            x_standard_list: List[torch.Tensor] = []
-            y_list: List[torch.Tensor] = []
-            px_list: List[torch.Tensor] = []
-            
-            for feature_idx in range(self.f):
-                num_samples = self.n_per_f[feature_idx] * multiplier
-                # Create one-hot vectors for this feature
-                one_hot = torch.zeros(num_samples, self.f, device=self.device, dtype=torch.float32)
-                one_hot[:, feature_idx] = 1.0
-                x_standard_list.append(one_hot)
-                
-                # Create labels for this feature
-                labels = torch.full((num_samples,), feature_idx, device=self.device, dtype=torch.int64)
-                y_list.append(labels)
-                
-                # Create px values for this feature (n_per_f value as float)
-                px_values = torch.full((num_samples,), float(self.n_per_f[feature_idx]), device=self.device, dtype=torch.float32)
-                px_list.append(px_values)
-            
-            x_standard = torch.cat(x_standard_list, dim=0)  # shape (n, f)
-            y = torch.cat(y_list, dim=0)  # shape (n,)
-            px = torch.cat(px_list, dim=0)  # shape (n,)
-        else:
-            # Default behavior: approximately balanced classes
-            # Stack ceiling(n/f) identity matrices vertically
-            num_repeats = math.ceil(n / self.f)
-            
-            # Create I_f identity matrix
-            I_f = torch.eye(self.f, device=self.device, dtype=torch.float32)
-            
-            # Stack num_repeats copies vertically
-            x_standard = I_f.repeat(num_repeats, 1)  # shape (f * num_repeats, f)
-            
-            # Truncate to first n rows
-            x_standard = x_standard[:n]  # shape (n, f)
-            
-            # Labels: y[i] = argmax(x_standard[i]) = i mod f
-            # Since x_standard[i] is a one-hot vector, argmax gives us the column index
-            y = torch.arange(n, device=self.device, dtype=torch.int64) % self.f
-            
-            # px is uniform (all ones) when n_per_f is not specified
-            px = torch.ones(n, device=self.device, dtype=torch.float32)
+
+        # Approximately balanced classes: stack ceiling(n/f) identity matrices vertically
+        num_repeats = math.ceil(n / self.f)
+
+        # Create I_f identity matrix
+        I_f = torch.eye(self.f, device=self.device, dtype=torch.float32)
+
+        # Stack num_repeats copies vertically
+        x_standard = I_f.repeat(num_repeats, 1)  # shape (f * num_repeats, f)
+
+        # Truncate to first n rows
+        x_standard = x_standard[:n]  # shape (n, f)
+
+        # Labels: y[i] = argmax(x_standard[i]) = i mod f
+        # Since x_standard[i] is a one-hot vector, argmax gives us the column index
+        y = torch.arange(n, device=self.device, dtype=torch.int64) % self.f
+
+        # px is uniform (all ones)
+        px = torch.ones(n, device=self.device, dtype=torch.float32)
         
         # Compute x = x_standard @ Q
         x = x_standard @ self.Q  # shape (n, _true_d)
@@ -354,7 +300,7 @@ class SingleFeatures(Problem):
                             # Flip label to (feature_idx + 1) % f
                             new_label = (feature_idx + 1) % self.f
                             y[indices_to_flip] = new_label
-        
+
         # Shuffle if requested
         if shuffle:
             perm = torch.randperm(n, generator=self.generator, device=self.device)

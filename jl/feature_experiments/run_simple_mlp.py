@@ -49,10 +49,36 @@ def main():
     validation_set = (x_val, y_val, center_indices)
 
 
- # Train the model using single_runner
+    # Train the model using single_runner
     model, tracker, x_train, y_train, train_center_indices, _ = train_once(
         device, problem, validation_set, model_config, clean_mode=clean_mode
     )
+
+    # Report total activation
+    model.eval()
+    model.use_total_activation = True
+    with torch.no_grad():
+        logits = model(x_train)
+
+    # Correctly labeled = y matches true feature (center_indices)
+    # Mislabeled = y differs from true feature (due to label noise)
+    correctly_labeled_mask = y_train == train_center_indices
+
+    # Get logit for the labeled class only
+    labeled_logits = logits.gather(1, y_train.unsqueeze(1)).squeeze(1)
+
+    correct_activations = model.total_activation[correctly_labeled_mask].tolist()
+    correct_logits = labeled_logits[correctly_labeled_mask].tolist()
+    mislabeled_activations = model.total_activation[~correctly_labeled_mask].tolist()
+    mislabeled_logits = labeled_logits[~correctly_labeled_mask].tolist()
+
+    print("\nTotal Activation Report:")
+    print(f"Correctly labeled ({len(correct_activations)}):")
+    for act, lg in zip(correct_activations, correct_logits):
+        print(f"  activation={act:.2f}, logit={lg:.2f}")
+    print(f"Mislabeled ({len(mislabeled_activations)}):")
+    for act, lg in zip(mislabeled_activations, mislabeled_logits):
+        print(f"  activation={act:.2f}, logit={lg:.2f}")
 
 
 if __name__ == "__main__":
