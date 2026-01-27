@@ -10,7 +10,7 @@ We need to implement `generate_dataset`, every example has exactly 1 and only on
 
 ### Percent Correct
 
-We want to introduce some noise to the problem, optionally. We have an optional list percent_correct_per_f, which must be of length f if it is specified. Each element is a number between 1/f <= pc_j <= 1.0. When it is specified, for all examples from a given feature, we "flip" the exact percentage 1-pc_j (where j is the jth feature). If the label is flipped the jth feature gets the j+1th label instead (wrapping around to feature 0 for the last feature). So if pc_j=0.7 and feature j has 20 data points we flip (1 - pc_j) * 20 = 0.3 * 20 = 6 data points to class j+1.
+We want to introduce some noise to the problem, optionally. We have an optional list percent_correct_per_f, which must be of length f if it is specified. Each element is a number between 1/f <= pc_j <= 1.0. When it is specified, for all examples from a given feature, we "flip" the exact percentage 1-pc_j (where j is the jth feature). If the label is flipped, the new label is sampled uniformly at random from all classes except the correct one. So if pc_j=0.7 and feature j has 20 data points we flip (1 - pc_j) * 20 = 0.3 * 20 = 6 data points to random other classes.
 
 ### Noisy d
 
