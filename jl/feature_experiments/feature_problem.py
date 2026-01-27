@@ -296,10 +296,18 @@ class SingleFeatures(Problem):
                                 device=self.device,
                             )
                             indices_to_flip = feature_sample_indices[perm[:num_to_flip]]
-                            
-                            # Flip label to (feature_idx + 1) % f
-                            new_label = (feature_idx + 1) % self.f
-                            y[indices_to_flip] = new_label
+
+                            # Sample new labels uniformly from all classes except the correct one
+                            other_classes = torch.cat([
+                                torch.arange(feature_idx, device=self.device),
+                                torch.arange(feature_idx + 1, self.f, device=self.device)
+                            ])
+                            random_indices = torch.randint(
+                                0, self.f - 1, (num_to_flip,),
+                                generator=self.generator, device=self.device
+                            )
+                            new_labels = other_classes[random_indices]
+                            y[indices_to_flip] = new_labels
 
         # Shuffle if requested
         if shuffle:
