@@ -121,6 +121,7 @@ class SingleFeatures(Problem):
         is_orthogonal: bool = True,
         percent_correct_per_f: Optional[List[float]] = None,
         noisy_d: int = 0,
+        random_basis: bool = False,
         device: Optional[torch.device] = None,
         generator: Optional[torch.Generator] = None,
     ) -> None:
@@ -138,6 +139,8 @@ class SingleFeatures(Problem):
             noisy_d: Number of noisy dimensions to add. For each sample, a random unit vector of
                      length noisy_d is generated (scaled by 1/sqrt(true_d)) and concatenated.
                      Must be non-negative. Defaults to 0.
+            random_basis: If True, apply a random orthonormal transformation across all
+                         d = true_d + noisy_d dimensions.
             device: torch device to use for tensors
             generator: optional random generator for reproducibility
         """
@@ -188,6 +191,16 @@ class SingleFeatures(Problem):
                 generator=self.generator,
                 device=self.device,
             )
+
+        # Apply a random orthonormal basis change across all dims if requested
+        self.random_basis = random_basis
+        if self.random_basis:
+            total_d = self._true_d + self.noisy_d
+            A = torch.randn(total_d, total_d, generator=self.generator, device=self.device)
+            Q_basis, _ = torch.linalg.qr(A)
+            self.basis: Optional[torch.Tensor] = Q_basis
+        else:
+            self.basis = None
     
     @property
     def d(self) -> int:
@@ -308,6 +321,10 @@ class SingleFeatures(Problem):
                             )
                             new_labels = other_classes[random_indices]
                             y[indices_to_flip] = new_labels
+
+        # Apply basis transformation if enabled
+        if self.basis is not None:
+            x = x @ self.basis
 
         # Shuffle if requested
         if shuffle:
