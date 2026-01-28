@@ -20,10 +20,10 @@ def main():
         noisy_d=12,
         random_basis=True,
     )
-    n = 256
+    n = 128
 
     # Experiment parameters
-    width_range = list(range(4, 81, 1))
+    width_range = list(range(3, 161, 1))
     h = max(width_range)
     num_runs = 20
 
@@ -33,11 +33,11 @@ def main():
         d=problem.d,
         n_val=1000,
         n=n,
-        batch_size=n // 8,
+        batch_size=n // 4,
         lr=0.01,
-        epochs=100,
+        epochs=200,
         weight_decay=0.001,
-        num_layers=2,
+        num_layers=1,
         num_class=problem.num_classes(),
         h=h,
         weight_tracker="accuracy",
