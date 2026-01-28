@@ -2,7 +2,7 @@ from copy import deepcopy
 import torch
 
 from jl.config import Config
-from jl.variance_experiment_runner import run_list_experiment
+from jl.multi_experiment_grapher import run_list_experiment_with_variance
 from jl.variance_experiments.data_generator import SubDirections
 
 
@@ -62,7 +62,7 @@ def main():
 
     
     # Run MLP experiments
-    run_list_experiment(
+    run_list_experiment_with_variance(
         device,
         problem,
         validation_set,
