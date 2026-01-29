@@ -5,7 +5,7 @@ from jl.posterior_minimizer import dataset_creator as dc
 
 n = 1000000
 problem = dc.Gaussian(1, scale_of_mean=0.1)
-x, _ = problem.generate_dataset(n, shuffle=False)
+x, _, _ = problem.generate_dataset(n, shuffle=False)
 class_n = n // 2
 x0 = x[0:class_n].numpy()
 x1 = x[class_n:].numpy()

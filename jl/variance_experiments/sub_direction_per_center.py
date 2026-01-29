@@ -59,7 +59,7 @@ def main() -> None:
     )
 
     # Generate validation set with requested label noise
-    x_val, y_val, center_indices, _ = problem.generate_dataset(
+    x_val, y_val, center_indices = problem.generate_dataset(
         model_config.n_val,
         clean_mode=True,
         shuffle=True,

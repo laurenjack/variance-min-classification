@@ -19,7 +19,7 @@ def calc_sd(grads):
 
 
 problem = dataset_creator.AllNoise(num_class=2, d=d)
-x, y = problem.generate_dataset(n, shuffle=True)
+x, y, _ = problem.generate_dataset(n, shuffle=True)
 model = cm.Mlp(sizes, is_bias=False, all_linear=True)
 
 # Get the gradients

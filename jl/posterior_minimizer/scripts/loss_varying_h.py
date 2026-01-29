@@ -31,7 +31,7 @@ def run_experiment(n, d, hidden_sizes, num_runs, learning_rate, num_epochs):
                 nn.Linear(h, 1, bias=False)  # Single output for binary classification
             ).to(device)
 
-            x, y = problem.generate_dataset(n, shuffle=True)
+            x, y, _ = problem.generate_dataset(n, shuffle=True)
             x, y = x.to(device), y.to(device)
 
             # Define loss and optimizer

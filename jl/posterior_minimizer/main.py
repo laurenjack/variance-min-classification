@@ -39,7 +39,7 @@ hp = hyper_parameters.HyperParameters(batch_size=n_per_class * 2,
 
 # x, y = data_generator.uniform_one_true_dim(n_per_class, d, p)
 bra = dataset_creator.BinaryRandomAssigned(2, real_d, noisy_d=noisy_d)
-x, y = bra.generate_dataset(n_per_class * 2, percent_correct=p, shuffle=True)
+x, y, _ = bra.generate_dataset(n_per_class * 2, percent_correct=p, shuffle=True)
 train_set = TensorDataset(x, y)
 train_loader = DataLoader(train_set, hp.batch_size)
 
@@ -56,7 +56,7 @@ print(x[y.bool()])
 
 # The test set will allow us to evaluate whether the model is using spurious dimensions
 # x_test, y_test = data_generator.uniform_one_true_dim(test_n_per_class, d, 1.0)
-x_test, y_test = bra.generate_dataset(test_n_per_class * 2, percent_correct=1.0, shuffle=True)
+x_test, y_test, _ = bra.generate_dataset(test_n_per_class * 2, percent_correct=1.0, shuffle=True)
 # x_test = off_axis_basis(x_test)
 test_set = TensorDataset(x_test, y_test)
 test_loader = DataLoader(test_set, hp.batch_size)

@@ -47,7 +47,7 @@ if __name__ == '__main__':
     percent_correct = 0.8
     bound = 10
     bra = dataset_creator.BinaryRandomAssigned(num_class, real_d, noisy_d=noisy_d)
-    x, y = bra.generate_dataset(n, percent_correct=percent_correct, shuffle=True)
+    x, y, _ = bra.generate_dataset(n, percent_correct=percent_correct, shuffle=True)
     # x[0, 1] = 1.0
     print('Class 0')
     print(x[(1 - y).bool()])

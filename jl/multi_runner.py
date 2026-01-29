@@ -96,7 +96,7 @@ def _generate_training_sets(problem, c: Config, num_runs: int, device: torch.dev
     # Generate all training sets once, outside the loops
     training_sets = []
     for _ in range(num_runs):
-        x_train, y_train, _, _ = problem.generate_dataset(c.n, shuffle=True, clean_mode=clean_mode)
+        x_train, y_train, _ = problem.generate_dataset(c.n, shuffle=True, clean_mode=clean_mode)
         x_train, y_train = x_train.to(device), y_train.to(device)
         training_sets.append((x_train, y_train))
     return training_sets

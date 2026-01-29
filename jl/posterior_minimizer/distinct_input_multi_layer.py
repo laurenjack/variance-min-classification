@@ -24,9 +24,9 @@ correct_per_pattern = 40
 test_n_per_pattern = 100
 
 distinct_inputs_problem = dataset_creator.DistinctInputsForFeatures(num_class, patterns_per_class, bits_per_pattern, noisy_d)
-x, y = distinct_inputs_problem.generate_dataset(n_per_pattern, correct_per_pattern, shuffle=True)
+x, y, _ = distinct_inputs_problem.generate_dataset(n_per_pattern, correct_per_pattern, shuffle=True)
 # We want to have 100% correct patterns in the test set, so we pass test_n_per_pattern twice
-x_test, y_test = distinct_inputs_problem.generate_dataset(test_n_per_pattern, test_n_per_pattern, shuffle=True)
+x_test, y_test, _ = distinct_inputs_problem.generate_dataset(test_n_per_pattern, test_n_per_pattern, shuffle=True)
 n = x.shape[0]
 d = x.shape[1]
 n_test = x_test.shape[0]

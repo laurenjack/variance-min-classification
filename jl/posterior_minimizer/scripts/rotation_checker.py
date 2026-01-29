@@ -116,5 +116,5 @@ if __name__ == "__main__":
     epochs = 100
     lr = 0.001
     problem = dataset_creator.Gaussian(d=d)
-    x, y = problem.generate_dataset(n, shuffle=True)
+    x, y, _ = problem.generate_dataset(n, shuffle=True)
     train_single_hidden_node(x, y, epochs, lr)

@@ -50,9 +50,9 @@ def main():
     )
 
     # Generate validation set with class-balanced sampling (clean_mode=True)
-    x_val, y_val, center_indices, _ = problem.generate_dataset(
-        model_config.n_val, 
-        shuffle=True, 
+    x_val, y_val, center_indices = problem.generate_dataset(
+        model_config.n_val,
+        shuffle=True,
         clean_mode=True
     )
     validation_set = (x_val, y_val, center_indices)

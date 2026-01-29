@@ -30,15 +30,13 @@ class TestFeatureCombinations:
     def test_generate_dataset_basic(self):
         """Test basic dataset generation."""
         problem = FeatureCombinations(num_layers=2)
-        x, y, center_indices_list, px = problem.generate_dataset(n=100)
+        x, y, center_indices_list = problem.generate_dataset(n=100)
 
         assert x.shape == (100, 8)
         assert y.shape == (100,)
         assert len(center_indices_list) == 2  # atomic + final layer
         assert center_indices_list[0].shape == (100, 2)  # 2 atomic subsections
         assert center_indices_list[1].shape == (100,)  # final layer
-        assert px.shape == (100,)
-        assert torch.all(px == 1.0)  # Uniform probability
 
         # Check y values are in valid range (binary classification)
         assert torch.all((y >= 0) & (y < 2))
@@ -130,13 +128,11 @@ class TestFeatureCombinations:
     def test_favourites_integration(self):
         """Test that FeatureCombinations with has_favourites=True works end-to-end."""
         problem = FeatureCombinations(num_layers=3, has_favourites=True)
-        x, y, center_indices_list, px = problem.generate_dataset(n=50)
+        x, y, center_indices_list = problem.generate_dataset(n=50)
 
         assert x.shape == (50, 16)  # 2 * 2^3
         assert y.shape == (50,)
         assert len(center_indices_list) == 3  # atomic + 2 consolidation layers
-        assert px.shape == (50,)
-        assert torch.all(px == 1.0)  # Uniform probability
 
         # Check all layers have correct shapes
         assert center_indices_list[0].shape == (50, 4)  # 16/4 = 4 atomic subsections

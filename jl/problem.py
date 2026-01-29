@@ -38,22 +38,22 @@ class Problem(ABC):
         n: int,
         clean_mode: bool = False,
         shuffle: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         """
         Generate a dataset of size n.
 
         Args:
             n: Number of samples to generate.
             clean_mode: If True, generates a clean version of the problem for analysis
-                       If False, generates from the true distribution, inlucding all noise.
+                       If False, generates from the true distribution, including all noise.
             shuffle: If True, randomly permute the resulting dataset.
 
         Returns:
-            (x, y, center_indices, px):
+            (x, y, center_indices):
               - x: shape (n, d) float32 tensor of features
               - y: shape (n,) int64 tensor of class labels
-              - center_indices: shape (n,) int64 tensor of center index for each sample
-              - px: optional shape (n,) float32 tensor of per-sample probabilities
+              - center_indices: shape (n,) int64 tensor of center index for each sample,
+                               or None if not applicable
         """
         raise NotImplementedError
 

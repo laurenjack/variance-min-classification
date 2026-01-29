@@ -5,7 +5,7 @@ Test for the HyperXorNormal implementation in data_generator.py
 
 import torch
 import pytest
-from jl.variance_experiments.data_generator import HyperXorNormal
+from jl.posterior_minimizer.dataset_creator import HyperXorNormal
 
 
 class TestHyperXorNormal:

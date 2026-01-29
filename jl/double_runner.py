@@ -55,8 +55,8 @@ def train_double(device, problem, validation_set, c: Config):
         raise ValueError(f"double_runner only supports weight_tracker='accuracy', got {c.weight_tracker}")
     
     # Generate two training sets from the same problem (clean_mode=False)
-    x_train1, y_train1, _, _ = problem.generate_dataset(c.n, shuffle=True, clean_mode=False)
-    x_train2, y_train2, _, _ = problem.generate_dataset(c.n, shuffle=True, clean_mode=False)
+    x_train1, y_train1, _ = problem.generate_dataset(c.n, shuffle=True, clean_mode=False)
+    x_train2, y_train2, _ = problem.generate_dataset(c.n, shuffle=True, clean_mode=False)
     
     # Create datasets and data loaders
     train_dataset1 = TensorDataset(x_train1, y_train1)
