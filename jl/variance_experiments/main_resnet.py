@@ -2,7 +2,7 @@ from copy import deepcopy
 import torch
 
 from jl.config import Config
-from jl.multi_experiment_grapher import run_list_experiment_with_variance
+from jl.multi_experiment_grapher import run_list_experiment
 from jl.variance_experiments.data_generator import SubDirections, Gaussian
 
 
@@ -89,7 +89,7 @@ def main():
     # run_d_model_experiment(device, problem, validation_set, c, h_list)
     
     # Run Resnet experiments
-    run_list_experiment_with_variance(
+    run_list_experiment(
         device,
         problem,
         validation_set,
@@ -97,6 +97,7 @@ def main():
         width_range,
         num_runs,
         clean_mode,
+        include_variance=True,
     )
 
 
