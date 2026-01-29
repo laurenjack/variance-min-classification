@@ -1,0 +1,18 @@
+from jl.multi_experiment_grapher import GraphConfig
+from jl.results.simple_mlp.simple_mlp_conf import run_experiment
+
+
+def main():
+    width_range = list(range(80, 6001, 40))
+    num_runs = 1
+    graph_config = GraphConfig(
+        constant_name="Classical Minimum",
+        constant_value=0.27,
+        show_validation_loss=False,
+        show_line=False,
+    )
+    run_experiment(width_range, num_runs, graph_config)
+
+
+if __name__ == "__main__":
+    main()
