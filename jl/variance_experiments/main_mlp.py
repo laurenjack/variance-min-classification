@@ -52,9 +52,9 @@ def main():
     c2 = deepcopy(c)
     c2.num_layer = 2
     # Generate validation set with class-balanced sampling
-    x_val, y_val, center_indices, _ = problem.generate_dataset(
-        c.n_val, 
-        shuffle=True, 
+    x_val, y_val, center_indices = problem.generate_dataset(
+        c.n_val,
+        shuffle=True,
         clean_mode=True
     )
     validation_set = x_val.to(device), y_val.to(device), center_indices.to(device)

@@ -91,5 +91,5 @@ if __name__ == "__main__":
     lr = 0.01
     # Note: Perfect class balance = False, as in your example
     problem = dataset_creator.Gaussian(d=d, perfect_class_balance=False)
-    x, y = problem.generate_dataset(n, shuffle=True)
+    x, y, _ = problem.generate_dataset(n, shuffle=True)
     train_ten_hidden_nodes_plot_activation_histogram(x, y, epochs, lr, h)

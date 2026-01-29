@@ -220,7 +220,7 @@ def train_multi(device, problem, validation_set, c: Config):
     segments_per_model = num_models // 2
     
     # Generate one training set and split into segments
-    x_train, y_train, _, _ = problem.generate_dataset(c.n, shuffle=True, clean_mode=False)
+    x_train, y_train, _ = problem.generate_dataset(c.n, shuffle=True, clean_mode=False)
     segments = split_data_into_segments(x_train, y_train, num_models)
     
     # Create datasets and data loaders for each model

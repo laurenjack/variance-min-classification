@@ -38,8 +38,8 @@ def main(analyze_weights: bool = True):
     )
 
     # Generate validation set without label noise (clean_mode=True)
-    x_val, y_val, center_indices, _ = problem.generate_dataset(
-        model_config.n_val, 
+    x_val, y_val, center_indices = problem.generate_dataset(
+        model_config.n_val,
         clean_mode=True,
         shuffle=True
     )

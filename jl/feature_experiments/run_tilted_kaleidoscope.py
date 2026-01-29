@@ -35,7 +35,7 @@ def main():
         learnable_norm_parameters=True,
     )
 
-    x_val, y_val, val_center_indices, _ = problem.generate_dataset(
+    x_val, y_val, val_center_indices = problem.generate_dataset(
         model_config.n_val,
         shuffle=True,
     )

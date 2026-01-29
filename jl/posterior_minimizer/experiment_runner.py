@@ -1,6 +1,6 @@
 import copy
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, TensorDataset
 
 from jl.posterior_minimizer import train, hyper_parameters, helpers
 from jl.posterior_minimizer.models import Mlp
@@ -33,7 +33,8 @@ num_hidden = 20 # 20
 
 binary_random_assigned = BinaryRandomAssigned(num_classes, signal_bits, noisy_d=10, percent_correct=1.0)
 # We'll always use the same test set, to keep a consistent measuring stick as we increase n
-validation_set = binary_random_assigned.generate_dataset(val_n)
+x_val, y_val, _ = binary_random_assigned.generate_dataset(val_n)
+validation_set = TensorDataset(x_val, y_val)
 num_input = binary_random_assigned.num_input
 
 sizes = [num_input]  # [num_input, num_hidden, num_hidden]
@@ -45,7 +46,8 @@ training_run_seed = 51477
 
 for n in range(min_n, max_n, step_n):
     # n is the current size of the train set.
-    train_set = binary_random_assigned.generate_dataset(n)
+    x_train, y_train, _ = binary_random_assigned.generate_dataset(n)
+    train_set = TensorDataset(x_train, y_train)
     # helpers.report_patternwise_accurarices(train_set, signal_bits, num_classes)
     purity = helpers.calc_dimension_purity(train_set)
     print(f'{n}: {purity}')

@@ -227,7 +227,7 @@ class SingleFeatures(Problem):
         n: int,
         clean_mode: bool = False,
         shuffle: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Generate a dataset of size n.
 
@@ -241,11 +241,10 @@ class SingleFeatures(Problem):
             shuffle: If True, randomly permute the resulting dataset.
 
         Returns:
-            (x, y, center_indices, px):
+            (x, y, center_indices):
               - x: shape (n, d) float32 tensor of features (d = true_d + noisy_d)
               - y: shape (n,) int64 tensor of class labels (in range [0, f))
               - center_indices: shape (n,) int64 tensor, the true feature index for each sample
-              - px: shape (n,) float32 tensor, all ones (uniform).
         """
         if n <= 0:
             raise ValueError("n must be positive")
@@ -266,9 +265,6 @@ class SingleFeatures(Problem):
         # Since x_standard[i] is a one-hot vector, argmax gives us the column index
         y = torch.arange(n, device=self.device, dtype=torch.int64) % self.f
 
-        # px is uniform (all ones)
-        px = torch.ones(n, device=self.device, dtype=torch.float32)
-        
         # Compute x = x_standard @ Q
         x = x_standard @ self.Q  # shape (n, _true_d)
         
@@ -332,9 +328,8 @@ class SingleFeatures(Problem):
             x = x[perm]
             y = y[perm]
             center_indices = center_indices[perm]
-            px = px[perm]
-        
-        return x, y, center_indices, px
+
+        return x, y, center_indices
 
 
 class Kaleidoscope(Problem):
@@ -395,7 +390,7 @@ class Kaleidoscope(Problem):
         n: int,
         clean_mode: bool = False,
         shuffle: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor], torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor]]:
         del clean_mode  # not used for this problem (no noise yet)
 
         n = _validate_positive(n, "n")
@@ -427,18 +422,14 @@ class Kaleidoscope(Problem):
         # The label is the center index of the last layer
         y = center_indices_list[-1].clone()
 
-        # px is uniform (all ones)
-        px = torch.ones(n, device=self.device, dtype=torch.float32)
-
         if shuffle:
             perm = torch.randperm(n, generator=self.generator, device=self.device)
             x = x[perm]
             y = y[perm]
             # Apply the same permutation to all center indices
             center_indices_list = [indices[perm] for indices in center_indices_list]
-            px = px[perm]
 
-        return x, y, center_indices_list, px
+        return x, y, center_indices_list
 
 
 class TiltedKaleidoscope(Problem):
@@ -534,7 +525,7 @@ class TiltedKaleidoscope(Problem):
         n: int,
         clean_mode: bool = False,
         shuffle: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor], torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor]]:
         """
         Generate a dataset of size n with exactly 50/50 class balance.
 
@@ -544,11 +535,10 @@ class TiltedKaleidoscope(Problem):
             shuffle: If True, randomly permute the resulting dataset.
 
         Returns:
-            (x, y, center_indices_list, px):
+            (x, y, center_indices_list):
               - x: shape (n, d) float32 tensor of features
               - y: shape (n,) int64 tensor of class labels (0 or 1)
               - center_indices_list: List of tensors, one per layer, each shape (n,)
-              - px: shape (n,) float32 tensor of ones (uniform probability)
         """
         del clean_mode  # unused
         n = _validate_positive(n, "n")
@@ -641,14 +631,10 @@ class TiltedKaleidoscope(Problem):
                 scale = math.pow(2.0, -layer_idx)
             x = x + scale * Q_l[indices]
 
-        # px is uniform (all ones)
-        px = torch.ones(n, device=self.device, dtype=torch.float32)
-
         if shuffle:
             perm = torch.randperm(n, generator=self.generator, device=self.device)
             x = x[perm]
             y = y[perm]
             center_indices_list = [indices[perm] for indices in center_indices_list]
-            px = px[perm]
 
-        return x, y, center_indices_list, px
+        return x, y, center_indices_list

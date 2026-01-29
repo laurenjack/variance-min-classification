@@ -14,7 +14,7 @@ def test_relu_mlp():
     empirical = variance.Empirical()
     empiricalAtFlat = variance.EmpiricalAtFlat()
     problem = dataset_creator.Gaussian(d=d)
-    x, y = problem.generate_dataset(n)
+    x, y, _ = problem.generate_dataset(n)
     model = cm.Mlp(sizes, is_bias=False, all_linear=False)
 
     analytical_result = analytical.calculate(model, x, y)

@@ -22,8 +22,8 @@ d = real_d + noisy_d
 root_d = math.ceil(d ** 0.5)
 
 bra = dataset_creator.BinaryRandomAssigned(2, real_d, noisy_d=noisy_d, scale_by_root_d=False)
-x, y = bra.generate_dataset(n, percent_correct=0.8, shuffle=True)
-x_test, y_test = bra.generate_dataset(n_test, percent_correct=1.0, shuffle=True)
+x, y, _ = bra.generate_dataset(n, percent_correct=0.8, shuffle=True)
+x_test, y_test, _ = bra.generate_dataset(n_test, percent_correct=1.0, shuffle=True)
 
 
 hp = hyper_parameters.HyperParameters(batch_size=n,

@@ -33,15 +33,14 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
     print(f"Starting training with {model_desc} model: {model_num}")
     
     # Generate training data
-    x_train, y_train, train_center_indices, px = problem.generate_dataset(c.n, shuffle=True, clean_mode=clean_mode)
-       
-    
+    x_train, y_train, train_center_indices = problem.generate_dataset(c.n, shuffle=True, clean_mode=clean_mode)
+
     if c.is_hashed_dropout:
         # Create training indices for hashed dropout (only when is_hashed_dropout=True)
         train_indices = torch.arange(c.n, device=device)
-        train_dataset = TensorDataset(x_train, y_train, px, train_indices)
+        train_dataset = TensorDataset(x_train, y_train, train_indices)
     else:
-        train_dataset = TensorDataset(x_train, y_train, px)
+        train_dataset = TensorDataset(x_train, y_train)
     # Create data loader for batch training
     train_loader = DataLoader(train_dataset, batch_size=c.batch_size, shuffle=True)
 
@@ -94,9 +93,9 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
         for batch_data in train_loader:
             # Unpack batch data (hashed dropout has indices, others don't)
             if c.is_hashed_dropout:
-                batch_x, batch_y, batch_px, batch_indices = batch_data
+                batch_x, batch_y, batch_indices = batch_data
             else:
-                batch_x, batch_y, batch_px = batch_data
+                batch_x, batch_y = batch_data
                 batch_indices = None
             
             # Calculate validation accuracy and loss for tracker
@@ -210,6 +209,6 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
     # Then print final metrics
     print(f"Final: Validation Loss = {val_loss:.6f}, Validation Accuracy = {val_acc:.4f}, Training Loss = {train_loss:.6f}, Training Accuracy = {train_acc:.4f}")
     
-    return model, tracker, x_train, y_train, train_center_indices, px
+    return model, tracker, x_train, y_train, train_center_indices
 
 

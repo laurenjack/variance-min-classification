@@ -49,8 +49,8 @@ def run(problem, runs, dp, hp, trainer, **kwargs):
 
 def single_run(problem, dp, hp, trainer,
                print_details=False, **kwargs):
-    x, y = problem.generate_dataset(dp.n, **kwargs)
-    x_test, y_test = problem.generate_dataset(dp.n_test, shuffle=True)
+    x, y, _ = problem.generate_dataset(dp.n, **kwargs)
+    x_test, y_test, _ = problem.generate_dataset(dp.n_test, shuffle=True)
     model = modules.Mlp(dp, hp)
     # if hp.implementation == 'new':
     #     model = modules.Mlp(dp, hp)

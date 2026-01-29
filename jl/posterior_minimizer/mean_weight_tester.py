@@ -55,8 +55,8 @@ for r in range(runs):
     if r % 10 == 0:
         print(f"Run {r}")
     model = cm.Mlp(hp.sizes, is_bias=False, all_linear=hp.all_linear)
-    x, y = with_actual_mean.generate_dataset(n, shuffle=False)
-    x_test, y_test = with_actual_mean.generate_dataset(n_test, shuffle=True)
+    x, y, _ = with_actual_mean.generate_dataset(n, shuffle=False)
+    x_test, y_test, _ = with_actual_mean.generate_dataset(n_test, shuffle=True)
     train_set = TensorDataset(x, y)
     train_loader = DataLoader(train_set, hp.batch_size)
     test_set = TensorDataset(x_test, y_test)

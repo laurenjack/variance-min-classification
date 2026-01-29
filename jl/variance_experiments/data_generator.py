@@ -231,7 +231,7 @@ class SubDirections(Problem):
         n: int,
         clean_mode: bool = False,
         shuffle: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, None]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if n <= 0:
             raise ValueError("n must be positive")
 
@@ -335,7 +335,7 @@ class SubDirections(Problem):
             y = y[perm]
             center_indices = center_indices[perm]
 
-        return x, y, center_indices, None
+        return x, y, center_indices
 
 
 class Gaussian(Problem):
@@ -400,7 +400,7 @@ class Gaussian(Problem):
         n: int,
         clean_mode: bool = False,
         shuffle: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, None]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Generate a dataset of size n.
 
@@ -410,11 +410,10 @@ class Gaussian(Problem):
             shuffle: If True, randomly permute the resulting dataset.
 
         Returns:
-            (x, y, center_indices, px):
+            (x, y, center_indices):
               - x: shape (n, d) float32 tensor of features sampled from N(0, 1)
               - y: shape (n,) int64 tensor of class labels (0 or 1)
               - center_indices: shape (n,) int64 tensor of zeros (all samples from same center)
-              - px: None (not used for this problem)
         """
         if n <= 0:
             raise ValueError("n must be positive")
@@ -452,8 +451,8 @@ class Gaussian(Problem):
             y = y[perm]
             # center_indices doesn't need to be shuffled since all are 0
         
-        return x, y, center_indices, None
-    
+        return x, y, center_indices
+
     def _gen_class_balanced_labels(self, n: int) -> torch.Tensor:
         """Generate perfectly balanced class labels."""
         class_n = n // self.NUM_CLASS
@@ -570,10 +569,10 @@ class TwoGaussians(Problem):
         n: int,
         clean_mode: bool = False,
         shuffle: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, None]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Generate a dataset of size n.
-        
+
         Args:
             n: Number of samples to generate.
             clean_mode: If True, generate batches of n samples and only keep those that are
@@ -581,14 +580,13 @@ class TwoGaussians(Problem):
                        at least n clean samples are collected, then randomly sample exactly n.
                        If False (default), use standard Gaussian sampling from N(mu, I).
             shuffle: If True, randomly permute the resulting dataset.
-        
+
         Returns:
-            (x, y, center_indices, px):
+            (x, y, center_indices):
               - x: shape (n, d) float32 tensor of features
               - y: shape (n,) int64 tensor of class labels (0 or 1)
               - center_indices: shape (n,) int64 tensor of center index for each sample
                                (0 for class 0 center, 1 for class 1 center)
-              - px: None (not used for this problem)
         """
         if n <= 0:
             raise ValueError("n must be positive")
@@ -648,8 +646,8 @@ class TwoGaussians(Problem):
             y = y[perm]
             center_indices = center_indices[perm]
         
-        return x, y, center_indices, None
-    
+        return x, y, center_indices
+
     def _generate_batch(
         self,
         n: int,
@@ -821,10 +819,10 @@ class TwoDirections(Problem):
         n: int,
         clean_mode: bool = False,
         shuffle: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, None]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Generate a dataset of size n.
-        
+
         Args:
             n: Number of samples to generate.
             clean_mode: If True, generate clean samples (no noise applied).
@@ -832,14 +830,13 @@ class TwoDirections(Problem):
                        - "mislabel": Flip labels for (1 - percent_correct) fraction
                        - "missing_feature": Zero out true_d dimensions for (1 - percent_correct) fraction
             shuffle: If True, randomly permute the resulting dataset.
-        
+
         Returns:
-            (x, y, center_indices, px):
+            (x, y, center_indices):
               - x: shape (n, d) float32 tensor of features
               - y: shape (n,) int64 tensor of class labels (0 or 1)
               - center_indices: shape (n,) int64 tensor of center index for each sample
                                (0 for class 0 center, 1 for class 1 center)
-              - px: None (not used for this problem)
         """
         if n <= 0:
             raise ValueError("n must be positive")
@@ -947,4 +944,4 @@ class TwoDirections(Problem):
             y = y[perm]
             center_indices = center_indices[perm]
         
-        return x, y, center_indices, None
+        return x, y, center_indices

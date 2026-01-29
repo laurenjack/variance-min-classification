@@ -44,7 +44,7 @@ if __name__ == '__main__':
     problem = dataset_creator.MultivariateNormal(true_d=1,
                                                  percent_correct=0.75,
                                                  noisy_d=1)
-    x, y = problem.generate_dataset(n, shuffle=True)
+    x, y, _ = problem.generate_dataset(n, shuffle=True)
 
     n_test = 10
     percent_correct = 0.75

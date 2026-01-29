@@ -4,7 +4,7 @@ from jl.posterior_minimizer import helpers
 
 
 def test_binary_random_assigned_large():
-    x, y = dataset_creator.BinaryRandomAssigned(4, 8).generate_dataset(1027)
+    x, y, _ = dataset_creator.BinaryRandomAssigned(4, 8).generate_dataset(1027)
     assert (1027, 8) == x.shape
     assert (1027,) == y.shape
 
@@ -34,7 +34,7 @@ def test_binary_random_assigned_large():
 
 
 def test_binary_random_assigned_medium_and_some_incorrect():
-    x, y = dataset_creator.BinaryRandomAssigned(4, 4, noisy_d=3).generate_dataset(192, percent_correct=0.5, shuffle=False)
+    x, y, _ = dataset_creator.BinaryRandomAssigned(4, 4, noisy_d=3).generate_dataset(192, percent_correct=0.5, shuffle=False)
     assert (192, 7) == x.shape
     assert (192,) == y.shape
     # Build up counts of each class for each input.
@@ -54,7 +54,7 @@ def test_binary_random_assigned_medium_and_some_incorrect():
 
 
 def test_binary_random_assigned_small_and_some_incorrect():
-    x, y = dataset_creator.BinaryRandomAssigned(4, 3).generate_dataset(32, percent_correct=0.75, shuffle=False)
+    x, y, _ = dataset_creator.BinaryRandomAssigned(4, 3).generate_dataset(32, percent_correct=0.75, shuffle=False)
     assert (32, 3) == x.shape
     assert (32,) == y.shape
 
@@ -126,7 +126,7 @@ def test_when_class_pattern_with_noise_first_class_matches_then_class_doesnt_mat
 
 def test_distinct_inputs_for_features():
     data_gen = dataset_creator.DistinctInputsForFeatures(2, 3, 4, noisy_d=7)
-    x, y = data_gen.generate_dataset(10, 9, shuffle=False)
+    x, y, _ = data_gen.generate_dataset(10, 9, shuffle=False)
     assert x.shape == (60, 31)
     assert y.shape == (60,)
     first_pattern = [x[0, 0:4], x[1, 4:8], x[2, 8:12], x[3, 12:16], x[4, 16:20], x[5, 20:24]]

@@ -56,7 +56,7 @@ def compute_weight_statistics(num_runs, n, d, num_epochs, learning_rate, step_si
             print(f"\nStarting run {run + 1}/{num_runs}")
 
         problem = dataset_creator.Gaussian(d=d)
-        x, y = problem.generate_dataset(n, d)
+        x, y, _ = problem.generate_dataset(n, d)
         model = SingleLayerClassifier(d)
         trained_model = train_model(x, y, model, num_epochs, learning_rate, step_size, gamma, verbose)
         final_weights.append(trained_model.weight.data.clone())

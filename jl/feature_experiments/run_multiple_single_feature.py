@@ -50,7 +50,7 @@ def main():
     )
 
     # Generate a single validation set for comparison across all models
-    x_val, y_val, center_indices, _ = problem.generate_dataset(
+    x_val, y_val, center_indices = problem.generate_dataset(
         model_config.n_val,
         shuffle=True,
         clean_mode=True
