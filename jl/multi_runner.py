@@ -12,7 +12,7 @@ from jl.model_creator import create_model
 from jl.scheduler import create_lr_scheduler
 
 
-class VectorizedModel:
+class _VectorizedModel:
     """
     A wrapper for vectorized model inference across multiple trained models.
     
@@ -151,49 +151,18 @@ def stack_and_broadcast_runs(
     y = y.unsqueeze(0).expand(num_widths, -1, -1).reshape(num_widths * num_runs, m_local)
     return x, y
 
-def train_parallel(
+def _train_parallel(
     device: torch.device,
     problem,
     c: Config,
     num_runs: int,
     clean_mode: bool,
-    validation_set: Optional[Tuple[Tensor, Tensor]] = None,
-    width_range: Optional[list[int]] = None,
-) -> Tuple[VectorizedModel, List[Tuple[Tensor, Tensor]]]:
-    """
-    Train num_widths * num_runs models in parallel for models (Resnet or MLP).
-
-    This is the core training function that trains models and optionally computes
-    basic validation metrics (loss, accuracy).
-    
-    Args:
-        device: torch device
-        problem: Dataset generator with generate_dataset method
-        c: Config object
-        num_runs: Number of runs per width
-        clean_mode: Whether to generate clean data
-        validation_set: Optional tuple of (x_val, y_val). If provided, computes
-                       and prints validation metrics after training.
-        width_range: Optional list of widths. Required if c.width_varyer is set.
-                    If None and c.width_varyer is None, uses [1] internally.
-    
-    Returns:
-        Tuple of (VectorizedModel, training_sets) where training_sets is a list
-        of (x_train, y_train) tuples for each run
-    """
+    width_range: list[int],
+) -> Tuple[_VectorizedModel, List[Tuple[Tensor, Tensor]]]:
+    """Internal: Train num_widths * num_runs models in parallel."""
     if c.optimizer == "reg_adam_w":
         raise ValueError("reg_adam_w optimizer is not supported in multi_runner. Please use single_runner instead.")
-    
-    # Validate width_varyer and width_range consistency
-    if c.width_varyer is None and width_range is not None:
-        raise ValueError("width_range must be None when c.width_varyer is None")
-    if c.width_varyer is not None and width_range is None:
-        raise ValueError("width_range is required when c.width_varyer is set")
-    
-    # Use [1] internally when no width variation
-    if width_range is None:
-        width_range = [1]
-    
+
     training_sets = _generate_training_sets(problem, c, num_runs, device, clean_mode)
     model_lists = _build_models(c, width_range, num_runs, device)
     
@@ -303,8 +272,8 @@ def train_parallel(
                 print(f"width={w:2d}: {epoch_loss_mean_per_w[w_idx]:.4f}", end="  ")
         print()
 
-    # Create VectorizedModel for inference
-    vectorized_model = VectorizedModel(
+    # Create _VectorizedModel for inference
+    vectorized_model = _VectorizedModel(
         params=params,
         buffers=buffers,
         template=template,
@@ -314,34 +283,58 @@ def train_parallel(
         num_class=c.num_class,
     )
 
-    # Optional: compute and print basic validation metrics
-    if validation_set is not None:
-        x_val, y_val = validation_set
-        _print_basic_metrics(vectorized_model, training_sets, x_val, y_val, c, width_range)
-
     return vectorized_model, training_sets
 
 
-def compute_metrics(
-    model: VectorizedModel,
+def train_and_compute_metrics(
+    device: torch.device,
+    problem,
+    c: Config,
+    num_runs: int,
+    clean_mode: bool,
+    x_val: Tensor,
+    y_val: Tensor,
+    width_range: Optional[list[int]] = None,
+) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+    """
+    Train models in parallel and compute metrics.
+
+    Args:
+        device: torch device
+        problem: Dataset generator with generate_dataset method
+        c: Config object
+        num_runs: Number of runs per width
+        clean_mode: Whether to generate clean data
+        x_val: Validation inputs
+        y_val: Validation labels
+        width_range: Optional list of widths. Required if c.width_varyer is set.
+                    If None and c.width_varyer is None, uses [1] internally.
+
+    Returns:
+        Tuple of (train_loss_per_w, val_acc_per_w, val_loss_per_w, val_logits_all)
+    """
+    # Validate width_varyer and width_range consistency
+    if c.width_varyer is None and width_range is not None:
+        raise ValueError("width_range must be None when c.width_varyer is None")
+    if c.width_varyer is not None and width_range is None:
+        raise ValueError("width_range is required when c.width_varyer is set")
+
+    # Use [1] internally when no width variation
+    if width_range is None:
+        width_range = [1]
+
+    model, training_sets = _train_parallel(device, problem, c, num_runs, clean_mode, width_range)
+    return _compute_metrics(model, training_sets, x_val, y_val, c)
+
+
+def _compute_metrics(
+    model: _VectorizedModel,
     training_sets: List[Tuple[Tensor, Tensor]],
     x_val: Tensor,
     y_val: Tensor,
     c: Config,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
-    """
-    Compute train/val metrics and return validation logits.
-    
-    Args:
-        model: Trained VectorizedModel
-        training_sets: List of (x_train, y_train) tuples for each run
-        x_val: Validation inputs
-        y_val: Validation labels
-        c: Config object
-        
-    Returns:
-        Tuple of (train_loss_per_w, val_acc_per_w, val_loss_per_w, val_logits_all)
-    """
+    """Internal: Compute train/val metrics and return validation logits."""
     num_models = model.num_models
     num_widths = model.num_widths
     num_runs = model.num_runs
@@ -429,15 +422,15 @@ def compute_metrics(
 
 
 def _print_basic_metrics(
-    model: VectorizedModel,
+    model: _VectorizedModel,
     training_sets: List[Tuple[Tensor, Tensor]],
     x_val: Tensor,
     y_val: Tensor,
     c: Config,
     width_range: list[int],
 ) -> None:
-    """Compute and print basic train/val metrics (no variance tracking)."""
-    train_loss_per_w, val_acc_per_w, val_loss_per_w, _ = compute_metrics(
+    """Internal: Compute and print basic train/val metrics (no variance tracking)."""
+    train_loss_per_w, val_acc_per_w, val_loss_per_w, _ = _compute_metrics(
         model, training_sets, x_val, y_val, c
     )
 
