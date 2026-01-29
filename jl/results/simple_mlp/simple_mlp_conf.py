@@ -1,12 +1,11 @@
 import torch
 
 from jl.config import Config
-from jl.single_runner import train_once
 from jl.multi_experiment_grapher import run_list_experiment
 from jl.feature_experiments.feature_problem import SingleFeatures
 
 
-def main():
+def run_experiment(width_range: list[int], num_runs: int):
     torch.manual_seed(38175)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -22,10 +21,7 @@ def main():
     )
     n = 128
 
-    # Experiment parameters
-    width_range = list(range(20, 5000, 20))
     h = max(width_range)
-    num_runs = 1
 
     # Model configuration
     model_config = Config(
@@ -63,9 +59,3 @@ def main():
         num_runs,
         clean_mode=False
     )
-
-    # train_once(device, problem, validation_set, model_config)
-
-
-if __name__ == "__main__":
-    main()
