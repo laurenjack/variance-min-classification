@@ -1,11 +1,24 @@
+from dataclasses import dataclass
 from typing import Tuple, Optional
 
 import torch
 from torch import Tensor
 import matplotlib.pyplot as plt
+import matplotlib as mpl
 
 from jl.config import Config
 from jl.multi_runner import train_and_compute_metrics
+
+
+@dataclass
+class GraphConfig:
+    constant_name: Optional[str] = None
+    constant_value: Optional[float] = None
+    show_validation_loss: bool = True
+    show_training_loss: bool = True
+    show_validation_error: bool = True
+    include_variance: bool = False
+    show_line: bool = True
 
 
 def run_list_experiment(
@@ -16,10 +29,10 @@ def run_list_experiment(
     width_range: list[int],
     num_runs: int,
     clean_mode: bool,
-    include_variance: bool = False,
+    graph_config: Optional[GraphConfig] = None,
 ):
     """
-    Train and compare models, plotting loss, accuracy, and optionally variance.
+    Train and compare models, plotting loss, error, and optionally variance.
 
     Args:
         device: torch device
@@ -29,8 +42,11 @@ def run_list_experiment(
         width_range: List of widths to vary
         num_runs: Number of runs per width
         clean_mode: Whether to generate clean data
-        include_variance: If True, compute and plot variance of validation logits
+        graph_config: Configuration for graph display options
     """
+    if graph_config is None:
+        graph_config = GraphConfig()
+
     results = []
     for i, c in enumerate(configs):
         print(f"Running experiment {i + 1} with {c.model_type}")
@@ -42,12 +58,12 @@ def run_list_experiment(
             num_runs,
             clean_mode,
             width_range,
-            include_variance,
+            graph_config.include_variance,
         )
         results.append(result)
         print()
 
-    _plot_results(results, width_range, configs, include_variance)
+    _plot_results(results, width_range, configs, graph_config)
 
 
 def _run_experiments(
@@ -75,7 +91,7 @@ def _run_experiments(
     )
 
     mean_train_losses = [v.item() for v in train_loss_per_w]
-    mean_val_accuracies = [v.item() for v in val_acc_per_w]
+    mean_val_errors = [1.0 - v.item() for v in val_acc_per_w]
     mean_val_losses = [v.item() for v in val_loss_per_w]
 
     if include_variance:
@@ -101,130 +117,154 @@ def _run_experiments(
         mean_vars = [v.item() for v in mean_var_per_w]
 
         if c.width_varyer is None:
-            print(f"mean variance = {mean_vars[0]:.4e} | mean train loss = {mean_train_losses[0]:.4f} | mean val acc = {mean_val_accuracies[0]:.4f} | mean val loss = {mean_val_losses[0]:.4f}")
+            print(f"mean variance = {mean_vars[0]:.4e} | mean train loss = {mean_train_losses[0]:.4f} | mean val error = {mean_val_errors[0]:.4f} | mean val loss = {mean_val_losses[0]:.4f}")
         else:
             for i, w in enumerate(width_range):
-                print(f"width = {w:2d} | mean variance = {mean_vars[i]:.4e} | mean train loss = {mean_train_losses[i]:.4f} | mean val acc = {mean_val_accuracies[i]:.4f} | mean val loss = {mean_val_losses[i]:.4f}")
+                print(f"width = {w:2d} | mean variance = {mean_vars[i]:.4e} | mean train loss = {mean_train_losses[i]:.4f} | mean val error = {mean_val_errors[i]:.4f} | mean val loss = {mean_val_losses[i]:.4f}")
 
-        return (mean_vars, mean_train_losses, mean_val_accuracies, mean_val_losses)
+        return (mean_vars, mean_train_losses, mean_val_errors, mean_val_losses)
     else:
         if c.width_varyer is None:
-            print(f"mean train loss = {mean_train_losses[0]:.4f} | mean val acc = {mean_val_accuracies[0]:.4f} | mean val loss = {mean_val_losses[0]:.4f}")
+            print(f"mean train loss = {mean_train_losses[0]:.4f} | mean val error = {mean_val_errors[0]:.4f} | mean val loss = {mean_val_losses[0]:.4f}")
         else:
             for i, w in enumerate(width_range):
-                print(f"width = {w:2d} | mean train loss = {mean_train_losses[i]:.4f} | mean val acc = {mean_val_accuracies[i]:.4f} | mean val loss = {mean_val_losses[i]:.4f}")
+                print(f"width = {w:2d} | mean train loss = {mean_train_losses[i]:.4f} | mean val error = {mean_val_errors[i]:.4f} | mean val loss = {mean_val_losses[i]:.4f}")
 
-        return (mean_train_losses, mean_val_accuracies, mean_val_losses)
+        return (mean_train_losses, mean_val_errors, mean_val_losses)
 
 
-def _build_title(configs: list[Config]) -> str:
-    """Build comprehensive title string from config properties."""
-    c = configs[0]
-    title_parts = [
-        f"model_type={c.model_type}",
-        f"d={c.d}",
-        f"n_val={c.n_val}",
-        f"n={c.n}",
-        f"batch_size={c.batch_size}",
-        f"lr={c.lr}",
-        f"epochs={c.epochs}",
-        f"weight_decay={c.weight_decay}",
-        f"num_layers={c.num_layers}",
-    ]
-
-    if c.h is not None:
-        title_parts.append(f"h={c.h}")
-    if c.d_model is not None:
-        title_parts.append(f"d_model={c.d_model}")
-    if c.width_varyer is not None:
-        title_parts.append(f"width_varyer={c.width_varyer}")
-    if c.c is not None:
-        title_parts.append(f"c={c.c}")
-
-    title_parts.append(f"is_norm={c.is_norm}")
-
-    return " | ".join(title_parts)
-
+def _setup_academic_style():
+    """Configure matplotlib for academic paper aesthetics."""
+    plt.rcParams.update({
+        'font.family': 'serif',
+        'font.size': 11,
+        'axes.labelsize': 12,
+        'axes.titlesize': 12,
+        'xtick.labelsize': 10,
+        'ytick.labelsize': 10,
+        'legend.fontsize': 10,
+        'figure.titlesize': 12,
+        'axes.linewidth': 0.8,
+        'axes.spines.top': False,
+        'axes.spines.right': False,
+        'xtick.direction': 'out',
+        'ytick.direction': 'out',
+        'xtick.major.width': 0.8,
+        'ytick.major.width': 0.8,
+        'lines.linewidth': 1.5,
+        'lines.markersize': 6,
+    })
+    
 
 def _plot_results(
     results: list,
     width_range: list[int],
     configs: list[Config],
-    include_variance: bool,
+    graph_config: GraphConfig,
 ):
-    """Plot experiment results with configurable variance subplot."""
-    colors = plt.cm.tab10(range(len(configs)))
-    markers = ['o', 's', '^', 'v', '<', '>', 'D', 'p', '*', 'h']
+    """Plot experiment results with configurable subplots."""
+    _setup_academic_style()
 
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 12))
+    num_configs = len(configs)
+    show_legend = num_configs > 1
 
-    if include_variance:
-        # Subplot 1: Variance and Validation Loss (dual y-axis)
-        ax1.set_ylabel("Mean variance of validation logits", color='black')
-        for i, (vars_, _, _, val_losses) in enumerate(results):
-            color = colors[i]
-            marker = markers[i % len(markers)]
-            ax1.plot(width_range, vars_, marker=marker, label=f"Config {i+1}", color=color, linestyle='-')
-        ax1.grid(True, alpha=0.3)
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+              '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+    markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h']
 
-        ax1_twin = ax1.twinx()
-        ax1_twin.set_ylabel("Mean validation loss", color='tab:orange')
-        for i, (_, _, _, val_losses) in enumerate(results):
-            color = colors[i]
-            marker = markers[i % len(markers)]
-            ax1_twin.plot(width_range, val_losses, marker=marker, label=f"Config {i+1} (val)",
-                         color=color, linestyle='--', alpha=0.7)
-        ax1_twin.tick_params(axis='y', labelcolor='tab:orange')
+    linestyle = '-' if graph_config.show_line else 'none'
 
-        lines1, labels1 = ax1.get_legend_handles_labels()
-        lines2, labels2 = ax1_twin.get_legend_handles_labels()
-        ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
+    # Determine which plots to show
+    plots_to_show = []
+    if graph_config.include_variance:
+        plots_to_show.append('variance')
+    if graph_config.show_validation_loss:
+        plots_to_show.append('val_loss')
+    if graph_config.show_training_loss:
+        plots_to_show.append('train_loss')
+    if graph_config.show_validation_error:
+        plots_to_show.append('val_error')
 
-        # Subplot 2: Training Loss
-        for i, (_, losses, _, _) in enumerate(results):
-            color = colors[i]
-            marker = markers[i % len(markers)]
-            ax2.plot(width_range, losses, marker=marker, label=f"Config {i+1}", color=color, linestyle='-')
-        ax2.set_ylabel("Mean training loss", color='black')
-        ax2.grid(True, alpha=0.3)
-        ax2.legend()
+    num_plots = len(plots_to_show)
+    if num_plots == 0:
+        return
 
-        # Subplot 3: Validation Accuracy
-        for i, (_, _, val_accuracies, _) in enumerate(results):
-            color = colors[i]
-            marker = markers[i % len(markers)]
-            ax3.plot(width_range, val_accuracies, marker=marker, label=f"Config {i+1}", color=color, linestyle='-')
-    else:
-        # Subplot 1: Validation Loss
-        for i, (losses, val_accuracies, val_losses) in enumerate(results):
-            color = colors[i]
-            marker = markers[i % len(markers)]
-            ax1.plot(width_range, val_losses, marker=marker, label=f"Config {i+1}", color=color, linestyle='-')
-        ax1.set_ylabel("Mean validation loss", color='black')
-        ax1.grid(True, alpha=0.3)
-        ax1.legend()
-
-        # Subplot 2: Training Loss
-        for i, (losses, val_accuracies, val_losses) in enumerate(results):
-            color = colors[i]
-            marker = markers[i % len(markers)]
-            ax2.plot(width_range, losses, marker=marker, label=f"Config {i+1}", color=color, linestyle='-')
-        ax2.set_ylabel("Mean training loss", color='black')
-        ax2.grid(True, alpha=0.3)
-        ax2.legend()
-
-        # Subplot 3: Validation Accuracy
-        for i, (losses, val_accuracies, val_losses) in enumerate(results):
-            color = colors[i]
-            marker = markers[i % len(markers)]
-            ax3.plot(width_range, val_accuracies, marker=marker, label=f"Config {i+1}", color=color, linestyle='-')
+    fig, axes = plt.subplots(num_plots, 1, figsize=(8, 3 * num_plots))
+    if num_plots == 1:
+        axes = [axes]
 
     width_param = configs[0].width_varyer if configs[0].width_varyer else "width"
-    ax3.set_xlabel(f"Width parameter: {width_param}")
-    ax3.set_ylabel("Mean validation accuracy", color='black')
-    ax3.grid(True, alpha=0.3)
-    ax3.legend()
 
-    plt.suptitle(_build_title(configs), fontsize=9)
+    for ax_idx, plot_type in enumerate(plots_to_show):
+        ax = axes[ax_idx]
+
+        if plot_type == 'variance':
+            ax.set_ylabel("Variance of validation logits")
+            for i, result in enumerate(results):
+                vars_ = result[0]
+                color = colors[i % len(colors)]
+                marker = markers[i % len(markers)]
+                label = f"Config {i+1}" if show_legend else None
+                ax.plot(width_range, vars_, marker=marker, label=label, color=color,
+                       linestyle=linestyle, markerfacecolor='white', markeredgewidth=1.5)
+            ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+            if show_legend:
+                ax.legend(frameon=True, fancybox=False, edgecolor='#cccccc')
+
+        elif plot_type == 'val_loss':
+            ax.set_ylabel("Validation loss")
+            for i, result in enumerate(results):
+                if graph_config.include_variance:
+                    val_losses = result[3]
+                else:
+                    val_losses = result[2]
+                color = colors[i % len(colors)]
+                marker = markers[i % len(markers)]
+                label = f"Config {i+1}" if show_legend else None
+                ax.plot(width_range, val_losses, marker=marker, label=label, color=color,
+                       linestyle=linestyle, markerfacecolor='white', markeredgewidth=1.5)
+            ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+            if show_legend:
+                ax.legend(frameon=True, fancybox=False, edgecolor='#cccccc')
+
+        elif plot_type == 'train_loss':
+            ax.set_ylabel("Training loss")
+            for i, result in enumerate(results):
+                if graph_config.include_variance:
+                    losses = result[1]
+                else:
+                    losses = result[0]
+                color = colors[i % len(colors)]
+                marker = markers[i % len(markers)]
+                label = f"Config {i+1}" if show_legend else None
+                ax.plot(width_range, losses, marker=marker, label=label, color=color,
+                       linestyle=linestyle, markerfacecolor='white', markeredgewidth=1.5)
+            ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+            if show_legend:
+                ax.legend(frameon=True, fancybox=False, edgecolor='#cccccc')
+
+        elif plot_type == 'val_error':
+            ax.set_ylabel("Validation error")
+            for i, result in enumerate(results):
+                if graph_config.include_variance:
+                    val_errors = result[2]
+                else:
+                    val_errors = result[1]
+                color = colors[i % len(colors)]
+                marker = markers[i % len(markers)]
+                label = f"Config {i+1}" if show_legend else None
+                ax.plot(width_range, val_errors, marker=marker, label=label, color=color,
+                       linestyle=linestyle, markerfacecolor='white', markeredgewidth=1.5)
+            ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+
+            if graph_config.constant_name is not None and graph_config.constant_value is not None:
+                ax.axhline(y=graph_config.constant_value, color='red', linestyle='--',
+                          linewidth=1.5, label=graph_config.constant_name)
+
+            if show_legend or (graph_config.constant_name is not None and graph_config.constant_value is not None):
+                ax.legend(frameon=True, fancybox=False, edgecolor='#cccccc')
+
+    axes[-1].set_xlabel(f"Width parameter: {width_param}")
+
     plt.tight_layout()
     plt.show()

@@ -1,11 +1,13 @@
+from typing import Optional
+
 import torch
 
 from jl.config import Config
-from jl.multi_experiment_grapher import run_list_experiment
+from jl.multi_experiment_grapher import run_list_experiment, GraphConfig
 from jl.feature_experiments.feature_problem import SingleFeatures
 
 
-def run_experiment(width_range: list[int], num_runs: int):
+def run_experiment(width_range: list[int], num_runs: int, graph_config: Optional[GraphConfig] = None):
     torch.manual_seed(38175)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -39,6 +41,7 @@ def run_experiment(width_range: list[int], num_runs: int):
         weight_tracker="accuracy",
         width_varyer="h",
         optimizer="adam_w",
+        is_norm=False,
     )
 
     # Generate validation set with class-balanced sampling
@@ -57,5 +60,6 @@ def run_experiment(width_range: list[int], num_runs: int):
         [model_config],
         width_range,
         num_runs,
-        clean_mode=False
+        clean_mode=False,
+        graph_config=graph_config,
     )
