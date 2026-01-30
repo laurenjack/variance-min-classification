@@ -2,12 +2,11 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-
 
 from jl.model_creator import create_model
 from jl.config import Config
+from jl.optimizer import create_optimizer
 from jl.scheduler import create_lr_scheduler
 
 
@@ -66,13 +65,8 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
     else:
         criterion = nn.CrossEntropyLoss()
     
-    # Select optimizer based on config
-    if c.optimizer == "adam_w":
-        optimizer = optim.AdamW(model.parameters(), lr=initial_lr, weight_decay=c.weight_decay, eps=c.adam_eps, betas=c.adam_betas)
-    elif c.optimizer == "sgd":
-        optimizer = optim.SGD(model.parameters(), lr=initial_lr, momentum=c.sgd_momentum, weight_decay=c.weight_decay)
-    else:
-        raise ValueError(f"Unknown optimizer: {c.optimizer}")
+    # Create optimizer
+    optimizer = create_optimizer(model.parameters(), c, initial_lr)
 
     # Create learning rate scheduler if enabled
     scheduler = create_lr_scheduler(optimizer, training_steps, c.lr, c.lr_scheduler)

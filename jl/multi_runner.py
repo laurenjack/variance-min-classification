@@ -9,6 +9,7 @@ from torch.func import vmap, stack_module_state, functional_call, grad_and_value
 
 from jl.config import Config
 from jl.model_creator import create_model
+from jl.optimizer import create_optimizer
 from jl.scheduler import create_lr_scheduler
 
 
@@ -216,13 +217,8 @@ def _train_parallel(
         if warmup_steps > 0:
             initial_lr = c.lr / warmup_steps
 
-    # Single optimizer for all parameters
-    if c.optimizer == "adam_w":
-        opt = torch.optim.AdamW(params.values(), lr=initial_lr, weight_decay=c.weight_decay, eps=c.adam_eps)
-    elif c.optimizer == "sgd":
-        opt = torch.optim.SGD(params.values(), lr=initial_lr, weight_decay=c.weight_decay)
-    else:
-        raise ValueError(f"Unknown optimizer: {c.optimizer}")
+    # Create optimizer for all parameters
+    opt = create_optimizer(params, c, initial_lr)
 
     # Create learning rate scheduler if enabled
     scheduler = create_lr_scheduler(opt, training_steps, c.lr, c.lr_scheduler)
