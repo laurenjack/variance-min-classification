@@ -6,7 +6,6 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from jl.model_creator import create_model
 from jl.config import Config
-from jl.feature_experiments.optimizer import RegAdamW, register_reg_adam_w_hooks
 from jl.scheduler import create_lr_scheduler
 
 
@@ -114,15 +113,11 @@ def create_model_dataset(segments, model_idx, num_models, segments_per_model):
 def create_optimizer(model, c, initial_lr):
     """Create optimizer for a model based on config."""
     if c.optimizer == "adam_w":
-        return optim.AdamW(model.parameters(), lr=initial_lr, weight_decay=c.weight_decay, 
+        return optim.AdamW(model.parameters(), lr=initial_lr, weight_decay=c.weight_decay,
                            eps=c.adam_eps, betas=c.adam_betas)
     elif c.optimizer == "sgd":
-        return optim.SGD(model.parameters(), lr=initial_lr, momentum=c.sgd_momentum, 
+        return optim.SGD(model.parameters(), lr=initial_lr, momentum=c.sgd_momentum,
                          weight_decay=c.weight_decay)
-    elif c.optimizer == "reg_adam_w":
-        register_reg_adam_w_hooks(model)
-        return RegAdamW(model.parameters(), lr=initial_lr, weight_decay=c.weight_decay, 
-                        eps=c.adam_eps, betas=c.adam_betas)
     else:
         raise ValueError(f"Unknown optimizer: {c.optimizer}")
 

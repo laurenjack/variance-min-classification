@@ -63,12 +63,8 @@ class Config:
             raise ValueError("width_varyer must be None for 'multi-linear' model_type")
         
         # Validate optimizer
-        if optimizer not in ['adam_w', 'sgd', 'reg_adam_w']:
-            raise ValueError(f"optimizer must be 'adam_w', 'sgd', or 'reg_adam_w', got '{optimizer}'")
-        
-        # Validate reg_adam_w constraint
-        if optimizer == 'reg_adam_w' and learnable_norm_parameters:
-            raise ValueError("learnable_norm_parameters must be False when optimizer='reg_adam_w'")
+        if optimizer not in ['adam_w', 'sgd']:
+            raise ValueError(f"optimizer must be 'adam_w' or 'sgd', got '{optimizer}'")
         
         # Validate weight_tracker
         if weight_tracker is not None and weight_tracker not in ['accuracy', 'weight', 'full_step']:

@@ -160,8 +160,6 @@ def _train_parallel(
     width_range: list[int],
 ) -> Tuple[_VectorizedModel, List[Tuple[Tensor, Tensor]]]:
     """Internal: Train num_widths * num_runs models in parallel."""
-    if c.optimizer == "reg_adam_w":
-        raise ValueError("reg_adam_w optimizer is not supported in multi_runner. Please use single_runner instead.")
 
     training_sets = _generate_training_sets(problem, c, num_runs, device, clean_mode)
     model_lists = _build_models(c, width_range, num_runs, device)
