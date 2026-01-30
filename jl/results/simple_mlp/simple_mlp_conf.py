@@ -40,7 +40,7 @@ def run_experiment(width_range: list[int], num_runs: int, graph_config: Optional
         h=h,
         weight_tracker="accuracy",
         width_varyer="h",
-        optimizer="adam_w",
+        optimizer="sign_sgd",
         is_norm=False,
     )
 
