@@ -8,7 +8,6 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from jl.model_creator import create_model
 from jl.config import Config
-from jl.feature_experiments.optimizer import RegAdamW, register_reg_adam_w_hooks
 from jl.scheduler import create_lr_scheduler
 
 
@@ -72,10 +71,6 @@ def train_once(device, problem, validation_set, c: Config, clean_mode: bool = Fa
         optimizer = optim.AdamW(model.parameters(), lr=initial_lr, weight_decay=c.weight_decay, eps=c.adam_eps, betas=c.adam_betas)
     elif c.optimizer == "sgd":
         optimizer = optim.SGD(model.parameters(), lr=initial_lr, momentum=c.sgd_momentum, weight_decay=c.weight_decay)
-    elif c.optimizer == "reg_adam_w":
-        # Register hooks on Linear modules for RegAdamW
-        register_reg_adam_w_hooks(model)
-        optimizer = RegAdamW(model.parameters(), lr=initial_lr, weight_decay=c.weight_decay, eps=c.adam_eps, betas=c.adam_betas)
     else:
         raise ValueError(f"Unknown optimizer: {c.optimizer}")
 

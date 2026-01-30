@@ -148,52 +148,6 @@ Generate n datapoints by:
 
 Return x, y, and center_indices_list (a list of tensors tracking features at each layer).
 
-# RegAdamW
-
-RegAdamW is a new optimizer which implements a version of AdamW that applies L2 regularization much more effectively to large neural networks. It is implemented in feature_experiments/optimizer.py. We will describe RegAdamW mathematically, then get into the specific implementation details. Recall that AdamW has:
-
-1. A first moment g (this is just the gradient)
-2. A second moment g^2
-3. A moving first moment m
-4. A moving second moment v
-
-with the update given by:
-W - lr*(m / (root(v) + adam_eps) + wd * W)
-(where wd is the weight decay as per AdamW) 
-
-We want to change how the second moment is calculated. The second moment should be replaced with the sum across the per sample gradient squared, `g2_per_n`. That is, suppose g_out [batch_size, d1] is the backpropagated gradient with respect to the output of the Linear module (i.e., ∂L/∂(xW^T)), and x [batch_size, d0] is the input to the linear module. Then we have:
-`g2_per_n = batch_size * g_out.t() ** 2 @ x ** 2`
-Notice that this is equivalent to \frac{1}/{batch_size} * \sum(g_i)^2 where g_i is the gradient for an individual point (without the \frac{1}/{batch_size} scaling from the loss), i.e. the expected value of each individual gradient square.
-
-The update rule will change too, we shall have:
-W - lr*(m + wd * W) / (root(v) + adam_eps)
-So the weight decay is also scaled, this preserves the regularization effect. 
-
-So to clarify, let g be the standard gradient ∂L/∂W (i.e., `g = g_out.t() @ x`):
-1. The first moment doesn't change
-2. The second moment must be replaced with `g2_per_n`
-3. The update rule must scale both the first moment and the reg term
-
-## Implementation Details
-
-We assume all Linear modules have bias=False (which is the case throughout the codebase).
-
-We can use gradient hooks to calculate and store the tensors `g2_per_n`. Then we can implement a new Optimizer RegAdamW in `feature_experiments/optimizer.py`, to calculate the new moment and apply the update.
-
-We use two hooks on each Linear module:
-1. A forward hook to store the input tensor x on the module (e.g., `module._reg_input = x`)
-2. A `register_full_backward_hook` to compute `g2_per_n` using `grad_output[0]` as g_out
-
-The field `g2_per_n` can be stored directly on the nn.Parameter for use by the optimizer.
-
-## Use
-
-Notice config.py, this has the flag is_adam_w, this should be replaced with the optimizer string field with "adam_w" as the default, the other options should be "sgd" and "reg_adam_w". The optimizer field should be validated in Config.__init__. Firstly update all existing code which uses it to switch to the string parameter instead.
-
-**Important constraint:** When `optimizer="reg_adam_w"`, the config must have `learnable_norm_parameters=False`. If `learnable_norm_parameters=True` with `optimizer="reg_adam_w"`, raise a ValueError in Config.__init__.
-
-For the "reg_adam_w" path, it is unsupported for the variance_experiment_runner pathway (raise an exception). However if specified for single_runner then it should be used. It is of course important on this pathway to register the hooks on the model. We can support all models, because we need not touch the model code directly to register the hooks.
-
 # Learning Rate Decay
 
 We introduce a new parameter `lr_scheduler` in the config with three options:
