@@ -34,7 +34,7 @@ def run_experiment(width_range: list[int], num_runs: int, graph_config: Optional
         batch_size=n // 4,
         lr=0.01,
         epochs=200,
-        weight_decay=0.001,
+        weight_decay=0.0,
         num_layers=1,
         num_class=problem.num_classes(),
         h=h,
