@@ -13,11 +13,11 @@ def run_experiment(width_range: list[int], num_runs: int, graph_config: Optional
 
     # Problem: SingleFeatures
     problem = SingleFeatures(
-        true_d=4,
-        f=4,
+        true_d=2,
+        f=2,
         device=device,
         is_orthogonal=False,
-        percent_correct_per_f=[0.8] * 4,
+        percent_correct_per_f=[0.8] * 2,
         noisy_d=12,
         random_basis=True,
     )
@@ -34,7 +34,7 @@ def run_experiment(width_range: list[int], num_runs: int, graph_config: Optional
         batch_size=n // 4,
         lr=0.01,
         epochs=100,
-        weight_decay=0.001,
+        weight_decay=0.01,
         num_layers=1,
         num_class=problem.num_classes(),
         h=h,
