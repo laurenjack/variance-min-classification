@@ -6,8 +6,8 @@ def main():
     width_range = list(range(80, 6001, 40))
     num_runs = 1
     graph_config = GraphConfig(
-        constant_name="Classical Minimum",
-        constant_value=0.27,
+        # constant_name="Classical Minimum",
+        # constant_value=0.3,
         show_validation_loss=True,
         show_line=False,
     )

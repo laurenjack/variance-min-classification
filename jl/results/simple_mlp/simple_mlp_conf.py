@@ -13,21 +13,21 @@ def run_experiment(width_range: list[int], num_runs: int, graph_config: Optional
 
     # Problem: SingleFeatures
     problem = SingleFeatures(
-        true_d=2,
-        f=2,
+        true_d=4,
+        f=4,
         device=device,
         is_orthogonal=False,
-        percent_correct_per_f=[0.7] * 2,
+        percent_correct_per_f=[0.8] * 4,
         noisy_d=12,
         random_basis=True,
     )
-    n = 60
+    n = 120
 
     h = max(width_range)
 
     # Model configuration
     model_config = Config(
-        model_type='mlp',
+        model_type='simple-mlp',
         d=problem.d,
         n_val=1000,
         n=n,
@@ -48,7 +48,7 @@ def run_experiment(width_range: list[int], num_runs: int, graph_config: Optional
     x_val, y_val, center_indices = problem.generate_dataset(
         model_config.n_val,
         shuffle=True,
-        clean_mode=True
+        clean_mode=False
     )
     validation_set = (x_val.to(device), y_val.to(device), center_indices.to(device))
 

@@ -134,8 +134,8 @@ class SingleFeatures(Problem):
                            to avoid features that are too close (dot product > cos(2π/true_d)).
             percent_correct_per_f: Optional list of length f specifying the probability that
                                    samples of each feature retain their correct label.
-                                   Each element must be in [1/f, 1.0]. When a label is flipped,
-                                   it becomes (original_label + 1) % f. If None, no label noise.
+                                   Each element must be in [1/f, 1.0]. Flipped labels become
+                                   (original_label + 1) % f. If None, no label noise.
             noisy_d: Number of noisy dimensions to add. For each sample, a random unit vector of
                      length noisy_d is generated (scaled by 1/sqrt(true_d)) and concatenated.
                      Must be non-negative. Defaults to 0.
@@ -306,17 +306,8 @@ class SingleFeatures(Problem):
                             )
                             indices_to_flip = feature_sample_indices[perm[:num_to_flip]]
 
-                            # Sample new labels uniformly from all classes except the correct one
-                            other_classes = torch.cat([
-                                torch.arange(feature_idx, device=self.device),
-                                torch.arange(feature_idx + 1, self.f, device=self.device)
-                            ])
-                            random_indices = torch.randint(
-                                0, self.f - 1, (num_to_flip,),
-                                generator=self.generator, device=self.device
-                            )
-                            new_labels = other_classes[random_indices]
-                            y[indices_to_flip] = new_labels
+                            # Flip to next class: (original + 1) % f
+                            y[indices_to_flip] = (feature_idx + 1) % self.f
 
         # Apply basis transformation if enabled
         if self.basis is not None:
