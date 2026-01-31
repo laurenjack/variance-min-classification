@@ -93,10 +93,22 @@ class _VectorizedModel:
         return x.unsqueeze(0).expand(self.num_models, -1, -1)
 
 
-def _generate_training_sets(problem, c: Config, num_runs: int, device: torch.device, clean_mode: bool) -> List[Tuple[Tensor, Tensor]]:
-    # Generate all training sets once, outside the loops
+def _generate_training_sets(problem, c: Config, num_runs: int, num_widths: int, device: torch.device, clean_mode: bool) -> List[Tuple[Tensor, Tensor]]:
+    """Generate training sets for all models.
+
+    When c.unique_training_set is False (default): generates num_runs training sets
+    that will be broadcast across widths.
+
+    When c.unique_training_set is True: generates num_widths * num_runs unique
+    training sets, one per model.
+    """
+    if c.unique_training_set:
+        num_sets = num_widths * num_runs
+    else:
+        num_sets = num_runs
+
     training_sets = []
-    for _ in range(num_runs):
+    for _ in range(num_sets):
         x_train, y_train, _ = problem.generate_dataset(c.n, shuffle=True, clean_mode=clean_mode)
         x_train, y_train = x_train.to(device), y_train.to(device)
         training_sets.append((x_train, y_train))
@@ -133,12 +145,12 @@ def stack_and_broadcast_runs(
     num_widths: int,
 ) -> Tuple[Tensor, Tensor]:
     """Stack per-run batches and broadcast across widths.
-    
+
     Args:
         x_list: list[num_runs] of [m, d] tensors
         y_list: list[num_runs] of [m] tensors
         num_widths: number of width configurations
-        
+
     Returns:
         x: [num_widths * num_runs, m, d]
         y: [num_widths * num_runs, m]
@@ -152,6 +164,27 @@ def stack_and_broadcast_runs(
     y = y.unsqueeze(0).expand(num_widths, -1, -1).reshape(num_widths * num_runs, m_local)
     return x, y
 
+
+def stack_unique_batches(
+    x_list: List[Tensor],
+    y_list: List[Tensor],
+) -> Tuple[Tensor, Tensor]:
+    """Stack per-model batches without broadcasting.
+
+    Used when unique_training_set=True.
+
+    Args:
+        x_list: list[num_models] of [m, d] tensors
+        y_list: list[num_models] of [m] tensors
+
+    Returns:
+        x: [num_models, m, d]
+        y: [num_models, m]
+    """
+    x = torch.stack(x_list, dim=0)
+    y = torch.stack(y_list, dim=0)
+    return x, y
+
 def _train_parallel(
     device: torch.device,
     problem,
@@ -161,11 +194,10 @@ def _train_parallel(
     width_range: list[int],
 ) -> Tuple[_VectorizedModel, List[Tuple[Tensor, Tensor]]]:
     """Internal: Train num_widths * num_runs models in parallel."""
-
-    training_sets = _generate_training_sets(problem, c, num_runs, device, clean_mode)
-    model_lists = _build_models(c, width_range, num_runs, device)
-    
     num_widths = len(width_range)
+
+    training_sets = _generate_training_sets(problem, c, num_runs, num_widths, device, clean_mode)
+    model_lists = _build_models(c, width_range, num_runs, device)
     width_max = max(width_range)
     n = c.n
     batch_size = c.batch_size
@@ -224,20 +256,32 @@ def _train_parallel(
     scheduler = create_lr_scheduler(opt, training_steps, c.lr, c.lr_scheduler)
     # Ensure template is in training mode for the training loop
     template.train()
+    num_models = num_widths * num_runs
+
     for epoch in range(c.epochs):
-        # Generate per-run permutations
-        perms = [torch.randperm(n, device=device) for _ in range(num_runs)]
-        
+        # Generate permutations: one per model if unique_training_set, else one per run
+        if c.unique_training_set:
+            perms = [torch.randperm(n, device=device) for _ in range(num_models)]
+        else:
+            perms = [torch.randperm(n, device=device) for _ in range(num_runs)]
+
         # Track epoch losses for reporting
-        epoch_loss_sum_per_model = torch.zeros(num_widths * num_runs, device=device)
+        epoch_loss_sum_per_model = torch.zeros(num_models, device=device)
         epoch_sample_count = 0
-        
+
         for b in range(0, n, batch_size):
             m = min(batch_size, n - b)
-            # Get next batch indices for each run and prepare tensors
+            # Get next batch indices and prepare tensors
             idx_list = [perm[b:b+m] for perm in perms]
             x_list, y_list = materialize_run_batches(x_full_list, y_full_list, idx_list)
-            x, y = stack_and_broadcast_runs(x_list, y_list, num_widths)
+
+            if c.unique_training_set:
+                # Each model has its own unique training set
+                x, y = stack_unique_batches(x_list, y_list)
+            else:
+                # Broadcast num_runs training sets across num_widths
+                x, y = stack_and_broadcast_runs(x_list, y_list, num_widths)
+
             grads, losses = vectorized_models(params, buffers, x, y, width_mask)
 
             # Accumulate losses for epoch reporting
@@ -357,9 +401,15 @@ def _compute_metrics(
         # Evaluate training loss
         for b in range(0, n, batch_size):
             m = min(batch_size, n - b)
-            idx_list = [torch.arange(b, b + m, device=device) for _ in range(num_runs)]
+            if c.unique_training_set:
+                idx_list = [torch.arange(b, b + m, device=device) for _ in range(num_models)]
+            else:
+                idx_list = [torch.arange(b, b + m, device=device) for _ in range(num_runs)]
             x_list, y_list = materialize_run_batches(x_full_list, y_full_list, idx_list)
-            x_batch, y_batch = stack_and_broadcast_runs(x_list, y_list, num_widths)
+            if c.unique_training_set:
+                x_batch, y_batch = stack_unique_batches(x_list, y_list)
+            else:
+                x_batch, y_batch = stack_and_broadcast_runs(x_list, y_list, num_widths)
 
             z = model.forward(x_batch)
             if c.num_class == 2:

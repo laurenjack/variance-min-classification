@@ -18,7 +18,8 @@ class Config:
                 dropout_prob: Optional[float] = None,
                 is_hashed_dropout: bool = False,
                 prob_weight: float = 1.0,
-                num_models: Optional[int] = None):
+                num_models: Optional[int] = None,
+                unique_training_set: bool = False):
         # Validate model_type
         if model_type not in ['resnet', 'mlp', 'k-polynomial', 'multi-linear', 'simple-mlp']:
             raise ValueError(f"model_type must be 'resnet', 'mlp', 'k-polynomial', 'multi-linear', or 'simple-mlp', got '{model_type}'")
@@ -136,3 +137,4 @@ class Config:
         self.is_hashed_dropout = is_hashed_dropout
         self.prob_weight = prob_weight
         self.num_models = num_models
+        self.unique_training_set = unique_training_set
