@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+Do not commit unless asked to.
+
 ## Environment
 
 Activate the Python virtual environment before running any code:

@@ -217,7 +217,7 @@ class FeatureCombinations(Problem):
         n: int,
         clean_mode: bool = False,
         shuffle: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor], torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor]]:
         """
         Generate a dataset of size n.
 
@@ -227,14 +227,13 @@ class FeatureCombinations(Problem):
             shuffle: If True, randomly permute the resulting dataset.
 
         Returns:
-            (x, y, center_indices_list, px):
+            (x, y, center_indices_list):
               - x: shape (n, d) float32 tensor of features
               - y: shape (n,) int64 tensor of class labels (0, 1, 2, or 3)
               - center_indices_list: List of tensors, one per layer.
                   - center_indices_list[0]: shape (n, num_atomic_subsections) atomic features
                   - center_indices_list[l]: shape (n, num_subsections_at_layer_l)
                   - center_indices_list[-1]: shape (n,) final layer features
-              - px: shape (n,) float32 tensor of ones (uniform probability)
         """
         del clean_mode  # unused
 
@@ -304,15 +303,11 @@ class FeatureCombinations(Problem):
         if self.Q_rotation is not None:
             x = x @ self.Q_rotation.T
 
-        # Create px tensor of ones (uniform probability)
-        px = torch.ones(n, device=self.device, dtype=torch.float32)
-
         # Shuffle if requested
         if shuffle:
             perm = torch.randperm(n, generator=self.generator, device=self.device)
             x = x[perm]
             y = y[perm]
             center_indices_list = [indices[perm] for indices in center_indices_list]
-            px = px[perm]
 
-        return x, y, center_indices_list, px
+        return x, y, center_indices_list
