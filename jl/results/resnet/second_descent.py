@@ -1,5 +1,5 @@
 from jl.multi_experiment_grapher import GraphConfig
-from jl.results.simple_mlp.simple_mlp_conf import run_experiment
+from jl.results.resnet.resnet_conf import run_experiment
 
 
 def main():

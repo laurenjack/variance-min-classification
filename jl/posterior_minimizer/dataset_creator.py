@@ -220,6 +220,7 @@ class HyperXorNormal:
         # Validate percent_correct
         if not 0.5 <= percent_correct <= 1.0:
             raise ValueError("percent_correct must be between 0.5 and 1.0 for XOR.")
+        self.true_d = true_d
 
         # Compute per-dimension crossing probability p from desired XOR accuracy
         # P(correct XOR) = (1 + (1-2p)^true_d) / 2 = percent_correct
@@ -273,6 +274,9 @@ class HyperXorNormal:
         self.means = corners
         self.c = c
 
+    def num_classes(self):
+        return self.true_d
+    
     def generate_dataset(self, n: int, clean_mode: bool = False, shuffle: bool = True):
         """
         Sample 'n' data points from the hypercube corners plus Gaussian noise.

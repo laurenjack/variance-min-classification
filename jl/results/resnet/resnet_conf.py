@@ -4,26 +4,23 @@ import torch
 
 from jl.config import Config
 from jl.multi_experiment_grapher import run_list_experiment, GraphConfig
-from jl.feature_experiments.feature_problem import SingleFeatures
+from jl.feature_experiments.feature_combinations import FeatureCombinations
 from jl.single_runner import train_once
 
 
-def _get_problem(device: torch.device) -> SingleFeatures:
-    return SingleFeatures(
-        true_d=10,
-        f=10,
-        device=device,
-        is_orthogonal=False,
-        percent_correct_per_f=[0.8] * 10,
-        noisy_d=12,
+def _get_problem(device: torch.device) -> FeatureCombinations:
+    return FeatureCombinations(
+        num_layers=4,
         random_basis=True,
+        has_favourites=True,
+        device=device,
     )
 
 
-def _get_config(problem: SingleFeatures, h: int, width_varyer: Optional[str]) -> Config:
-    n = 100
+def _get_config(problem: FeatureCombinations, h: int, width_varyer: Optional[str]) -> Config:
+    n = 300
     return Config(
-        model_type='simple-mlp',
+        model_type='resnet',
         d=problem.d,
         n_val=1000,
         n=n,
@@ -31,9 +28,10 @@ def _get_config(problem: SingleFeatures, h: int, width_varyer: Optional[str]) ->
         lr=0.01,
         epochs=100,
         weight_decay=0.001,
-        num_layers=1,
+        num_layers=3,
         num_class=problem.num_classes(),
         h=h,
+        d_model=8,
         weight_tracker="accuracy",
         width_varyer=width_varyer,
         optimizer="adam_w",
@@ -42,13 +40,14 @@ def _get_config(problem: SingleFeatures, h: int, width_varyer: Optional[str]) ->
     )
 
 
-def _get_validation_set(problem: SingleFeatures, model_config: Config, device: torch.device):
-    x_val, y_val, center_indices = problem.generate_dataset(
+def _get_validation_set(problem: FeatureCombinations, model_config: Config, device: torch.device):
+    x_val, y_val, center_indices_list = problem.generate_dataset(
         model_config.n_val,
         shuffle=True,
         clean_mode=False
     )
-    return (x_val.to(device), y_val.to(device), center_indices.to(device))
+    center_indices_on_device = [ci.to(device) for ci in center_indices_list]
+    return (x_val.to(device), y_val.to(device), center_indices_on_device)
 
 
 def run_experiment(width_range: list[int], num_runs: int, graph_config: Optional[GraphConfig] = None):
