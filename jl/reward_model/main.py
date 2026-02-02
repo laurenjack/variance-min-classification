@@ -34,6 +34,7 @@ class Config:
     patience: int = 2                                      # Stop if no improvement in val loss for 2 consecutive evaluations
     output_dir: str = "./reward_model_output"
     log_timing: bool = True                                # Enable performance timing instrumentation
+    smoke_test: bool = True                                # Run only 50 steps for quick validation
 
 
 def main():

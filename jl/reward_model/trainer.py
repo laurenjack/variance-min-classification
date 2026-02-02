@@ -115,6 +115,8 @@ def train(model, train_loader, val_loader, c, device):
     patience_counter = 0
     train_losses = []
     val_losses = []
+    global_step = 0
+    smoke_test_steps = 50
 
     for epoch in range(1, c.num_epochs + 1):
         model.train()
@@ -163,6 +165,7 @@ def train(model, train_loader, val_loader, c, device):
 
             total_loss += loss.item()
             total_steps += 1
+            global_step += 1
             tracker.step()
 
             # Log training info every log_interval steps
@@ -171,6 +174,14 @@ def train(model, train_loader, val_loader, c, device):
                 logger.info(f"Epoch {epoch}, Step {step}/{total_steps_in_loader}: loss={avg_loss:.4f}")
                 if c.log_timing:
                     logger.info(f"  Timing (last {c.log_interval} steps): {tracker.get_interval_summary()}")
+
+            # Smoke test: stop after 50 steps
+            if c.smoke_test and global_step >= smoke_test_steps:
+                avg_loss = total_loss / total_steps
+                logger.info(f"Smoke test complete after {global_step} steps, loss={avg_loss:.4f}")
+                if c.log_timing:
+                    logger.info(f"  Final timing: {tracker.get_summary()}")
+                return
 
             # Start timing next data load
             data_start = time.time()
