@@ -1,7 +1,10 @@
+import logging
 from datasets import load_dataset
 from transformers import AutoTokenizer
 import torch
 from torch.utils.data import DataLoader
+
+logger = logging.getLogger(__name__)
 
 
 def download_data(c):
@@ -74,5 +77,5 @@ def download_data(c):
     train_loader = DataLoader(train_data, batch_size=c.train_batch_size, shuffle=True, collate_fn=collate_fn)
     val_loader = DataLoader(val_data, batch_size=c.eval_batch_size, shuffle=False, collate_fn=collate_fn) if val_data else None
 
-    print(f"Loaded dataset with {len(train_data)} training examples and {len(val_data) if val_data else 0} validation examples.")
+    logger.info(f"Loaded dataset: {len(train_data)} train, {len(val_data) if val_data else 0} val examples")
     return train_loader, val_loader

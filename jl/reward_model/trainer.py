@@ -1,8 +1,91 @@
-from tqdm import tqdm
+import logging
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import os
+
+logger = logging.getLogger(__name__)
+
+
+class PerformanceTracker:
+    """Tracks timing of different training phases to identify bottlenecks."""
+
+    def __init__(self, device, enabled=True):
+        self.device = device
+        self.enabled = enabled
+        self.use_cuda = device.type == 'cuda'
+        self.reset()
+
+    def reset(self):
+        """Reset all accumulated times."""
+        self.data_load_time = 0.0
+        self.device_transfer_time = 0.0
+        self.forward_time = 0.0
+        self.backward_time = 0.0
+        self.optimizer_time = 0.0
+        self.step_count = 0
+
+    def _sync_cuda(self):
+        """Synchronize CUDA for accurate timing."""
+        if self.use_cuda:
+            torch.cuda.synchronize()
+
+    def time_data_load(self, start_time):
+        """Record time spent waiting for data."""
+        if self.enabled:
+            self.data_load_time += time.time() - start_time
+
+    def time_device_transfer(self, start_time):
+        """Record time spent transferring data to device."""
+        if self.enabled:
+            self._sync_cuda()
+            self.device_transfer_time += time.time() - start_time
+
+    def time_forward(self, start_time):
+        """Record time spent in forward pass."""
+        if self.enabled:
+            self._sync_cuda()
+            self.forward_time += time.time() - start_time
+
+    def time_backward(self, start_time):
+        """Record time spent in backward pass."""
+        if self.enabled:
+            self._sync_cuda()
+            self.backward_time += time.time() - start_time
+
+    def time_optimizer(self, start_time):
+        """Record time spent in optimizer step."""
+        if self.enabled:
+            self._sync_cuda()
+            self.optimizer_time += time.time() - start_time
+
+    def step(self):
+        """Increment step counter."""
+        self.step_count += 1
+
+    def get_summary(self):
+        """Return timing summary as a formatted string."""
+        total = self.data_load_time + self.device_transfer_time + self.forward_time + self.backward_time + self.optimizer_time
+        if total == 0:
+            return "No timing data"
+
+        def pct(t):
+            return f"{t:.2f}s ({100*t/total:.1f}%)"
+
+        return (
+            f"data_load={pct(self.data_load_time)}, "
+            f"device_transfer={pct(self.device_transfer_time)}, "
+            f"forward={pct(self.forward_time)}, "
+            f"backward={pct(self.backward_time)}, "
+            f"optimizer={pct(self.optimizer_time)}"
+        )
+
+    def get_interval_summary(self):
+        """Return summary for logging interval, then reset."""
+        summary = self.get_summary()
+        self.reset()
+        return summary
 
 # Define forward pass for reward model: get hidden states, take last token's hidden state, apply reward_head
 def compute_reward_scores(model, input_ids, attention_mask, device):
@@ -19,9 +102,13 @@ def compute_reward_scores(model, input_ids, attention_mask, device):
 def train(model, train_loader, val_loader, c, device):
     # Set up optimizer
     optimizer = torch.optim.AdamW(
-        model.parameters(), 
+        model.parameters(),
         lr=c.learning_rate, weight_decay=c.weight_decay
     )
+
+    # Performance tracking
+    tracker = PerformanceTracker(device, enabled=c.log_timing)
+    total_steps_in_loader = len(train_loader)
 
     # Training loop
     best_val_loss = float("inf")
@@ -33,78 +120,107 @@ def train(model, train_loader, val_loader, c, device):
         model.train()
         total_loss = 0.0
         total_steps = 0
-        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch} Training", leave=False)
-        for step, (input_ids, attention_mask) in enumerate(progress_bar, start=1):
-            input_ids = input_ids.to(device)
-            attention_mask = attention_mask.to(device)
+        epoch_start = time.time()
+        tracker.reset()
+
+        logger.info(f"Epoch {epoch}/{c.num_epochs} starting ({total_steps_in_loader} steps)")
+
+        data_start = time.time()
+        for step, (input_ids, attention_mask) in enumerate(train_loader, start=1):
+            tracker.time_data_load(data_start)
+
+            # Device transfer
+            transfer_start = time.time()
+            input_ids = input_ids.to(device, non_blocking=True)
+            attention_mask = attention_mask.to(device, non_blocking=True)
+            tracker.time_device_transfer(transfer_start)
+
             optimizer.zero_grad()
-            # Compute reward scores for all sequences in the batch (which includes chosen and rejected pairs)
+
+            # Forward pass
+            forward_start = time.time()
             rewards = compute_reward_scores(model, input_ids, attention_mask, device)
             # Split rewards into chosen and rejected halves
             batch_size = input_ids.size(0) // 2
-            chosen_scores = rewards[:batch_size].view(-1)      # first half corresponds to chosen
-            rejected_scores = rewards[batch_size:].view(-1)    # second half corresponds to rejected
+            chosen_scores = rewards[:batch_size].view(-1)
+            rejected_scores = rewards[batch_size:].view(-1)
             # Compute Bradley-Terry loss: -log(sigmoid(chosen - rejected))
-            score_diff = (chosen_scores - rejected_scores).float()  # convert to float32 for stability
-            # Target is 1 for all pairs (chosen is better than rejected)
+            score_diff = (chosen_scores - rejected_scores).float()
             target = torch.ones_like(score_diff, device=device)
             loss = F.binary_cross_entropy_with_logits(score_diff, target)
+            tracker.time_forward(forward_start)
+
+            # Backward pass
+            backward_start = time.time()
             loss.backward()
-            # Clip gradients to prevent exploding gradients
             nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            tracker.time_backward(backward_start)
+
+            # Optimizer step
+            optimizer_start = time.time()
             optimizer.step()
+            tracker.time_optimizer(optimizer_start)
+
             total_loss += loss.item()
             total_steps += 1
-            # Update progress bar description
-            progress_bar.set_postfix({"loss": loss.item()})
+            tracker.step()
+
             # Log training info every log_interval steps
             if step % c.log_interval == 0:
                 avg_loss = total_loss / total_steps
-                print(f"Epoch {epoch}, Step {step}: Avg Train Loss = {avg_loss:.4f}")
-        # End of epoch, compute average training loss
+                logger.info(f"Epoch {epoch}, Step {step}/{total_steps_in_loader}: loss={avg_loss:.4f}")
+                if c.log_timing:
+                    logger.info(f"  Timing (last {c.log_interval} steps): {tracker.get_interval_summary()}")
+
+            # Start timing next data load
+            data_start = time.time()
+
+        # End of epoch
+        epoch_time = time.time() - epoch_start
         avg_train_loss = total_loss / total_steps if total_steps > 0 else 0.0
         train_losses.append(avg_train_loss)
-        
+
         # Validation after each epoch
         if val_loader:
+            val_start = time.time()
             model.eval()
             val_loss = 0.0
             val_steps = 0
             with torch.no_grad():
                 for input_ids, attention_mask in val_loader:
-                    input_ids = input_ids.to(device)
-                    attention_mask = attention_mask.to(device)
+                    input_ids = input_ids.to(device, non_blocking=True)
+                    attention_mask = attention_mask.to(device, non_blocking=True)
                     rewards = compute_reward_scores(model, input_ids, attention_mask, device)
                     batch_size = input_ids.size(0) // 2
                     chosen_scores = rewards[:batch_size].view(-1)
                     rejected_scores = rewards[batch_size:].view(-1)
                     score_diff = (chosen_scores - rejected_scores).float()
-                    # Compute the same logistic loss on validation data
                     target = torch.ones_like(score_diff, device=device)
                     loss = F.binary_cross_entropy_with_logits(score_diff, target)
                     val_loss += loss.item()
                     val_steps += 1
+            val_time = time.time() - val_start
             avg_val_loss = val_loss / val_steps if val_steps > 0 else 0.0
             val_losses.append(avg_val_loss)
-            print(f"Epoch {epoch} completed. Train Loss = {avg_train_loss:.4f}, Val Loss = {avg_val_loss:.4f}")
+            logger.info(f"Epoch {epoch} complete: train_loss={avg_train_loss:.4f}, val_loss={avg_val_loss:.4f}, epoch_time={epoch_time:.1f}s (train={epoch_time-val_time:.1f}s, val={val_time:.1f}s)")
+
             # Early stopping check
             if c.early_stopping:
                 if avg_val_loss < best_val_loss:
                     best_val_loss = avg_val_loss
-                    patience_counter = 0  # reset counter if improvement
-                    # Optionally save the best model
+                    patience_counter = 0
                     model_path = os.path.join(c.output_dir, "best_model.pt")
                     torch.save(model.state_dict(), model_path)
+                    logger.info(f"  New best model saved (val_loss={avg_val_loss:.4f})")
                 else:
                     patience_counter += 1
                     if patience_counter >= c.patience:
-                        print(f"No improvement in validation loss for {c.patience} epochs. Early stopping at epoch {epoch}.")
+                        logger.info(f"Early stopping: no improvement for {c.patience} epochs")
                         break
         else:
-            # If no validation set is provided
-            print(f"Epoch {epoch} completed. Train Loss = {avg_train_loss:.4f}")
-    
+            logger.info(f"Epoch {epoch} complete: train_loss={avg_train_loss:.4f}, epoch_time={epoch_time:.1f}s")
+
     # Save final model
     final_model_path = os.path.join(c.output_dir, "final_model.pt")
     torch.save(model.state_dict(), final_model_path)
-    print(f"Final model saved to {final_model_path}")
+    logger.info(f"Final model saved to {final_model_path}")
