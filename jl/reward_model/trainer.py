@@ -99,7 +99,7 @@ def compute_reward_scores(model, input_ids, attention_mask, device):
     rewards = model.reward_head(last_token_hidden)  # shape: [batch_size, 1]
     return rewards
 
-def train(model, train_loader, val_loader, c, device):
+def train(model, train_loader, val_loader, c, device, output_path: str):
     # Set up optimizer
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -220,7 +220,7 @@ def train(model, train_loader, val_loader, c, device):
                 if avg_val_loss < best_val_loss:
                     best_val_loss = avg_val_loss
                     patience_counter = 0
-                    model_path = os.path.join(c.output_dir, "best_model.pt")
+                    model_path = os.path.join(output_path, "best_model.pt")
                     torch.save(model.state_dict(), model_path)
                     logger.info(f"  New best model saved (val_loss={avg_val_loss:.4f})")
                 else:
@@ -232,6 +232,6 @@ def train(model, train_loader, val_loader, c, device):
             logger.info(f"Epoch {epoch} complete: train_loss={avg_train_loss:.4f}, epoch_time={epoch_time:.1f}s")
 
     # Save final model
-    final_model_path = os.path.join(c.output_dir, "final_model.pt")
+    final_model_path = os.path.join(output_path, "final_model.pt")
     torch.save(model.state_dict(), final_model_path)
     logger.info(f"Final model saved to {final_model_path}")

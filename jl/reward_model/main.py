@@ -1,10 +1,21 @@
-import os
+#!/usr/bin/env python3
+"""Main entry point for reward model training.
+
+Usage:
+    python -m jl.reward_model.main --train-path ./data/tokenized --output-path ./output
+
+
+"""
+
+import argparse
 import logging
+import os
 import time
+
 import torch
-from dataclasses import dataclass
-from typing import Optional
-from jl.reward_model.data_downloader import download_data
+
+from jl.reward_model.reward_config import RewardConfig
+from jl.reward_model.load_data import load_data
 from jl.reward_model.model import get_model
 from jl.reward_model.trainer import train
 
@@ -17,55 +28,54 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class Config:
-    model_name: str = "meta-llama/Llama-3.2-1B-Instruct"
-    hf_dataset: str = "Anthropic/hh-rlhf"                 # Official Anthropic HH-RLHF dataset
-    subset_name: Optional[str] = None                      # Dataset subset/configuration (None = default)
-    cache_dir: str = "./cache"                             # Cache directory for model/dataset
-    max_length: int = 1024                                  # Max sequence length (tokens) for prompt+response (to truncate long dialogues)
-    train_batch_size: int = 64
-    eval_batch_size: int = 64
-    learning_rate: float = 1e-5
-    weight_decay: float = 0.01
-    num_epochs: int = 3
-    log_interval: int = 100                                # Print training loss every 100 steps
-    early_stopping: bool = True
-    patience: int = 2                                      # Stop if no improvement in val loss for 2 consecutive evaluations
-    output_dir: str = "./reward_model_output"
-    log_timing: bool = True                                # Enable performance timing instrumentation
-    smoke_test: bool = True                                # Run only 50 steps for quick validation
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description="Train a reward model")
+    parser.add_argument(
+        "--train-path",
+        type=str,
+        required=True,
+        help="Path to the tokenized training dataset"
+    )
+    parser.add_argument(
+        "--output-path",
+        type=str,
+        required=True,
+        help="Path to save trained model"
+    )
+    return parser.parse_args()
 
 
 def main():
-    c = Config()
+    args = parse_args()
+    config = RewardConfig()
     total_start = time.time()
 
     # Create output directory
-    os.makedirs(c.output_dir, exist_ok=True)
+    os.makedirs(args.output_path, exist_ok=True)
 
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
-    # Download and prepare data
+    # Load data
     logger.info("Loading and preparing dataset...")
     data_start = time.time()
-    train_loader, val_loader = download_data(c)
+    train_loader, val_loader = load_data(config, args.train_path)
     data_time = time.time() - data_start
     logger.info(f"Data loading completed in {data_time:.2f}s")
 
     # Load and prepare model
     logger.info("Loading model...")
     model_start = time.time()
-    model = get_model(c, device)
+    model = get_model(config, device)
     model_time = time.time() - model_start
     logger.info(f"Model loading completed in {model_time:.2f}s")
 
     # Start training
     logger.info("Starting training...")
     train_start = time.time()
-    train(model, train_loader, val_loader, c, device)
+    train(model, train_loader, val_loader, config, device, args.output_path)
     train_time = time.time() - train_start
 
     total_time = time.time() - total_start
