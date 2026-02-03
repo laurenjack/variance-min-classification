@@ -4,8 +4,12 @@
 Run from project root:
     source ~/.cursor_bootstrap.sh
     python -m jl.reward_model.launch_sagemaker
+
+Pre-stage data first (one-time):
+    python -m jl.reward_model.prep_data
 """
 
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -19,6 +23,9 @@ ROLE_ARN = "arn:aws:iam::100611042793:role/SageMakerRewardModelRole"
 REGION = "eu-central-1"
 INSTANCE_TYPE = "ml.g6e.xlarge"
 S3_BUCKET = "sagemaker-reward-model-100611042793"
+
+# S3 path for pre-staged tokenized training data
+S3_TRAINING_DATA = f"s3://{S3_BUCKET}/data/hh-rlhf-tokenized/"
 
 # Find project root (where jl/ directory is)
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -53,15 +60,36 @@ def prepare_source_dir():
     return tmp_dir
 
 
+def check_s3_data_exists(s3_client, bucket, prefix):
+    """Check if pre-staged training data exists in S3."""
+    try:
+        response = s3_client.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1)
+        return response.get('KeyCount', 0) > 0
+    except Exception:
+        return False
+
+
 def main():
     # Create SageMaker session in the correct region
     boto_session = boto3.Session(region_name=REGION)
     sess = sagemaker.Session(boto_session=boto_session, default_bucket=S3_BUCKET)
+    s3_client = boto_session.client('s3')
 
     print(f"Project root: {PROJECT_ROOT}")
     print(f"Region: {REGION}")
     print(f"Instance type: {INSTANCE_TYPE}")
     print(f"S3 bucket: {S3_BUCKET}")
+    print()
+
+    # Check if pre-staged training data exists (required)
+    data_prefix = "data/hh-rlhf-tokenized/"
+    if not check_s3_data_exists(s3_client, S3_BUCKET, data_prefix):
+        print(f"ERROR: Pre-staged training data not found at {S3_TRAINING_DATA}")
+        print("Run 'python -m jl.reward_model.prep_data' first to prepare and upload data.")
+        raise SystemExit(1)
+    
+    print(f"✓ Pre-staged training data found at {S3_TRAINING_DATA}")
+    inputs = {'training': S3_TRAINING_DATA}
     print()
 
     # Prepare minimal source directory
@@ -81,12 +109,13 @@ def main():
         disable_profiler=True,
         environment={
             "HF_HOME": "/tmp/hf_cache",
+            "HF_TOKEN": os.environ.get("HF_TOKEN"),
         },
         base_job_name="reward-model-smoke-test",
     )
 
     print("Starting SageMaker training job...")
-    pytorch_estimator.fit(wait=True, logs="All")
+    pytorch_estimator.fit(inputs=inputs, wait=True, logs="All")
     print("Training complete!")
 
     # Cleanup
