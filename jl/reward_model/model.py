@@ -7,7 +7,6 @@ def get_model(c, device):
     # Load the base model (will download if not cached). Use bfloat16 for faster training if available.
     model = AutoModelForCausalLM.from_pretrained(
         c.model_name, 
-        cache_dir=c.cache_dir, 
         torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
         trust_remote_code=False,
         attn_implementation="sdpa"
