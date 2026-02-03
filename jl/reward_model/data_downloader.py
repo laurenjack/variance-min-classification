@@ -1,20 +1,18 @@
 import logging
-from datasets import load_dataset
+import os
+from datasets import load_from_disk
 from transformers import AutoTokenizer
 import torch
 from torch.utils.data import DataLoader
 
 logger = logging.getLogger(__name__)
 
+# SageMaker mounts S3 input data here
+SAGEMAKER_DATA_PATH = "/opt/ml/input/data/training"
+
 
 def download_data(c):
-    # Load the dataset (download if not already cached)
-    # Use subset_name if specified, otherwise load the default configuration
-    dataset = load_dataset(c.hf_dataset, name=c.subset_name, cache_dir=c.cache_dir)
-    train_data = dataset["train"]
-    val_data   = dataset.get("test", dataset.get("validation", None))  # use 'test' split as validation if available
-
-    # Initialize tokenizer - Qwen models may require trust_remote_code
+    # Initialize tokenizer - needed for padding in collate_fn
     tokenizer = AutoTokenizer.from_pretrained(
         c.model_name, 
         cache_dir=c.cache_dir,
@@ -23,27 +21,17 @@ def download_data(c):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token  # ensure pad_token is defined
 
-    # Preprocessing: tokenize chosen and rejected conversations
-    # In Anthropic/hh-rlhf, chosen and rejected are full conversations, not separate prompt/response
-    def tokenize_pair(example):
-        chosen = example["chosen"]
-        rejected = example["rejected"]
-        # Add EOS token to mark end of conversation
-        chosen_text = chosen + (tokenizer.eos_token or "")
-        rejected_text = rejected + (tokenizer.eos_token or "")
-        chosen_enc = tokenizer(chosen_text, max_length=c.max_length, padding=False, truncation=True)
-        rejected_enc = tokenizer(rejected_text, max_length=c.max_length, padding=False, truncation=True)
-        return {
-            "chosen_ids": chosen_enc["input_ids"],
-            "chosen_attention_mask": chosen_enc["attention_mask"],
-            "rejected_ids": rejected_enc["input_ids"],
-            "rejected_attention_mask": rejected_enc["attention_mask"],
-        }
-
-    # Apply tokenization to the entire dataset (this will cache results for reuse)
-    train_data = train_data.map(tokenize_pair, batched=False, remove_columns=train_data.column_names)
-    if val_data:
-        val_data = val_data.map(tokenize_pair, batched=False, remove_columns=val_data.column_names)
+    # Load pre-staged tokenized data (must be uploaded to S3 first via prep_data.py)
+    if not os.path.exists(SAGEMAKER_DATA_PATH):
+        raise FileNotFoundError(
+            f"Pre-staged training data not found at {SAGEMAKER_DATA_PATH}. "
+            f"Run 'python -m jl.reward_model.prep_data' to prepare and upload data to S3."
+        )
+    
+    logger.info(f"Loading pre-staged data from {SAGEMAKER_DATA_PATH}")
+    dataset = load_from_disk(SAGEMAKER_DATA_PATH)
+    train_data = dataset["train"]
+    val_data = dataset.get("test", dataset.get("validation", None))
 
     # Create PyTorch DataLoaders with padding in collate function
     from torch.utils.data import DataLoader

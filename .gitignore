@@ -3,3 +3,6 @@ venv
 .idea
 data/
 __pycache__
+
+# AI assistant instructions
+CLAUDE.md

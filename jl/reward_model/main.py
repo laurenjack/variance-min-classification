@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 class Config:
     model_name: str = "meta-llama/Llama-3.2-1B-Instruct"
     hf_dataset: str = "Anthropic/hh-rlhf"                 # Official Anthropic HH-RLHF dataset
-    subset_name: Optional[str] = "helpful-base"           # Dataset subset/configuration to use
+    subset_name: Optional[str] = None                      # Dataset subset/configuration (None = default)
     cache_dir: str = "./cache"                             # Cache directory for model/dataset
     max_length: int = 1024                                  # Max sequence length (tokens) for prompt+response (to truncate long dialogues)
     train_batch_size: int = 64
