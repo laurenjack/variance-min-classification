@@ -1,0 +1,6 @@
+# SageMaker training dependencies
+transformers>=4.37
+datasets>=2.19
+tokenizers>=0.15.2
+safetensors>=0.4.2
+accelerate>=0.25.0
