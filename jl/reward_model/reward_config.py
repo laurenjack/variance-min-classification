@@ -21,18 +21,22 @@ class RewardConfig:
         patience: Number of epochs without improvement before stopping
         log_timing: Whether to log performance timing information
         smoke_test: If True, run only 50 steps for quick validation
+        warmup_ratio: Fraction of total steps for linear LR warmup
+        min_lr_ratio: Minimum LR as fraction of initial LR (for cosine decay)
     """
     model_name: str = "meta-llama/Llama-3.2-1B-Instruct"
     hf_dataset: str = "Anthropic/hh-rlhf"
     max_length: int = 1024
-    train_batch_size: int = 4
-    eval_batch_size: int = 4
+    train_batch_size: int = 32
+    eval_batch_size: int = 32
     learning_rate: float = 1e-5
     weight_decay: float = 0.01
-    num_epochs: int = 3
+    num_epochs: int = 2
     log_interval: int = 100
     early_stopping: bool = True
     patience: int = 2
     log_timing: bool = True
-    smoke_test: bool = True
+    smoke_test: bool = False
+    warmup_ratio: float = 0.03
+    min_lr_ratio: float = 0.1
 

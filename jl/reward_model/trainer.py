@@ -1,4 +1,5 @@
 import logging
+import math
 import time
 import torch
 import torch.nn as nn
@@ -106,6 +107,23 @@ def train(model, train_loader, val_loader, c, device, output_path: str):
         lr=c.learning_rate, weight_decay=c.weight_decay
     )
 
+    # Set up LR scheduler: linear warmup then cosine decay
+    total_steps = len(train_loader) * c.num_epochs
+    warmup_steps = int(total_steps * c.warmup_ratio)
+    min_lr_ratio = c.min_lr_ratio
+
+    def lr_lambda(current_step):
+        if current_step < warmup_steps:
+            # Linear warmup
+            return current_step / max(1, warmup_steps)
+        else:
+            # Cosine decay from 1.0 to min_lr_ratio
+            progress = (current_step - warmup_steps) / max(1, total_steps - warmup_steps)
+            return min_lr_ratio + (1.0 - min_lr_ratio) * 0.5 * (1.0 + math.cos(math.pi * progress))
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    logger.info(f"LR schedule: {warmup_steps} warmup steps, cosine decay to {min_lr_ratio:.0%} over {total_steps} total steps")
+
     # Performance tracking
     tracker = PerformanceTracker(device, enabled=c.log_timing)
     total_steps_in_loader = len(train_loader)
@@ -121,6 +139,8 @@ def train(model, train_loader, val_loader, c, device, output_path: str):
     for epoch in range(1, c.num_epochs + 1):
         model.train()
         total_loss = 0.0
+        total_correct = 0
+        total_pairs = 0
         total_steps = 0
         epoch_start = time.time()
         tracker.reset()
@@ -161,9 +181,12 @@ def train(model, train_loader, val_loader, c, device, output_path: str):
             # Optimizer step
             optimizer_start = time.time()
             optimizer.step()
+            scheduler.step()
             tracker.time_optimizer(optimizer_start)
 
             total_loss += loss.item()
+            total_correct += (chosen_scores > rejected_scores).sum().item()
+            total_pairs += batch_size
             total_steps += 1
             global_step += 1
             tracker.step()
@@ -171,7 +194,8 @@ def train(model, train_loader, val_loader, c, device, output_path: str):
             # Log training info every log_interval steps
             if step % c.log_interval == 0:
                 avg_loss = total_loss / total_steps
-                logger.info(f"Epoch {epoch}, Step {step}/{total_steps_in_loader}: loss={avg_loss:.4f}")
+                train_acc = total_correct / total_pairs if total_pairs > 0 else 0.0
+                logger.info(f"Epoch {epoch}, Step {step}/{total_steps_in_loader}: loss={avg_loss:.4f}, acc={train_acc:.1%}")
                 if c.log_timing:
                     logger.info(f"  Timing (last {c.log_interval} steps): {tracker.get_interval_summary()}")
 
@@ -196,6 +220,8 @@ def train(model, train_loader, val_loader, c, device, output_path: str):
             val_start = time.time()
             model.eval()
             val_loss = 0.0
+            val_correct = 0
+            val_total = 0
             val_steps = 0
             with torch.no_grad():
                 for input_ids, attention_mask in val_loader:
@@ -209,11 +235,14 @@ def train(model, train_loader, val_loader, c, device, output_path: str):
                     target = torch.ones_like(score_diff, device=device)
                     loss = F.binary_cross_entropy_with_logits(score_diff, target)
                     val_loss += loss.item()
+                    val_correct += (chosen_scores > rejected_scores).sum().item()
+                    val_total += batch_size
                     val_steps += 1
             val_time = time.time() - val_start
             avg_val_loss = val_loss / val_steps if val_steps > 0 else 0.0
+            val_accuracy = val_correct / val_total if val_total > 0 else 0.0
             val_losses.append(avg_val_loss)
-            logger.info(f"Epoch {epoch} complete: train_loss={avg_train_loss:.4f}, val_loss={avg_val_loss:.4f}, epoch_time={epoch_time:.1f}s (train={epoch_time-val_time:.1f}s, val={val_time:.1f}s)")
+            logger.info(f"Epoch {epoch} complete: train_loss={avg_train_loss:.4f}, val_loss={avg_val_loss:.4f}, val_acc={val_accuracy:.1%}, epoch_time={epoch_time:.1f}s (train={epoch_time-val_time:.1f}s, val={val_time:.1f}s)")
 
             # Early stopping check
             if c.early_stopping:
@@ -222,7 +251,7 @@ def train(model, train_loader, val_loader, c, device, output_path: str):
                     patience_counter = 0
                     model_path = os.path.join(output_path, "best_model.pt")
                     torch.save(model.state_dict(), model_path)
-                    logger.info(f"  New best model saved (val_loss={avg_val_loss:.4f})")
+                    logger.info(f"  New best model saved (val_loss={avg_val_loss:.4f}, val_acc={val_accuracy:.1%})")
                 else:
                     patience_counter += 1
                     if patience_counter >= c.patience:
