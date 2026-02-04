@@ -27,5 +27,8 @@ def get_model(c, device):
     # Enable gradient computation for all model parameters (not really needed unless some were frozen by default)
     for param in model.parameters():
         param.requires_grad = True
-    
+
+    # Compile model for faster training (PyTorch 2.x)
+    model = torch.compile(model)
+
     return model
