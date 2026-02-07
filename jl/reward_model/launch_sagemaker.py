@@ -25,7 +25,8 @@ from sagemaker.pytorch import PyTorch
 # =============================================================================
 ROLE_ARN = "arn:aws:iam::100611042793:role/SageMakerRewardModelRole"
 REGION = "eu-central-1"
-INSTANCE_TYPE = "ml.g6e.xlarge"
+# 8x A100 40GB GPUs for DDP training
+INSTANCE_TYPE = "ml.p4d.24xlarge"
 S3_BUCKET = "sagemaker-reward-model-100611042793"
 S3_DATA_PREFIX = "data/hh-rlhf-tokenized"
 
@@ -138,7 +139,7 @@ def main():
     source_dir = prepare_source_dir()
     print()
 
-    # PyTorch Estimator - will install HuggingFace packages via requirements.txt
+    # PyTorch Estimator with distributed training (DDP across 8 GPUs)
     pytorch_estimator = PyTorch(
         entry_point="jl/reward_model/main.py",
         source_dir=str(source_dir),
@@ -157,7 +158,12 @@ def main():
             "HF_HOME": "/tmp/hf_cache",
             "HF_TOKEN": os.environ.get("HF_TOKEN"),
         },
-        base_job_name="reward-model-smoke-test",
+        distribution={
+            "torch_distributed": {
+                "enabled": True,
+            }
+        },
+        base_job_name="reward-model-ddp",
     )
 
     print("Starting SageMaker training job...")

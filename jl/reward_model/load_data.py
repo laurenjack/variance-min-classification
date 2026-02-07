@@ -1,4 +1,4 @@
-"""Load tokenized training data and create PyTorch DataLoaders."""
+"""Load tokenized training data and create PyTorch DataLoaders with DistributedSampler."""
 
 import logging
 import os
@@ -7,14 +7,15 @@ from datasets import load_from_disk
 from transformers import AutoTokenizer
 import torch
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
 from jl.reward_model.prep_data import prepare_dataset
 
 logger = logging.getLogger(__name__)
 
 
-def load_data(config, train_path: str):
-    """Load tokenized data and create DataLoaders.
+def load_data(config, train_path: str, world_size: int, local_rank: int):
+    """Load tokenized data and create DataLoaders for DDP training.
     
     If the data doesn't exist at train_path, it will be prepared automatically
     using prep_data.prepare_dataset().
@@ -22,6 +23,8 @@ def load_data(config, train_path: str):
     Args:
         config: RewardConfig with model_name, max_length, batch sizes
         train_path: Path to the tokenized dataset directory
+        world_size: Total number of DDP processes
+        local_rank: This process's rank
         
     Returns:
         Tuple of (train_loader, val_loader)
@@ -65,14 +68,30 @@ def load_data(config, train_path: str):
         chosen_mask = torch.stack([pad_to_length(torch.tensor(ex["chosen_attention_mask"], dtype=torch.long), config.max_length, 0) for ex in batch])
         reject_mask = torch.stack([pad_to_length(torch.tensor(ex["rejected_attention_mask"], dtype=torch.long), config.max_length, 0) for ex in batch])
         
-        # Stack chosen and rejected together into one batch dimension of size 2*batch_size
+        # Stack chosen and rejected together: [chosen_0..chosen_n, rejected_0..rejected_n]
         input_ids = torch.cat([chosen_padded, reject_padded], dim=0)
         attention_mask = torch.cat([chosen_mask, reject_mask], dim=0)
         return input_ids, attention_mask
 
-    train_loader = DataLoader(train_data, batch_size=config.train_batch_size, shuffle=True, collate_fn=collate_fn)
+    train_sampler = DistributedSampler(
+        train_data,
+        num_replicas=world_size,
+        rank=local_rank,
+        shuffle=True,
+    )
+    train_loader = DataLoader(
+        train_data,
+        batch_size=config.train_batch_size,
+        shuffle=False,
+        sampler=train_sampler,
+        collate_fn=collate_fn,
+    )
+    # Store sampler for set_epoch() calls in the training loop
+    train_loader.sampler_ref = train_sampler
+    
+    # Validation: all ranks evaluate the same full set
     val_loader = DataLoader(val_data, batch_size=config.eval_batch_size, shuffle=False, collate_fn=collate_fn) if val_data else None
 
     logger.info(f"Loaded dataset: {len(train_data)} train, {len(val_data) if val_data else 0} val examples")
+    
     return train_loader, val_loader
-

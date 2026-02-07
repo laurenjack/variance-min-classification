@@ -90,47 +90,52 @@ class PerformanceTracker:
 
 # Define forward pass for reward model: get hidden states, take last token's hidden state, apply reward_head
 def compute_reward_scores(model, input_ids, attention_mask, device):
-    # We use the model's forward to get last hidden state. 
-    # AutoModelForCausalLM returns logits by default, but we can get hidden states by passing output_hidden_states=True.
+    """Compute reward scores for input sequences (DDP-wrapped model)."""
     outputs = model(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)
     last_hidden_state = outputs.hidden_states[-1]  # shape: [batch_size, seq_len, hidden_size]
-    # Take hidden state of last non-padded token for each sequence. We find index of last token via attention mask.
     seq_lengths = attention_mask.sum(dim=1) - 1  # index of last token for each sequence
     last_token_hidden = last_hidden_state[torch.arange(last_hidden_state.size(0), device=device), seq_lengths]
-    rewards = model.reward_head(last_token_hidden)  # shape: [batch_size, 1]
+    rewards = model.module.reward_head(last_token_hidden)  # shape: [batch_size, 1]
     return rewards
 
-def train(model, train_loader, val_loader, c, device, output_path: str):
-    # Set up optimizer
+def train(model, train_loader, val_loader, c, device, output_path: str, is_main: bool):
+    """Train the reward model (DDP).
+    
+    Args:
+        model: DDP-wrapped reward model
+        train_loader: Training data loader with DistributedSampler
+        val_loader: Validation data loader (optional)
+        c: RewardConfig
+        device: torch device for this rank
+        output_path: Path to save model checkpoints
+        is_main: Whether this is rank 0 (handles logging and saving)
+    """
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=c.learning_rate, weight_decay=c.weight_decay
     )
 
-    # Set up LR scheduler: linear warmup then cosine decay
+    # LR scheduler: linear warmup then cosine decay
     total_steps = len(train_loader) * c.num_epochs
     warmup_steps = int(total_steps * c.warmup_ratio)
     min_lr_ratio = c.min_lr_ratio
 
     def lr_lambda(current_step):
         if current_step < warmup_steps:
-            # Linear warmup
             return current_step / max(1, warmup_steps)
         else:
-            # Cosine decay from 1.0 to min_lr_ratio
             progress = (current_step - warmup_steps) / max(1, total_steps - warmup_steps)
             return min_lr_ratio + (1.0 - min_lr_ratio) * 0.5 * (1.0 + math.cos(math.pi * progress))
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-    logger.info(f"LR schedule: {warmup_steps} warmup steps, cosine decay to {min_lr_ratio:.0%} over {total_steps} total steps")
+    if is_main:
+        logger.info(f"LR schedule: {warmup_steps} warmup steps, cosine decay to {min_lr_ratio:.0%} over {total_steps} total steps")
 
     # Performance tracking
     tracker = PerformanceTracker(device, enabled=c.log_timing)
     total_steps_in_loader = len(train_loader)
 
     # Training loop
-    best_val_loss = float("inf")
-    patience_counter = 0
     train_losses = []
     val_losses = []
     global_step = 0
@@ -145,7 +150,11 @@ def train(model, train_loader, val_loader, c, device, output_path: str):
         epoch_start = time.time()
         tracker.reset()
 
-        logger.info(f"Epoch {epoch}/{c.num_epochs} starting ({total_steps_in_loader} steps)")
+        # Set epoch on sampler for proper shuffling across ranks
+        train_loader.sampler_ref.set_epoch(epoch)
+
+        if is_main:
+            logger.info(f"Epoch {epoch}/{c.num_epochs} starting ({total_steps_in_loader} steps)")
 
         data_start = time.time()
         for step, (input_ids, attention_mask) in enumerate(train_loader, start=1):
@@ -191,8 +200,8 @@ def train(model, train_loader, val_loader, c, device, output_path: str):
             global_step += 1
             tracker.step()
 
-            # Log training info every log_interval steps
-            if step % c.log_interval == 0:
+            # Log training info every log_interval steps, for the first node only (main)
+            if step % c.log_interval == 0 and is_main:
                 avg_loss = total_loss / total_steps
                 train_acc = total_correct / total_pairs if total_pairs > 0 else 0.0
                 logger.info(f"Epoch {epoch}, Step {step}/{total_steps_in_loader}: loss={avg_loss:.4f}, acc={train_acc:.1%}")
@@ -202,9 +211,10 @@ def train(model, train_loader, val_loader, c, device, output_path: str):
             # Smoke test: stop after 50 steps
             if c.smoke_test and global_step >= smoke_test_steps:
                 avg_loss = total_loss / total_steps
-                logger.info(f"Smoke test complete after {global_step} steps, loss={avg_loss:.4f}")
-                if c.log_timing:
-                    logger.info(f"  Final timing: {tracker.get_summary()}")
+                if is_main:
+                    logger.info(f"Smoke test complete after {global_step} steps, loss={avg_loss:.4f}")
+                    if c.log_timing:
+                        logger.info(f"  Final timing: {tracker.get_summary()}")
                 return
 
             # Start timing next data load
@@ -215,52 +225,40 @@ def train(model, train_loader, val_loader, c, device, output_path: str):
         avg_train_loss = total_loss / total_steps if total_steps > 0 else 0.0
         train_losses.append(avg_train_loss)
 
-        # Validation after each epoch
-        if val_loader:
-            val_start = time.time()
-            model.eval()
-            val_loss = 0.0
-            val_correct = 0
-            val_total = 0
-            val_steps = 0
-            with torch.no_grad():
-                for input_ids, attention_mask in val_loader:
-                    input_ids = input_ids.to(device, non_blocking=True)
-                    attention_mask = attention_mask.to(device, non_blocking=True)
-                    rewards = compute_reward_scores(model, input_ids, attention_mask, device)
-                    batch_size = input_ids.size(0) // 2
-                    chosen_scores = rewards[:batch_size].view(-1)
-                    rejected_scores = rewards[batch_size:].view(-1)
-                    score_diff = (chosen_scores - rejected_scores).float()
-                    target = torch.ones_like(score_diff, device=device)
-                    loss = F.binary_cross_entropy_with_logits(score_diff, target)
-                    val_loss += loss.item()
-                    val_correct += (chosen_scores > rejected_scores).sum().item()
-                    val_total += batch_size
-                    val_steps += 1
-            val_time = time.time() - val_start
-            avg_val_loss = val_loss / val_steps if val_steps > 0 else 0.0
-            val_accuracy = val_correct / val_total if val_total > 0 else 0.0
-            val_losses.append(avg_val_loss)
-            logger.info(f"Epoch {epoch} complete: train_loss={avg_train_loss:.4f}, val_loss={avg_val_loss:.4f}, val_acc={val_accuracy:.1%}, epoch_time={epoch_time:.1f}s (train={epoch_time-val_time:.1f}s, val={val_time:.1f}s)")
+        # Validation and epoch logging (rank 0 only, other ranks skip)
+        if is_main:
+            if val_loader:
+                val_start = time.time()
+                model.eval()
+                val_loss = 0.0
+                val_correct = 0
+                val_total = 0
+                val_steps = 0
+                with torch.no_grad():
+                    for input_ids, attention_mask in val_loader:
+                        input_ids = input_ids.to(device, non_blocking=True)
+                        attention_mask = attention_mask.to(device, non_blocking=True)
+                        rewards = compute_reward_scores(model, input_ids, attention_mask, device)
+                        batch_size = input_ids.size(0) // 2
+                        chosen_scores = rewards[:batch_size].view(-1)
+                        rejected_scores = rewards[batch_size:].view(-1)
+                        score_diff = (chosen_scores - rejected_scores).float()
+                        target = torch.ones_like(score_diff, device=device)
+                        loss = F.binary_cross_entropy_with_logits(score_diff, target)
+                        val_loss += loss.item()
+                        val_correct += (chosen_scores > rejected_scores).sum().item()
+                        val_total += batch_size
+                        val_steps += 1
+                val_time = time.time() - val_start
+                avg_val_loss = val_loss / val_steps if val_steps > 0 else 0.0
+                val_accuracy = val_correct / val_total if val_total > 0 else 0.0
+                val_losses.append(avg_val_loss)
+                logger.info(f"Epoch {epoch} complete: train_loss={avg_train_loss:.4f}, val_loss={avg_val_loss:.4f}, val_acc={val_accuracy:.1%}, epoch_time={epoch_time:.1f}s (train={epoch_time-val_time:.1f}s, val={val_time:.1f}s)")
+            else:
+                logger.info(f"Epoch {epoch} complete: train_loss={avg_train_loss:.4f}, epoch_time={epoch_time:.1f}s")
 
-            # Early stopping check
-            if c.early_stopping:
-                if avg_val_loss < best_val_loss:
-                    best_val_loss = avg_val_loss
-                    patience_counter = 0
-                    model_path = os.path.join(output_path, "best_model.pt")
-                    torch.save(model.state_dict(), model_path)
-                    logger.info(f"  New best model saved (val_loss={avg_val_loss:.4f}, val_acc={val_accuracy:.1%})")
-                else:
-                    patience_counter += 1
-                    if patience_counter >= c.patience:
-                        logger.info(f"Early stopping: no improvement for {c.patience} epochs")
-                        break
-        else:
-            logger.info(f"Epoch {epoch} complete: train_loss={avg_train_loss:.4f}, epoch_time={epoch_time:.1f}s")
-
-    # Save final model
-    final_model_path = os.path.join(output_path, "final_model.pt")
-    torch.save(model.state_dict(), final_model_path)
-    logger.info(f"Final model saved to {final_model_path}")
+    # Save final model (rank 0 only)
+    if is_main:
+        final_model_path = os.path.join(output_path, "final_model.pt")
+        torch.save(model.module.state_dict(), final_model_path)
+        logger.info(f"Final model saved to {final_model_path}")
