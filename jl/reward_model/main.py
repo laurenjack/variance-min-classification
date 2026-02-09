@@ -56,18 +56,12 @@ def parse_args():
         required=True,
         help="Path to save trained model"
     )
-    parser.add_argument(
-        "--checkpoint-path",
-        type=str,
-        default="",
-        help="Directory for training checkpoints (enables resume on spot interruption)"
-    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    config = RewardConfig(is_multi=args.is_multi, checkpoint_path=args.checkpoint_path)
+    config = RewardConfig(is_multi=args.is_multi)
     total_start = time.time()
 
     if config.is_multi:
@@ -82,11 +76,9 @@ def main():
         if not is_main:
             logging.getLogger().setLevel(logging.WARNING)
 
-        # Create output/checkpoint directories on rank 0, then barrier so all ranks see them
+        # Create output directory on rank 0, then barrier so all ranks see it
         if is_main:
             os.makedirs(args.output_path, exist_ok=True)
-            if config.checkpoint_path:
-                os.makedirs(config.checkpoint_path, exist_ok=True)
         dist.barrier()
 
         if is_main:
@@ -100,8 +92,6 @@ def main():
         is_main = True
 
         os.makedirs(args.output_path, exist_ok=True)
-        if config.checkpoint_path:
-            os.makedirs(config.checkpoint_path, exist_ok=True)
         logger.info(f"Single-GPU training, batch size: {config.train_batch_size}")
         logger.info(f"Using device: {device}")
 
