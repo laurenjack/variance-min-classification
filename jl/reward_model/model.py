@@ -5,14 +5,17 @@ from transformers import AutoModelForCausalLM
 
 
 def get_model(c, device):
-    """Load and prepare the reward model, wrapped with DDP.
+    """Load and prepare the reward model.
+    
+    When c.is_multi is True the model is wrapped with DDP for distributed
+    training.  Otherwise it is returned as-is for single-GPU training.
     
     Args:
-        c: RewardConfig with model_name
+        c: RewardConfig with model_name and is_multi
         device: torch.device for this rank's GPU
         
     Returns:
-        DDP-wrapped model ready for training
+        Model ready for training (DDP-wrapped when is_multi=True)
     """
     # Load the base model (will download if not cached). Use bfloat16 for faster training.
     model = AutoModelForCausalLM.from_pretrained(
@@ -32,8 +35,9 @@ def get_model(c, device):
     for param in model.parameters():
         param.requires_grad = True
 
-    # Compile then wrap with DDP
+    # Compile, then optionally wrap with DDP
     model = torch.compile(model)
-    model = DDP(model, device_ids=[device.index], output_device=device.index)
+    if c.is_multi:
+        model = DDP(model, device_ids=[device.index], output_device=device.index)
 
     return model

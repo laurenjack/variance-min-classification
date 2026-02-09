@@ -1,4 +1,8 @@
-"""Load tokenized training data and create PyTorch DataLoaders with DistributedSampler."""
+"""Load tokenized training data and create PyTorch DataLoaders.
+
+Uses DistributedSampler when config.is_multi is True (DDP), otherwise a
+plain shuffled DataLoader for single-GPU training.
+"""
 
 import logging
 import os
@@ -15,16 +19,16 @@ logger = logging.getLogger(__name__)
 
 
 def load_data(config, train_path: str, world_size: int, local_rank: int):
-    """Load tokenized data and create DataLoaders for DDP training.
+    """Load tokenized data and create DataLoaders.
     
     If the data doesn't exist at train_path, it will be prepared automatically
     using prep_data.prepare_dataset().
     
     Args:
-        config: RewardConfig with model_name, max_length, batch sizes
+        config: RewardConfig with model_name, max_length, batch sizes, is_multi
         train_path: Path to the tokenized dataset directory
-        world_size: Total number of DDP processes
-        local_rank: This process's rank
+        world_size: Total number of DDP processes (1 for single-GPU)
+        local_rank: This process's rank (0 for single-GPU)
         
     Returns:
         Tuple of (train_loader, val_loader)
@@ -73,21 +77,30 @@ def load_data(config, train_path: str, world_size: int, local_rank: int):
         attention_mask = torch.cat([chosen_mask, reject_mask], dim=0)
         return input_ids, attention_mask
 
-    train_sampler = DistributedSampler(
-        train_data,
-        num_replicas=world_size,
-        rank=local_rank,
-        shuffle=True,
-    )
-    train_loader = DataLoader(
-        train_data,
-        batch_size=config.train_batch_size,
-        shuffle=False,
-        sampler=train_sampler,
-        collate_fn=collate_fn,
-    )
-    # Store sampler for set_epoch() calls in the training loop
-    train_loader.sampler_ref = train_sampler
+    if config.is_multi:
+        train_sampler = DistributedSampler(
+            train_data,
+            num_replicas=world_size,
+            rank=local_rank,
+            shuffle=True,
+        )
+        train_loader = DataLoader(
+            train_data,
+            batch_size=config.train_batch_size,
+            shuffle=False,
+            sampler=train_sampler,
+            collate_fn=collate_fn,
+        )
+        # Store sampler for set_epoch() calls in the training loop
+        train_loader.sampler_ref = train_sampler
+    else:
+        train_loader = DataLoader(
+            train_data,
+            batch_size=config.train_batch_size,
+            shuffle=True,
+            collate_fn=collate_fn,
+        )
+        train_loader.sampler_ref = None
     
     # Validation: all ranks evaluate the same full set
     val_loader = DataLoader(val_data, batch_size=config.eval_batch_size, shuffle=False, collate_fn=collate_fn) if val_data else None
