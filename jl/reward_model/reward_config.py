@@ -25,9 +25,6 @@ class RewardConfig:
         smoke_test: If True, exit training early after smoke_test_steps steps
             (LR schedule is still computed from full dataset, this just cuts the run short)
         smoke_test_steps: Number of steps to run when smoke_test is True
-        checkpoint_path: Directory for saving/loading training checkpoints.
-            Empty string means no checkpointing. On SageMaker spot instances
-            this is set to /opt/ml/checkpoints (auto-synced to S3).
     """
     is_multi: bool = False
     model_name: str = "meta-llama/Llama-3.2-1B-Instruct"
@@ -45,5 +42,4 @@ class RewardConfig:
     min_lr_ratio: float = 0.1
     smoke_test: bool = True
     smoke_test_steps: int = 200
-    checkpoint_path: str = ""
 

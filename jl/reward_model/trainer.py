@@ -93,47 +93,6 @@ def _unwrap(model):
     return model.module if hasattr(model, "module") else model
 
 
-def save_checkpoint(model, optimizer, scheduler, epoch, global_step, path):
-    """Save training checkpoint to disk (rank 0 only).
-    
-    Saves a single checkpoint.pt containing everything needed to resume.
-    """
-    checkpoint = {
-        "model_state_dict": _unwrap(model).state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(),
-        "scheduler_state_dict": scheduler.state_dict(),
-        "epoch": epoch,
-        "global_step": global_step,
-    }
-    checkpoint_file = os.path.join(path, "checkpoint.pt")
-    torch.save(checkpoint, checkpoint_file)
-    logger.info(f"Checkpoint saved: epoch={epoch}, global_step={global_step} -> {checkpoint_file}")
-
-
-def load_checkpoint(model, optimizer, scheduler, path, device):
-    """Load training checkpoint if it exists.
-    
-    Returns:
-        Tuple of (start_epoch, global_step). Returns (1, 0) if no checkpoint found.
-    """
-    checkpoint_file = os.path.join(path, "checkpoint.pt")
-    if not os.path.exists(checkpoint_file):
-        logger.info("No checkpoint found, starting from scratch")
-        return 1, 0
-
-    logger.info(f"Loading checkpoint from {checkpoint_file}")
-    checkpoint = torch.load(checkpoint_file, map_location=device, weights_only=False)
-    _unwrap(model).load_state_dict(checkpoint["model_state_dict"])
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-    epoch = checkpoint["epoch"]
-    global_step = checkpoint["global_step"]
-    # Resume from the next epoch (checkpoint was saved at end of this epoch)
-    start_epoch = epoch + 1
-    logger.info(f"Resumed from checkpoint: epoch={epoch}, global_step={global_step}, will start at epoch {start_epoch}")
-    return start_epoch, global_step
-
-
 # Define forward pass for reward model: get hidden states, take last token's hidden state, apply reward_head
 def compute_reward_scores(model, input_ids, attention_mask, device):
     """Compute reward scores for input sequences."""
@@ -153,7 +112,7 @@ def train(model, train_loader, val_loader, c, device, output_path: str, is_main:
         val_loader: Validation data loader (optional)
         c: RewardConfig
         device: torch device for this rank
-        output_path: Path to save model checkpoints
+        output_path: Path to save the final model
         is_main: Whether this is rank 0 (handles logging and saving)
     """
     optimizer = torch.optim.AdamW(
@@ -181,17 +140,12 @@ def train(model, train_loader, val_loader, c, device, output_path: str, is_main:
     tracker = PerformanceTracker(device, enabled=c.log_timing)
     total_steps_in_loader = len(train_loader)
 
-    # Resume from checkpoint if available
-    start_epoch = 1
-    global_step = 0
-    if c.checkpoint_path:
-        start_epoch, global_step = load_checkpoint(model, optimizer, scheduler, c.checkpoint_path, device)
-
     # Training loop
     train_losses = []
     val_losses = []
+    global_step = 0
 
-    for epoch in range(start_epoch, c.num_epochs + 1):
+    for epoch in range(1, c.num_epochs + 1):
         model.train()
         total_loss = 0.0
         total_correct = 0
@@ -312,10 +266,6 @@ def train(model, train_loader, val_loader, c, device, output_path: str, is_main:
                 logger.info(f"Epoch {epoch} complete: train_loss={avg_train_loss:.4f}, val_loss={avg_val_loss:.4f}, val_acc={val_accuracy:.1%}, epoch_time={epoch_time:.1f}s (train={epoch_time-val_time:.1f}s, val={val_time:.1f}s)")
             else:
                 logger.info(f"Epoch {epoch} complete: train_loss={avg_train_loss:.4f}, epoch_time={epoch_time:.1f}s")
-
-        # Save checkpoint at end of epoch (rank 0 only)
-        if c.checkpoint_path and is_main:
-            save_checkpoint(model, optimizer, scheduler, epoch, global_step, c.checkpoint_path)
 
     # Save final model (rank 0 only)
     if is_main:

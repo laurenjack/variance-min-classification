@@ -139,8 +139,7 @@ def main():
     source_dir = prepare_source_dir()
     print()
 
-    # PyTorch Estimator with distributed training (DDP across 8 GPUs)
-    # Uses managed spot instances for cost savings (~60-90% off on-demand)
+    # PyTorch Estimator for single-GPU training
     pytorch_estimator = PyTorch(
         entry_point="jl/reward_model/main.py",
         source_dir=str(source_dir),
@@ -151,16 +150,9 @@ def main():
         py_version="py311",
         sagemaker_session=sess,
         disable_profiler=True,
-        # Spot instances
-        use_spot_instances=True,
-        max_run=3600,        # 1 hour max training time
-        max_wait=7200,       # 2 hours total wait (includes queue time)
-        checkpoint_s3_uri=f"s3://{S3_BUCKET}/checkpoints/reward-model/",
-        checkpoint_local_path="/opt/ml/checkpoints",
         hyperparameters={
             "train-path": SAGEMAKER_TRAIN_PATH,
             "output-path": SAGEMAKER_OUTPUT_PATH,
-            "checkpoint-path": "/opt/ml/checkpoints",
         },
         environment={
             "HF_HOME": "/tmp/hf_cache",
