@@ -24,10 +24,10 @@ from sagemaker.pytorch import PyTorch
 # SageMaker Configuration (all S3/SageMaker-specific values live here)
 # =============================================================================
 ROLE_ARN = "arn:aws:iam::100611042793:role/SageMakerRewardModelRole"
-REGION = "eu-central-1"
-# 8x A100 40GB GPUs for DDP training
-INSTANCE_TYPE = "ml.p4d.24xlarge"
-S3_BUCKET = "sagemaker-reward-model-100611042793"
+REGION = "eu-west-2"
+# 1x H100 GPU for training
+INSTANCE_TYPE = "ml.p5.4xlarge"
+S3_BUCKET = "sagemaker-reward-model-100611042793-eu-west-2"
 S3_DATA_PREFIX = "data/hh-rlhf-tokenized"
 
 # SageMaker paths (where data/model appear on the training instance)
@@ -140,6 +140,7 @@ def main():
     print()
 
     # PyTorch Estimator with distributed training (DDP across 8 GPUs)
+    # Uses managed spot instances for cost savings (~60-90% off on-demand)
     pytorch_estimator = PyTorch(
         entry_point="jl/reward_model/main.py",
         source_dir=str(source_dir),
@@ -150,20 +151,22 @@ def main():
         py_version="py311",
         sagemaker_session=sess,
         disable_profiler=True,
+        # Spot instances
+        use_spot_instances=True,
+        max_run=3600,        # 1 hour max training time
+        max_wait=7200,       # 2 hours total wait (includes queue time)
+        checkpoint_s3_uri=f"s3://{S3_BUCKET}/checkpoints/reward-model/",
+        checkpoint_local_path="/opt/ml/checkpoints",
         hyperparameters={
             "train-path": SAGEMAKER_TRAIN_PATH,
             "output-path": SAGEMAKER_OUTPUT_PATH,
+            "checkpoint-path": "/opt/ml/checkpoints",
         },
         environment={
             "HF_HOME": "/tmp/hf_cache",
             "HF_TOKEN": os.environ.get("HF_TOKEN"),
         },
-        distribution={
-            "torch_distributed": {
-                "enabled": True,
-            }
-        },
-        base_job_name="reward-model-ddp",
+        base_job_name="reward-model",
     )
 
     print("Starting SageMaker training job...")
@@ -171,7 +174,7 @@ def main():
     print(f"  Output path: {SAGEMAKER_OUTPUT_PATH}")
     pytorch_estimator.fit(inputs=inputs, wait=True, logs="All")
     print("Training complete!")
-    print(f"Model artifacts saved to: s3://{S3_BUCKET}/reward-model-smoke-test-*/output/model.tar.gz")
+    print(f"Model artifacts saved to: s3://{S3_BUCKET}/reward-model-ddp-*/output/model.tar.gz")
 
     # Cleanup
     shutil.rmtree(source_dir, ignore_errors=True)

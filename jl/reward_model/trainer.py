@@ -88,22 +88,68 @@ class PerformanceTracker:
         self.reset()
         return summary
 
+def _unwrap(model):
+    """Return the underlying model, stripping DDP wrapper if present."""
+    return model.module if hasattr(model, "module") else model
+
+
+def save_checkpoint(model, optimizer, scheduler, epoch, global_step, path):
+    """Save training checkpoint to disk (rank 0 only).
+    
+    Saves a single checkpoint.pt containing everything needed to resume.
+    """
+    checkpoint = {
+        "model_state_dict": _unwrap(model).state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
+        "epoch": epoch,
+        "global_step": global_step,
+    }
+    checkpoint_file = os.path.join(path, "checkpoint.pt")
+    torch.save(checkpoint, checkpoint_file)
+    logger.info(f"Checkpoint saved: epoch={epoch}, global_step={global_step} -> {checkpoint_file}")
+
+
+def load_checkpoint(model, optimizer, scheduler, path, device):
+    """Load training checkpoint if it exists.
+    
+    Returns:
+        Tuple of (start_epoch, global_step). Returns (1, 0) if no checkpoint found.
+    """
+    checkpoint_file = os.path.join(path, "checkpoint.pt")
+    if not os.path.exists(checkpoint_file):
+        logger.info("No checkpoint found, starting from scratch")
+        return 1, 0
+
+    logger.info(f"Loading checkpoint from {checkpoint_file}")
+    checkpoint = torch.load(checkpoint_file, map_location=device, weights_only=False)
+    _unwrap(model).load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+    epoch = checkpoint["epoch"]
+    global_step = checkpoint["global_step"]
+    # Resume from the next epoch (checkpoint was saved at end of this epoch)
+    start_epoch = epoch + 1
+    logger.info(f"Resumed from checkpoint: epoch={epoch}, global_step={global_step}, will start at epoch {start_epoch}")
+    return start_epoch, global_step
+
+
 # Define forward pass for reward model: get hidden states, take last token's hidden state, apply reward_head
 def compute_reward_scores(model, input_ids, attention_mask, device):
-    """Compute reward scores for input sequences (DDP-wrapped model)."""
+    """Compute reward scores for input sequences."""
     outputs = model(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)
     last_hidden_state = outputs.hidden_states[-1]  # shape: [batch_size, seq_len, hidden_size]
     seq_lengths = attention_mask.sum(dim=1) - 1  # index of last token for each sequence
     last_token_hidden = last_hidden_state[torch.arange(last_hidden_state.size(0), device=device), seq_lengths]
-    rewards = model.module.reward_head(last_token_hidden)  # shape: [batch_size, 1]
+    rewards = _unwrap(model).reward_head(last_token_hidden)  # shape: [batch_size, 1]
     return rewards
 
 def train(model, train_loader, val_loader, c, device, output_path: str, is_main: bool):
-    """Train the reward model (DDP).
+    """Train the reward model.
     
     Args:
-        model: DDP-wrapped reward model
-        train_loader: Training data loader with DistributedSampler
+        model: Reward model (DDP-wrapped when c.is_multi=True)
+        train_loader: Training data loader (DistributedSampler when DDP, shuffled otherwise)
         val_loader: Validation data loader (optional)
         c: RewardConfig
         device: torch device for this rank
@@ -135,13 +181,17 @@ def train(model, train_loader, val_loader, c, device, output_path: str, is_main:
     tracker = PerformanceTracker(device, enabled=c.log_timing)
     total_steps_in_loader = len(train_loader)
 
+    # Resume from checkpoint if available
+    start_epoch = 1
+    global_step = 0
+    if c.checkpoint_path:
+        start_epoch, global_step = load_checkpoint(model, optimizer, scheduler, c.checkpoint_path, device)
+
     # Training loop
     train_losses = []
     val_losses = []
-    global_step = 0
-    smoke_test_steps = 50
 
-    for epoch in range(1, c.num_epochs + 1):
+    for epoch in range(start_epoch, c.num_epochs + 1):
         model.train()
         total_loss = 0.0
         total_correct = 0
@@ -150,8 +200,9 @@ def train(model, train_loader, val_loader, c, device, output_path: str, is_main:
         epoch_start = time.time()
         tracker.reset()
 
-        # Set epoch on sampler for proper shuffling across ranks
-        train_loader.sampler_ref.set_epoch(epoch)
+        # Set epoch on sampler for proper shuffling across ranks (DDP only)
+        if train_loader.sampler_ref is not None:
+            train_loader.sampler_ref.set_epoch(epoch)
 
         if is_main:
             logger.info(f"Epoch {epoch}/{c.num_epochs} starting ({total_steps_in_loader} steps)")
@@ -208,14 +259,11 @@ def train(model, train_loader, val_loader, c, device, output_path: str, is_main:
                 if c.log_timing:
                     logger.info(f"  Timing (last {c.log_interval} steps): {tracker.get_interval_summary()}")
 
-            # Smoke test: stop after 50 steps
-            if c.smoke_test and global_step >= smoke_test_steps:
-                avg_loss = total_loss / total_steps
+            # Smoke test: exit early after configured number of steps
+            if c.smoke_test and global_step >= c.smoke_test_steps:
                 if is_main:
-                    logger.info(f"Smoke test complete after {global_step} steps, loss={avg_loss:.4f}")
-                    if c.log_timing:
-                        logger.info(f"  Final timing: {tracker.get_summary()}")
-                return
+                    logger.info(f"Smoke test: exiting after {global_step} steps")
+                break
 
             # Start timing next data load
             data_start = time.time()
@@ -224,6 +272,14 @@ def train(model, train_loader, val_loader, c, device, output_path: str, is_main:
         epoch_time = time.time() - epoch_start
         avg_train_loss = total_loss / total_steps if total_steps > 0 else 0.0
         train_losses.append(avg_train_loss)
+
+        # Smoke test: skip remaining epochs
+        if c.smoke_test and global_step >= c.smoke_test_steps:
+            if is_main:
+                avg_train_loss = total_loss / total_steps if total_steps > 0 else 0.0
+                train_acc = total_correct / total_pairs if total_pairs > 0 else 0.0
+                logger.info(f"Smoke test complete: {global_step} steps, loss={avg_train_loss:.4f}, acc={train_acc:.1%}")
+            break
 
         # Validation and epoch logging (rank 0 only, other ranks skip)
         if is_main:
@@ -257,8 +313,12 @@ def train(model, train_loader, val_loader, c, device, output_path: str, is_main:
             else:
                 logger.info(f"Epoch {epoch} complete: train_loss={avg_train_loss:.4f}, epoch_time={epoch_time:.1f}s")
 
+        # Save checkpoint at end of epoch (rank 0 only)
+        if c.checkpoint_path and is_main:
+            save_checkpoint(model, optimizer, scheduler, epoch, global_step, c.checkpoint_path)
+
     # Save final model (rank 0 only)
     if is_main:
         final_model_path = os.path.join(output_path, "final_model.pt")
-        torch.save(model.module.state_dict(), final_model_path)
+        torch.save(_unwrap(model).state_dict(), final_model_path)
         logger.info(f"Final model saved to {final_model_path}")
