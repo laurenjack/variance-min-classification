@@ -19,7 +19,7 @@ def get_model(c, device):
         c.model_name,
         torch_dtype=torch.bfloat16,
         trust_remote_code=False,
-        attn_implementation="flash_attention_2"
+        attn_implementation="sdpa"
     ).model
     model.config.use_cache = False
     model.gradient_checkpointing_enable()
