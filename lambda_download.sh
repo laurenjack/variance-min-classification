@@ -23,7 +23,7 @@ if [[ $# -lt 1 ]]; then
 fi
 
 INSTANCE_IP="$1"
-LOCAL_OUTPUT="${2:-./lambda_output}"
+LOCAL_OUTPUT="${2:-./data/lambda_output}"
 
 log_info "Downloading artifacts from $INSTANCE_IP to $LOCAL_OUTPUT..."
 
