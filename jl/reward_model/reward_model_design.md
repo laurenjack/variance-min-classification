@@ -23,4 +23,4 @@ warm up period 20%
 
 We'll start with this low learning rate and explore the stability, first we'll increase it in orders of magnititude of 10. The key quanties we wish to observe are the training loss and training win rate, we want to see these increasing as fast as possible while remaining stable. So for us that will be 3 × 10-5, and 3 × 10-4
 
-We'll use our sagemaker logging to capture this. We'll make the logging more structured, so that another agent may pull the logs, write them it into a file, and graph it. We'll  need to write the bash script that retrieve the logs, writes them to a file, and also write the python script that will graph it (and call it from our script). We can use the data directory to hold the data regarding the training metrics.
+We'll use our logging to capture this. We'll make the logging more structured, so that another agent may pull the logs, write them it into a file, and graph it. We'll  need to write the bash script that retrieve the logs, writes them to a file, and also write the python script that will graph it (and call it from our script). We can use the data directory to hold the data regarding the training metrics.

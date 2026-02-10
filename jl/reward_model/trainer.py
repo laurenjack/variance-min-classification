@@ -1,3 +1,4 @@
+import json
 import logging
 import math
 import time
@@ -100,7 +101,7 @@ def compute_reward_scores(model, input_ids, attention_mask, device):
     return rewards
 
 
-def train(model, train_loader, val_loader, c, device, output_path: str):
+def train(model, train_loader, val_loader, c, device, output_path: str, learning_rate: float = None):
     """Train the reward model.
 
     Args:
@@ -110,10 +111,14 @@ def train(model, train_loader, val_loader, c, device, output_path: str):
         c: RewardConfig
         device: torch device
         output_path: Path to save the final model
+        learning_rate: Learning rate override (uses config value if None)
     """
+    lr = learning_rate if learning_rate is not None else c.learning_rate
+    logger.info(f"Using learning rate: {lr}")
+
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=c.learning_rate, weight_decay=c.weight_decay
+        lr=lr, weight_decay=c.weight_decay
     )
 
     # LR scheduler: linear warmup then cosine decay
@@ -134,6 +139,11 @@ def train(model, train_loader, val_loader, c, device, output_path: str):
     # Performance tracking
     tracker = PerformanceTracker(device, enabled=c.log_timing)
     total_steps_in_loader = len(train_loader)
+
+    # Metrics file for structured logging
+    metrics_path = os.path.join(output_path, "metrics.jsonl")
+    metrics_file = open(metrics_path, "w")
+    logger.info(f"Writing metrics to {metrics_path}")
 
     # Training loop
     train_losses = []
@@ -199,9 +209,20 @@ def train(model, train_loader, val_loader, c, device, output_path: str):
             if step % c.log_interval == 0:
                 avg_loss = total_loss / total_steps
                 train_acc = total_correct / total_pairs if total_pairs > 0 else 0.0
+                current_lr = scheduler.get_last_lr()[0]
                 logger.info(f"Epoch {epoch}, Step {step}/{total_steps_in_loader}: loss={avg_loss:.4f}, acc={train_acc:.1%}")
                 if c.log_timing:
                     logger.info(f"  Timing (last {c.log_interval} steps): {tracker.get_interval_summary()}")
+                # Write structured metrics for graphing
+                metrics = {
+                    "step": global_step,
+                    "epoch": epoch,
+                    "loss": round(avg_loss, 6),
+                    "accuracy": round(train_acc, 4),
+                    "lr": current_lr
+                }
+                metrics_file.write(json.dumps(metrics) + "\n")
+                metrics_file.flush()
 
             # Smoke test: exit early after configured number of steps
             if c.smoke_test and global_step >= c.smoke_test_steps:
@@ -253,6 +274,10 @@ def train(model, train_loader, val_loader, c, device, output_path: str):
             logger.info(f"Epoch {epoch} complete: train_loss={avg_train_loss:.4f}, val_loss={avg_val_loss:.4f}, val_acc={val_accuracy:.1%}, epoch_time={epoch_time:.1f}s (train={epoch_time-val_time:.1f}s, val={val_time:.1f}s)")
         else:
             logger.info(f"Epoch {epoch} complete: train_loss={avg_train_loss:.4f}, epoch_time={epoch_time:.1f}s")
+
+    # Close metrics file
+    metrics_file.close()
+    logger.info(f"Metrics saved to {metrics_path}")
 
     # Save final model
     final_model_path = os.path.join(output_path, "final_model.pt")

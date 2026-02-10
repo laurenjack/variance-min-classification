@@ -41,6 +41,12 @@ def parse_args():
         required=True,
         help="Path to save trained model"
     )
+    parser.add_argument(
+        "--learning-rate",
+        type=float,
+        default=None,
+        help="Learning rate for training (overrides config default)"
+    )
     return parser.parse_args()
 
 
@@ -71,7 +77,7 @@ def main():
     # Train
     logger.info("Starting training...")
     train_start = time.time()
-    train(model, train_loader, val_loader, config, device, args.output_path)
+    train(model, train_loader, val_loader, config, device, args.output_path, args.learning_rate)
     train_time = time.time() - train_start
 
     total_time = time.time() - total_start
