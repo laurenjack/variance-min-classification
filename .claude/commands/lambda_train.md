@@ -6,6 +6,7 @@ This command pushes changes to git and then runs reward model training on a Lamb
 
 - `instance_ip` (required): IP address of the running Lambda Labs instance
 - `learning_rate` (optional): Learning rate override (e.g. 3e-5)
+- `warmup_steps` (optional): Number of quadratic warmup steps (default: 30)
 
 ## Process
 
@@ -21,6 +22,10 @@ This command pushes changes to git and then runs reward model training on a Lamb
    - If a `learning_rate` was provided, include it:
      ```bash
      ./lambda_train.sh <instance_ip> --background --learning-rate <learning_rate>
+     ```
+   - If `warmup_steps` was provided, include it:
+     ```bash
+     ./lambda_train.sh <instance_ip> --background --warmup-steps <warmup_steps>
      ```
    - This will:
      - SSH into the instance
