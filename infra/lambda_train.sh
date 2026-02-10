@@ -4,7 +4,7 @@
 # Prerequisites:
 #   - Instance running (use lambda_launch.sh first)
 #   - HF_TOKEN environment variable set (for gated models like Llama)
-#   - SSH private key at ~/.ssh/jacklaurenson
+#   - LAMBDA_SSH_KEY_PATH environment variable set
 #
 # Usage:
 #   ./lambda_train.sh <instance_ip> [--background] [--learning-rate <lr>] [--warmup-steps <steps>]
@@ -19,7 +19,7 @@
 set -euo pipefail
 
 # Configuration
-SSH_KEY_PATH="$HOME/.ssh/jacklaurenson"
+SSH_KEY_PATH="${LAMBDA_SSH_KEY_PATH:?LAMBDA_SSH_KEY_PATH not set}"
 REPO_URL="https://github.com/laurenjack/variance-min-classification.git"
 
 # Colors

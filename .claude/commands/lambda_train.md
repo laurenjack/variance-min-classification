@@ -15,17 +15,17 @@ This command pushes changes to git and then runs reward model training on a Lamb
    - Wait for the push to complete successfully before proceeding
 
 2. **Run training on the Lambda instance**
-   - Run `lambda_train.sh` with the provided IP and `--background` mode:
+   - Run `infra/lambda_train.sh` with the provided IP and `--background` mode:
      ```bash
-     ./lambda_train.sh <instance_ip> --background
+     ./infra/lambda_train.sh <instance_ip> --background
      ```
    - If a `learning_rate` was provided, include it:
      ```bash
-     ./lambda_train.sh <instance_ip> --background --learning-rate <learning_rate>
+     ./infra/lambda_train.sh <instance_ip> --background --learning-rate <learning_rate>
      ```
    - If `warmup_steps` was provided, include it:
      ```bash
-     ./lambda_train.sh <instance_ip> --background --warmup-steps <warmup_steps>
+     ./infra/lambda_train.sh <instance_ip> --background --warmup-steps <warmup_steps>
      ```
    - This will:
      - SSH into the instance
@@ -35,19 +35,20 @@ This command pushes changes to git and then runs reward model training on a Lamb
 
 ## Prerequisites
 
-- A running Lambda Labs instance (use `lambda_launch.sh` to start one)
+- Environment variables loaded from `.env` (run `source .env`)
+- A running Lambda Labs instance (use `infra/lambda_launch.sh` to start one)
 - `HF_TOKEN` environment variable set (for gated models like Llama)
-- SSH key `~/.ssh/jacklaurenson` registered with Lambda Labs
+- `LAMBDA_SSH_KEY_PATH` environment variable set
 - Changes committed and ready to push
 
 ## Monitoring
 
 After training starts, monitor with:
 ```bash
-ssh -i ~/.ssh/jacklaurenson ubuntu@<instance_ip> 'tail -f ~/variance-min-classification/training.log'
+ssh -i $LAMBDA_SSH_KEY_PATH ubuntu@<instance_ip> 'tail -f ~/variance-min-classification/training.log'
 ```
 
 ## Next Steps
 
-- Download results: `./lambda_download.sh <instance_ip>`
-- Terminate instance: `./lambda_terminate.sh`
+- Download results: `./infra/lambda_download.sh <instance_ip>`
+- Terminate instance: `./infra/lambda_terminate.sh`

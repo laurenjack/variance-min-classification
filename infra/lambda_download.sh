@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-SSH_KEY_PATH="$HOME/.ssh/jacklaurenson"
+SSH_KEY_PATH="${LAMBDA_SSH_KEY_PATH:?LAMBDA_SSH_KEY_PATH not set}"
 
 # Colors
 GREEN='\033[0;32m'
@@ -47,11 +47,12 @@ METRICS_FILE="$LOCAL_OUTPUT/metrics.jsonl"
 if [[ -f "$METRICS_FILE" ]]; then
     log_info "Generating training plots..."
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    DATA_DIR="$SCRIPT_DIR/data"
+    PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+    DATA_DIR="$PROJECT_ROOT/data"
     mkdir -p "$DATA_DIR"
 
     # Activate venv and run plotting script
-    source "$SCRIPT_DIR/venv/bin/activate" 2>/dev/null || true
+    source "$PROJECT_ROOT/venv/bin/activate" 2>/dev/null || true
     python -m jl.reward_model.plot_metrics "$METRICS_FILE" --output-dir "$DATA_DIR"
 
     log_info "Plots saved to $DATA_DIR"
