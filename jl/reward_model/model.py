@@ -13,13 +13,14 @@ def get_model(c, device):
     Returns:
         Compiled model ready for training
     """
-    # Load the base model (will download if not cached). Use bfloat16 for faster training.
+    # Load the base model without lm_head (will download if not cached). Use bfloat16 for faster training.
+    # Using .model gets the transformer backbone only, avoiding ~32GB memory waste on unused logits.
     model = AutoModelForCausalLM.from_pretrained(
         c.model_name,
         torch_dtype=torch.bfloat16,
         trust_remote_code=False,
-        attn_implementation="sdpa"
-    )
+        attn_implementation="flash_attention_2"
+    ).model
     model.config.use_cache = False
     model.gradient_checkpointing_enable()
     model.to(device)
