@@ -32,7 +32,7 @@ class RewardConfig:
     learning_rate: float = 3e-5
     weight_decay: float = 0.01
     num_epochs: int = 1
-    log_interval: int = 100
+    log_interval: int = 1
     log_timing: bool = True
     warmup_ratio: float = 0.20
     min_lr_ratio: float = 0.1
