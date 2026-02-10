@@ -1,7 +1,7 @@
 #!/bin/bash
-# lambda_download.sh - Download training artifacts from Lambda Labs instance
+# lambda_download.sh - Download training logs and metrics from Lambda Labs instance
 #
-# Downloads model artifacts and metrics, then auto-generates training plots.
+# Downloads training log and metrics (not the model), then auto-generates training plots.
 #
 # Usage:
 #   ./lambda_download.sh <instance_ip>
@@ -29,10 +29,10 @@ log_info "Downloading artifacts from $INSTANCE_IP to $LOCAL_OUTPUT..."
 
 mkdir -p "$LOCAL_OUTPUT"
 
-# Copy model output
-scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -r \
-    "ubuntu@$INSTANCE_IP:~/variance-min-classification/output/*" \
-    "$LOCAL_OUTPUT/" 2>/dev/null || log_info "No output files yet"
+# Copy metrics file
+scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no \
+    "ubuntu@$INSTANCE_IP:~/variance-min-classification/output/metrics.jsonl" \
+    "$LOCAL_OUTPUT/" 2>/dev/null || log_info "No metrics file yet"
 
 # Copy training log
 scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no \
