@@ -12,8 +12,9 @@
 
 set -euo pipefail
 
-# Configuration
-SSH_KEY_NAME="jacklaurenson"
+# Configuration (from environment)
+SSH_KEY_NAME="${LAMBDA_SSH_KEY_NAME:?LAMBDA_SSH_KEY_NAME not set}"
+SSH_KEY_PATH="${LAMBDA_SSH_KEY_PATH:?LAMBDA_SSH_KEY_PATH not set}"
 API_BASE="https://cloud.lambdalabs.com/api/v1"
 INSTANCE_NAME="reward-model-training"
 
@@ -148,7 +149,7 @@ wait_for_instance() {
 # Wait for SSH to be available
 wait_for_ssh() {
     local ip="$1"
-    local ssh_key_path="${2:-$HOME/.ssh/jacklaurenson}"
+    local ssh_key_path="${2:-$SSH_KEY_PATH}"
     local max_wait=120
     local elapsed=0
 

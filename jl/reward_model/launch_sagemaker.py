@@ -7,7 +7,7 @@ This script handles all SageMaker and S3 interaction:
 - Submits the training job with appropriate paths
 
 Run from project root:
-    source ~/.cursor_bootstrap.sh && source venv/bin/activate
+    source venv/bin/activate
     python -m jl.reward_model.launch_sagemaker
 """
 
