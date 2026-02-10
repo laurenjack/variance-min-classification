@@ -36,8 +36,9 @@ def plot_metrics(metrics: list[dict], output_path: str, title_suffix: str = ""):
     losses = [m["loss"] for m in metrics]
     accuracies = [m["accuracy"] for m in metrics]
 
-    # Extract learning rate for title (use first entry)
-    lr = metrics[0].get("lr", "unknown")
+    # Extract learning rate for title (use max LR = target after warmup)
+    lrs = [m.get("lr", 0) for m in metrics]
+    lr = max(lrs) if lrs else "unknown"
     if isinstance(lr, float):
         lr_str = f"{lr:.0e}"
     else:
@@ -55,7 +56,6 @@ def plot_metrics(metrics: list[dict], output_path: str, title_suffix: str = ""):
     ax2.plot(steps, accuracies, "g-", linewidth=1.5)
     ax2.set_xlabel("Step")
     ax2.set_ylabel("Training Accuracy (Win Rate)")
-    ax2.set_ylim(0, 1)
     ax2.grid(True, alpha=0.3)
 
     plt.tight_layout()
@@ -101,7 +101,8 @@ def main():
     elif args.output_dir:
         os.makedirs(args.output_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        lr = metrics[0].get("lr", 0)
+        lrs = [m.get("lr", 0) for m in metrics]
+        lr = max(lrs) if lrs else 0
         lr_str = f"{lr:.0e}".replace("-", "m").replace("+", "p") if isinstance(lr, float) else "unknown"
         output_path = os.path.join(args.output_dir, f"metrics_lr{lr_str}_{timestamp}.png")
     else:

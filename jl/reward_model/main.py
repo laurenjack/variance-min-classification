@@ -47,6 +47,12 @@ def parse_args():
         default=None,
         help="Learning rate for training (overrides config default)"
     )
+    parser.add_argument(
+        "--warmup-steps",
+        type=int,
+        default=None,
+        help="Number of warmup steps for quadratic LR warmup (overrides config default)"
+    )
     return parser.parse_args()
 
 
@@ -77,7 +83,7 @@ def main():
     # Train
     logger.info("Starting training...")
     train_start = time.time()
-    train(model, train_loader, val_loader, config, device, args.output_path, args.learning_rate)
+    train(model, train_loader, val_loader, config, device, args.output_path, args.learning_rate, args.warmup_steps)
     train_time = time.time() - train_start
 
     total_time = time.time() - total_start

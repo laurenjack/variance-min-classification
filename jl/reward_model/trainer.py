@@ -101,7 +101,7 @@ def compute_reward_scores(model, input_ids, attention_mask, device):
     return rewards
 
 
-def train(model, train_loader, val_loader, c, device, output_path: str, learning_rate: float = None):
+def train(model, train_loader, val_loader, c, device, output_path: str, learning_rate: float = None, warmup_steps: int = None):
     """Train the reward model.
 
     Args:
@@ -112,8 +112,10 @@ def train(model, train_loader, val_loader, c, device, output_path: str, learning
         device: torch device
         output_path: Path to save the final model
         learning_rate: Learning rate override (uses config value if None)
+        warmup_steps: Warmup steps override (uses config value if None)
     """
     lr = learning_rate if learning_rate is not None else c.learning_rate
+    warmup = warmup_steps if warmup_steps is not None else c.warmup_steps
     logger.info(f"Using learning rate: {lr}")
 
     optimizer = torch.optim.AdamW(
@@ -121,20 +123,20 @@ def train(model, train_loader, val_loader, c, device, output_path: str, learning
         lr=lr, weight_decay=c.weight_decay
     )
 
-    # LR scheduler: linear warmup then cosine decay
+    # LR scheduler: quadratic warmup then cosine decay
     total_steps = len(train_loader) * c.num_epochs
-    warmup_steps = int(total_steps * c.warmup_ratio)
     min_lr_ratio = c.min_lr_ratio
 
     def lr_lambda(current_step):
-        if current_step < warmup_steps:
-            return current_step / max(1, warmup_steps)
+        if current_step < warmup:
+            # Quadratic warmup: (step / warmup_steps)^2
+            return (current_step / max(1, warmup)) ** 2
         else:
-            progress = (current_step - warmup_steps) / max(1, total_steps - warmup_steps)
+            progress = (current_step - warmup) / max(1, total_steps - warmup)
             return min_lr_ratio + (1.0 - min_lr_ratio) * 0.5 * (1.0 + math.cos(math.pi * progress))
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-    logger.info(f"LR schedule: {warmup_steps} warmup steps, cosine decay to {min_lr_ratio:.0%} over {total_steps} total steps")
+    logger.info(f"LR schedule: {warmup} warmup steps (quadratic), cosine decay to {min_lr_ratio:.0%} over {total_steps} total steps")
 
     # Performance tracking
     tracker = PerformanceTracker(device, enabled=c.log_timing)

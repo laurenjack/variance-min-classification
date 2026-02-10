@@ -7,13 +7,14 @@
 #   - SSH private key at ~/.ssh/jacklaurenson
 #
 # Usage:
-#   ./lambda_train.sh <instance_ip> [--background] [--learning-rate <lr>]
+#   ./lambda_train.sh <instance_ip> [--background] [--learning-rate <lr>] [--warmup-steps <steps>]
 #
 # Examples:
 #   ./lambda_train.sh 192.222.54.255
 #   ./lambda_train.sh 192.222.54.255 --background
 #   ./lambda_train.sh 192.222.54.255 --learning-rate 3e-5
 #   ./lambda_train.sh 192.222.54.255 --background --learning-rate 3e-4
+#   ./lambda_train.sh 192.222.54.255 --learning-rate 3e-5 --warmup-steps 50
 
 set -euo pipefail
 
@@ -33,7 +34,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 # Check arguments
 if [[ $# -lt 1 ]]; then
-    echo "Usage: $0 <instance_ip> [--background] [--learning-rate <lr>]"
+    echo "Usage: $0 <instance_ip> [--background] [--learning-rate <lr>] [--warmup-steps <steps>]"
     exit 1
 fi
 
@@ -43,6 +44,7 @@ shift
 # Parse optional arguments
 BACKGROUND=""
 LEARNING_RATE=""
+WARMUP_STEPS=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --background)
@@ -53,6 +55,10 @@ while [[ $# -gt 0 ]]; do
             LEARNING_RATE="$2"
             shift 2
             ;;
+        --warmup-steps)
+            WARMUP_STEPS="$2"
+            shift 2
+            ;;
         *)
             log_error "Unknown argument: $1"
             exit 1
@@ -60,11 +66,15 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Build learning rate flag for Python command
-LR_FLAG=""
+# Build flags for Python command
+EXTRA_FLAGS=""
 if [[ -n "$LEARNING_RATE" ]]; then
-    LR_FLAG="--learning-rate $LEARNING_RATE"
+    EXTRA_FLAGS="--learning-rate $LEARNING_RATE"
     log_info "Using learning rate: $LEARNING_RATE"
+fi
+if [[ -n "$WARMUP_STEPS" ]]; then
+    EXTRA_FLAGS="$EXTRA_FLAGS --warmup-steps $WARMUP_STEPS"
+    log_info "Using warmup steps: $WARMUP_STEPS"
 fi
 
 # Check prerequisites
@@ -116,7 +126,7 @@ mkdir -p output data
 
 python -m jl.reward_model.main \\
     --train-path ./data/tokenized \\
-    --output-path ./output $LR_FLAG
+    --output-path ./output $EXTRA_FLAGS
 
 echo '=== Training complete ==='
 ls -la output/
@@ -155,7 +165,7 @@ mkdir -p output data
 
 nohup python -m jl.reward_model.main \\
     --train-path ./data/tokenized \\
-    --output-path ./output $LR_FLAG \\
+    --output-path ./output $EXTRA_FLAGS \\
     > training.log 2>&1 &
 
 echo \"Training started in background. PID: \\\$!\"
