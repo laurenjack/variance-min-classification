@@ -3,4 +3,6 @@
 -r requirements-base.txt
 
 accelerate>=0.30
+packaging  # Required for flash-attn build
+torch  # Required for flash-attn build
 flash-attn
