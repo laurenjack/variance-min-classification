@@ -119,7 +119,7 @@ source venv/bin/activate
 
 # Install/upgrade dependencies (two steps: base deps first, then flash-attn which needs torch for build)
 pip install --upgrade pip
-pip install -r requirements-base.txt torch accelerate packaging
+pip install -r requirements-base.txt torch accelerate packaging wheel setuptools
 pip install flash-attn --no-build-isolation
 
 echo '=== Starting training ==='
@@ -159,7 +159,7 @@ source venv/bin/activate
 
 # Install/upgrade dependencies (two steps: base deps first, then flash-attn which needs torch for build)
 pip install --upgrade pip
-pip install -r requirements-base.txt torch accelerate packaging
+pip install -r requirements-base.txt torch accelerate packaging wheel setuptools
 pip install flash-attn --no-build-isolation
 
 echo '=== Starting training in background ==='
