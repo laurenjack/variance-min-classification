@@ -29,7 +29,7 @@ class RewardConfig:
     max_length: int = 1024
     train_batch_size: int = 256
     eval_batch_size: int = 32
-    learning_rate: float = 3e-5
+    learning_rate: float = 1e-4
     weight_decay: float = 0.01
     num_epochs: int = 1
     log_interval: int = 1
