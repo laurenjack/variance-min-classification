@@ -119,7 +119,7 @@ source venv/bin/activate
 
 # Install/upgrade dependencies
 pip install --upgrade pip
-pip install torch transformers datasets accelerate
+pip install -r requirements-gpu.txt --no-build-isolation
 
 echo '=== Starting training ==='
 mkdir -p output data
@@ -158,7 +158,7 @@ source venv/bin/activate
 
 # Install/upgrade dependencies (quick if already installed)
 pip install --upgrade pip
-pip install torch transformers datasets accelerate
+pip install -r requirements-gpu.txt --no-build-isolation
 
 echo '=== Starting training in background ==='
 mkdir -p output data
