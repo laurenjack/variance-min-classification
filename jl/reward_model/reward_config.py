@@ -27,7 +27,7 @@ class RewardConfig:
     model_name: str = "meta-llama/Llama-3.2-1B-Instruct"
     hf_dataset: str = "Anthropic/hh-rlhf"
     max_length: int = 1024
-    train_batch_size: int = 256
+    train_batch_size: int = 128
     eval_batch_size: int = 32
     learning_rate: float = 1e-4
     weight_decay: float = 0.01
