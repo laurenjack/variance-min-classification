@@ -1,6 +1,7 @@
 cache
 venv
 .idea
+.vscode
 data/
 __pycache__
 .env

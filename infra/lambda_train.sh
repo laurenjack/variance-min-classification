@@ -117,10 +117,9 @@ if [[ ! -d 'venv' ]]; then
 fi
 source venv/bin/activate
 
-# Install/upgrade dependencies (two steps: base deps first, then flash-attn which needs torch for build)
+# Install dependencies
 pip install --upgrade pip
-pip install -r requirements-base.txt torch accelerate packaging wheel setuptools
-pip install flash-attn --no-build-isolation
+pip install -r requirements-gpu.txt
 
 echo '=== Starting training ==='
 mkdir -p output data
@@ -157,10 +156,9 @@ if [[ ! -d 'venv' ]]; then
 fi
 source venv/bin/activate
 
-# Install/upgrade dependencies (two steps: base deps first, then flash-attn which needs torch for build)
+# Install dependencies
 pip install --upgrade pip
-pip install -r requirements-base.txt torch accelerate packaging wheel setuptools
-pip install flash-attn --no-build-isolation
+pip install -r requirements-gpu.txt
 
 echo '=== Starting training in background ==='
 mkdir -p output data

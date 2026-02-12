@@ -1,3 +1,0 @@
-The user will specify one or documentation files to change, if they do not please ask them to clarify each one, they may span multiple repos.
-
-You are only to change the documentation, not the code. Be sure to ask clarifying questions about the changes, and summarize what the changes are. Keep the "High Level Design" section high level and well pruned, the core logical details. You can put all the details in "Detailed Design". You can edit the docs how you please but make sure you show those edits to the user, so they can review the changes right there in the terminal.
