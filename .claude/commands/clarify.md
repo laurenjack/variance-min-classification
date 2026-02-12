@@ -1,1 +1,0 @@
-Don't implement the users request yet but ask clarifying questions, you should ideally read the code first and especially any documentation they site. 

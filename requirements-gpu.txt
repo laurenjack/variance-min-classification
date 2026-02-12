@@ -1,8 +1,7 @@
 # GPU training dependencies (Lambda Labs H100, etc.)
-# Torch should be pre-installed on the instance
 -r requirements-base.txt
 
 accelerate>=0.30
-packaging  # Required for flash-attn build
-torch  # Required for flash-attn build
-flash-attn
+torch
+# Pre-built Flash Attention 3 wheels from HuggingFace Hub (no compilation needed)
+kernels
