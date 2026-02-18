@@ -31,10 +31,10 @@ class RewardConfig:
     eval_batch_size: int = 32
     learning_rate: float = 1e-4
     weight_decay: float = 0.01
-    num_epochs: int = 4
+    num_epochs: int = 30
     log_interval: int = 1
     log_timing: bool = True
     warmup_steps: int = 30
     min_lr_ratio: float = 0.1
-    smoke_test: bool = True
+    smoke_test: bool = False
     smoke_test_steps: int = 200

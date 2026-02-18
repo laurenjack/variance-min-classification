@@ -142,10 +142,13 @@ def train(model, train_loader, val_loader, c, device, output_path: str, learning
     tracker = PerformanceTracker(device, enabled=c.log_timing)
     total_steps_in_loader = len(train_loader)
 
-    # Metrics file for structured logging
+    # Metrics files for structured logging
     metrics_path = os.path.join(output_path, "metrics.jsonl")
+    val_metrics_path = os.path.join(output_path, "val_metrics.jsonl")
     metrics_file = open(metrics_path, "w")
+    val_metrics_file = open(val_metrics_path, "w")
     logger.info(f"Writing metrics to {metrics_path}")
+    logger.info(f"Writing validation metrics to {val_metrics_path}")
 
     # Training loop
     train_losses = []
@@ -273,13 +276,23 @@ def train(model, train_loader, val_loader, c, device, output_path: str, learning
             avg_val_loss = val_loss / val_steps if val_steps > 0 else 0.0
             val_accuracy = val_correct / val_total if val_total > 0 else 0.0
             val_losses.append(avg_val_loss)
+            # Write validation metrics
+            val_metrics = {
+                "epoch": epoch,
+                "val_loss": round(avg_val_loss, 6),
+                "val_accuracy": round(val_accuracy, 4)
+            }
+            val_metrics_file.write(json.dumps(val_metrics) + "\n")
+            val_metrics_file.flush()
             logger.info(f"Epoch {epoch} complete: train_loss={avg_train_loss:.4f}, val_loss={avg_val_loss:.4f}, val_acc={val_accuracy:.1%}, epoch_time={epoch_time:.1f}s (train={epoch_time-val_time:.1f}s, val={val_time:.1f}s)")
         else:
             logger.info(f"Epoch {epoch} complete: train_loss={avg_train_loss:.4f}, epoch_time={epoch_time:.1f}s")
 
-    # Close metrics file
+    # Close metrics files
     metrics_file.close()
+    val_metrics_file.close()
     logger.info(f"Metrics saved to {metrics_path}")
+    logger.info(f"Validation metrics saved to {val_metrics_path}")
 
     # Save final model
     final_model_path = os.path.join(output_path, "final_model.pt")
