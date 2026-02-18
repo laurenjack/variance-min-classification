@@ -19,7 +19,8 @@ class RewardConfig:
         log_interval: Log training metrics every N steps
         log_timing: Whether to log performance timing information
         warmup_steps: Number of steps for quadratic LR warmup
-        min_lr_ratio: Minimum LR as fraction of initial LR (for cosine decay)
+        cosine_decay: If True, use cosine decay after warmup; if False, constant LR after warmup
+        min_lr_ratio: Minimum LR as fraction of initial LR (for cosine decay, ignored if cosine_decay=False)
         smoke_test: If True, exit training early after smoke_test_steps steps
             (LR schedule is still computed from full dataset, this just cuts the run short)
         smoke_test_steps: Number of steps to run when smoke_test is True
@@ -35,6 +36,7 @@ class RewardConfig:
     log_interval: int = 1
     log_timing: bool = True
     warmup_steps: int = 30
+    cosine_decay: bool = False
     min_lr_ratio: float = 0.1
     smoke_test: bool = False
     smoke_test_steps: int = 200
