@@ -34,6 +34,11 @@ scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no \
     "ubuntu@$INSTANCE_IP:~/variance-min-classification/output/metrics.jsonl" \
     "$LOCAL_OUTPUT/" 2>/dev/null || log_info "No metrics file yet"
 
+# Copy validation metrics file
+scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no \
+    "ubuntu@$INSTANCE_IP:~/variance-min-classification/output/val_metrics.jsonl" \
+    "$LOCAL_OUTPUT/" 2>/dev/null || log_info "No validation metrics file yet"
+
 # Copy training log
 scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no \
     "ubuntu@$INSTANCE_IP:~/variance-min-classification/training.log" \
