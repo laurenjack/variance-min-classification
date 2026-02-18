@@ -119,7 +119,7 @@ source venv/bin/activate
 
 # Install dependencies
 pip install --upgrade pip
-pip install -r requirements-gpu.txt
+pip install -r requirements-gpu.txt --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple
 
 echo '=== Starting training ==='
 mkdir -p output data
@@ -158,7 +158,7 @@ source venv/bin/activate
 
 # Install dependencies
 pip install --upgrade pip
-pip install -r requirements-gpu.txt
+pip install -r requirements-gpu.txt --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple
 
 echo '=== Starting training in background ==='
 mkdir -p output data
