@@ -30,7 +30,7 @@ def _load_helpsteer2(config: RewardConfig) -> tuple[Dataset, Dataset | None]:
     logger.info(f"Downloaded {len(raw)} total examples")
 
     train_data = raw.filter(lambda x: x["split"] == "train")
-    val_data = raw.filter(lambda x: x["split"] == "validation")
+    val_data = raw.filter(lambda x: x["split"] == "val")
     logger.info(f"Split: {len(train_data)} train, {len(val_data)} val (before filtering ties)")
 
     train_data = train_data.filter(lambda x: x["preference_strength"] != 0)
