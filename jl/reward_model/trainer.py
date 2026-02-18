@@ -123,7 +123,7 @@ def train(model, train_loader, val_loader, c, device, output_path: str, learning
         lr=lr, weight_decay=c.weight_decay
     )
 
-    # LR scheduler: quadratic warmup then cosine decay
+    # LR scheduler: quadratic warmup, then constant or cosine decay
     total_steps = len(train_loader) * c.num_epochs
     min_lr_ratio = c.min_lr_ratio
 
@@ -131,12 +131,19 @@ def train(model, train_loader, val_loader, c, device, output_path: str, learning
         if current_step < warmup:
             # Quadratic warmup: (step / warmup_steps)^2
             return (current_step / max(1, warmup)) ** 2
-        else:
+        elif c.cosine_decay:
+            # Cosine decay to min_lr_ratio
             progress = (current_step - warmup) / max(1, total_steps - warmup)
             return min_lr_ratio + (1.0 - min_lr_ratio) * 0.5 * (1.0 + math.cos(math.pi * progress))
+        else:
+            # Constant LR after warmup
+            return 1.0
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-    logger.info(f"LR schedule: {warmup} warmup steps (quadratic), cosine decay to {min_lr_ratio:.0%} over {total_steps} total steps")
+    if c.cosine_decay:
+        logger.info(f"LR schedule: {warmup} warmup steps (quadratic), cosine decay to {min_lr_ratio:.0%} over {total_steps} total steps")
+    else:
+        logger.info(f"LR schedule: {warmup} warmup steps (quadratic), then constant LR")
 
     # Performance tracking
     tracker = PerformanceTracker(device, enabled=c.log_timing)
