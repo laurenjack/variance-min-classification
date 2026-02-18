@@ -38,7 +38,7 @@ def load_data(config, train_path: str):
     if not os.path.exists(train_path):
         logger.warning(
             f"Training data not found at {train_path}. "
-            "Preparing dataset locally (this is slower than using pre-staged S3 data via launch_sagemaker.py)."
+            "Preparing dataset locally."
         )
         prepare_dataset(config, train_path)
 

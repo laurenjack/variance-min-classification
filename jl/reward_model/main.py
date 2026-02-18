@@ -17,7 +17,7 @@ from jl.reward_model.load_data import load_data
 from jl.reward_model.model import get_model
 from jl.reward_model.trainer import train
 
-# Configure logging with timestamps for CloudWatch/SageMaker
+# Configure logging with timestamps
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',

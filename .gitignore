@@ -7,4 +7,3 @@ __pycache__
 .env
 
 CLAUDE.md
-launch_sagemaker_ml_exp.py
