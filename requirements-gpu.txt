@@ -2,6 +2,6 @@
 -r requirements-base.txt
 
 accelerate>=0.30
-torch==2.91
+torch==2.9.1
 # Pre-built Flash Attention 3 wheels from HuggingFace Hub (no compilation needed)
 kernels
