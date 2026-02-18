@@ -1,4 +1,4 @@
-# SageMaker training dependencies (for PyTorch 2.4.0)
+# Reward model training dependencies
 transformers>=4.40,<5.0
 datasets>=2.19
 tokenizers>=0.15.2
