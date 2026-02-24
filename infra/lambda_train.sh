@@ -124,7 +124,7 @@ pip install -r requirements-gpu.txt --index-url https://download.pytorch.org/whl
 echo '=== Starting training ==='
 mkdir -p output data
 
-python -m jl.reward_model.main \\
+python -m jl.reward_model.reward_main \\
     --train-path ./data/tokenized \\
     --output-path ./output $EXTRA_FLAGS
 
@@ -163,7 +163,7 @@ pip install -r requirements-gpu.txt --index-url https://download.pytorch.org/whl
 echo '=== Starting training in background ==='
 mkdir -p output data
 
-nohup python -m jl.reward_model.main \\
+nohup python -m jl.reward_model.reward_main \\
     --train-path ./data/tokenized \\
     --output-path ./output $EXTRA_FLAGS \\
     > training.log 2>&1 &
