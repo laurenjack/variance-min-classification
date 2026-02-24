@@ -2,7 +2,7 @@
 """Main entry point for reward model training.
 
 Usage:
-    python -m jl.reward_model.main --train-path ./data/tokenized --output-path ./output
+    python -m jl.reward_model.reward_main --train-path ./data/tokenized --output-path ./output
 """
 
 import argparse

@@ -5,5 +5,5 @@ venv
 data/
 __pycache__
 .env
-
+*.pdf
 CLAUDE.md
