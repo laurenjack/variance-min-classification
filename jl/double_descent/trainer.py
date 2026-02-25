@@ -107,10 +107,15 @@ def train_single_model(
     for epoch in range(config.epochs):
         epoch_start = time.time()
 
-        # Training
+        # Accumulate training metrics during training
+        train_loss_sum = 0.0
+        train_correct = 0
+        train_samples = 0
+
         for images, labels in train_loader:
             images = images.to(device)
             labels = labels.to(device)
+            batch_size = images.shape[0]
 
             optimizer.zero_grad()
             logits = model(images)
@@ -118,8 +123,18 @@ def train_single_model(
             loss.backward()
             optimizer.step()
 
-        # Evaluate
-        train_error, train_loss = evaluate(model, train_loader, device)
+            # Accumulate metrics (no extra forward pass needed)
+            with torch.no_grad():
+                train_loss_sum += loss.item() * batch_size
+                preds = logits.argmax(dim=1)
+                train_correct += (preds == labels).sum().item()
+                train_samples += batch_size
+
+        # Compute training metrics from accumulated values
+        train_loss = train_loss_sum / train_samples
+        train_error = 1.0 - (train_correct / train_samples)
+
+        # Only evaluate on test set (separate pass required)
         test_error, test_loss = evaluate(model, test_loader, device)
 
         # Log metrics
