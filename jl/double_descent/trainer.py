@@ -1,283 +1,147 @@
-"""Parallel training with vmap for double descent experiments."""
+"""Single model training for double descent experiments."""
 
 import json
 import os
 import time
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import Tuple
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-from torch import Tensor
-from torch.func import vmap, stack_module_state, functional_call, grad_and_value
 from torch.utils.data import DataLoader
 
 from jl.double_descent.convnet_config import DDConfig
-from jl.double_descent.resnet18k import make_resnet18k, create_width_masks
+from jl.double_descent.convnet_data import load_cifar10_with_noise
+from jl.double_descent.resnet18k import make_resnet18k
 
 
-def print_memory(tag: str):
-    """Print current GPU memory usage."""
-    if torch.cuda.is_available():
-        allocated = torch.cuda.memory_allocated() / 1e9
-        reserved = torch.cuda.memory_reserved() / 1e9
-        print(f"[MEM {tag}] allocated={allocated:.2f}GB reserved={reserved:.2f}GB")
-
-
-def _build_models(
-    k_max: int,
-    num_widths: int,
-    num_classes: int,
+def evaluate(
+    model: torch.nn.Module,
+    data_loader: DataLoader,
     device: torch.device,
-    use_checkpoint: bool = False,
-) -> List[nn.Module]:
-    """Create num_widths copies of ResNet18 with width k_max."""
-    models = []
-    for _ in range(num_widths):
-        model = make_resnet18k(
-            k=k_max,
-            num_classes=num_classes,
-            use_checkpoint=use_checkpoint,
-        ).to(device)
-        models.append(model)
-    return models
-
-
-def _create_all_width_masks(
-    width_range: List[int],
-    k_max: int,
-    device: torch.device,
-) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
-    """Create stacked width masks for all width configurations.
-
-    Returns:
-        Tuple of 4 tensors, each [num_widths, channels]:
-        (mask1, mask2, mask4, mask8) for the 4 ResNet stages.
-    """
-    num_widths = len(width_range)
-
-    mask1 = torch.zeros(num_widths, k_max, device=device)
-    mask2 = torch.zeros(num_widths, 2 * k_max, device=device)
-    mask4 = torch.zeros(num_widths, 4 * k_max, device=device)
-    mask8 = torch.zeros(num_widths, 8 * k_max, device=device)
-
-    for i, k in enumerate(width_range):
-        mask1[i, :k] = 1.0
-        mask2[i, :2 * k] = 1.0
-        mask4[i, :4 * k] = 1.0
-        mask8[i, :8 * k] = 1.0
-
-    return mask1, mask2, mask4, mask8
-
-
-def train(
-    config: DDConfig,
-    train_loader: DataLoader,
-    test_loader: DataLoader,
-    device: torch.device,
-    output_path: str,
-) -> None:
-    """Train ResNet18 models in parallel across different widths.
+) -> Tuple[float, float]:
+    """Evaluate model on a dataset.
 
     Args:
-        config: Training configuration.
-        train_loader: Training data loader (CIFAR-10 with label noise).
-        test_loader: Test data loader (clean CIFAR-10).
-        device: Device to train on.
-        output_path: Directory to save metrics.
+        model: The model to evaluate.
+        data_loader: Data loader for evaluation.
+        device: Device to run on.
+
+    Returns:
+        Tuple of (error_rate, average_loss).
     """
-    width_range = list(range(config.width_min, config.width_max + 1))
-    num_widths = len(width_range)
-    k_max = config.width_max
-    num_classes = 10
+    model.eval()
+    total_loss = 0.0
+    total_correct = 0
+    total_samples = 0
 
-    print(f"Training {num_widths} models with k={config.width_min}..{config.width_max}")
-    print(f"Epochs: {config.epochs}, Batch size: {config.batch_size}, LR: {config.learning_rate}")
-    print(f"Gradient checkpointing: {config.use_checkpoint}")
-
-    print_memory("start")
-
-    # Build models and stack parameters
-    models = _build_models(k_max, num_widths, num_classes, device, config.use_checkpoint)
-    print_memory("after_build_models")
-
-    template = models[0]
-    params, buffers = stack_module_state(models)
-    print_memory("after_stack_module_state")
-
-    params = {name: nn.Parameter(p) for name, p in params.items()}
-    print_memory("after_params_wrap")
-
-    # Delete individual models to free memory - we only need stacked params
-    del models
-    torch.cuda.empty_cache()
-    print_memory("after_delete_models")
-
-    # Create width masks for all configurations
-    mask1, mask2, mask4, mask8 = _create_all_width_masks(width_range, k_max, device)
-    print_memory("after_create_masks")
-
-    # Define loss function for a single model
-    def single_loss(params, buffers, x, y, m1, m2, m4, m8):
-        width_masks = [m1, m2, m4, m8]
-        logits = functional_call(template, (params, buffers), (x, width_masks))
-        loss = F.cross_entropy(logits, y)
-        return loss
-
-    # Vectorize across width dimension
-    loss_and_grad = grad_and_value(single_loss)
-    vectorized_loss_grad = vmap(
-        loss_and_grad,
-        in_dims=(0, 0, None, None, 0, 0, 0, 0),
-        randomness='different',
-    )
-
-    # Vectorized forward for evaluation
-    def single_forward(params, buffers, x, m1, m2, m4, m8):
-        width_masks = [m1, m2, m4, m8]
-        return functional_call(template, (params, buffers), (x, width_masks))
-
-    vectorized_forward = vmap(
-        single_forward,
-        in_dims=(0, 0, None, 0, 0, 0, 0),
-        randomness='different',
-    )
-
-    # Optimizer
-    optimizer = torch.optim.Adam(params.values(), lr=config.learning_rate)
-
-    # Metrics file
-    metrics_path = Path(output_path) / "metrics.jsonl"
-    os.makedirs(output_path, exist_ok=True)
-
-    print(f"Saving metrics to {metrics_path}")
-
-    with open(metrics_path, 'w') as f:
-        pass  # Create empty file
-
-    # Training loop
-    template.train()
-    for epoch in range(config.epochs):
-        epoch_start = time.time()
-        epoch_loss = torch.zeros(num_widths, device=device)
-        epoch_correct = torch.zeros(num_widths, device=device)
-        epoch_samples = 0
-
-        for batch_idx, (images, labels) in enumerate(train_loader):
+    with torch.no_grad():
+        for images, labels in data_loader:
             images = images.to(device)
             labels = labels.to(device)
             batch_size = images.shape[0]
 
-            if batch_idx == 0 and epoch == 0:
-                print_memory("before_first_forward")
+            logits = model(images)
+            loss = F.cross_entropy(logits, labels, reduction='sum')
 
-            # Forward and backward for all widths
-            grads, losses = vectorized_loss_grad(
-                params, buffers, images, labels,
-                mask1, mask2, mask4, mask8,
-            )
+            total_loss += loss.item()
+            preds = logits.argmax(dim=1)
+            total_correct += (preds == labels).sum().item()
+            total_samples += batch_size
 
-            if batch_idx == 0 and epoch == 0:
-                print_memory("after_first_forward_backward")
+    avg_loss = total_loss / total_samples
+    error_rate = 1.0 - (total_correct / total_samples)
 
-            # Update parameters
-            for name, param in params.items():
-                param.grad = grads[name]
+    model.train()
+    return error_rate, avg_loss
+
+
+def train_single_model(
+    gpu_id: int,
+    k: int,
+    config: DDConfig,
+    output_path: str,
+    data_path: str,
+) -> None:
+    """Train a single ResNet18 with width k on the specified GPU.
+
+    This function is designed to be called from a multiprocessing worker.
+
+    Args:
+        gpu_id: GPU device ID (0-7).
+        k: Width parameter for ResNet18.
+        config: Training configuration.
+        output_path: Directory to save metrics.
+        data_path: Path to CIFAR-10 data.
+    """
+    device = torch.device(f"cuda:{gpu_id}")
+
+    print(f"[GPU {gpu_id}] Training k={k} on {device}")
+
+    # Load data (each process loads independently)
+    train_loader, test_loader = load_cifar10_with_noise(
+        noise_prob=config.label_noise,
+        batch_size=config.batch_size,
+        data_augmentation=config.data_augmentation,
+        data_dir=data_path,
+    )
+
+    # Create model
+    model = make_resnet18k(k=k, num_classes=10).to(device)
+    num_params = sum(p.numel() for p in model.parameters())
+    print(f"[GPU {gpu_id}] k={k} has {num_params:,} parameters")
+
+    # Optimizer
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
+
+    # Metrics file for this k value
+    os.makedirs(output_path, exist_ok=True)
+    metrics_path = Path(output_path) / f"metrics_k{k}.jsonl"
+
+    # Clear metrics file
+    with open(metrics_path, 'w') as f:
+        pass
+
+    # Training loop
+    model.train()
+    for epoch in range(config.epochs):
+        epoch_start = time.time()
+
+        # Training
+        for images, labels in train_loader:
+            images = images.to(device)
+            labels = labels.to(device)
+
+            optimizer.zero_grad()
+            logits = model(images)
+            loss = F.cross_entropy(logits, labels)
+            loss.backward()
             optimizer.step()
-            optimizer.zero_grad(set_to_none=True)
 
-            if batch_idx == 0 and epoch == 0:
-                print_memory("after_first_optimizer_step")
-
-            # Accumulate metrics
-            epoch_loss += losses
-            epoch_samples += batch_size
-
-            # Critical: free memory from vmap grad computation
-            del grads, losses
-            torch.cuda.empty_cache()
-
-            # Compute training accuracy for this batch
-            with torch.no_grad():
-                logits = vectorized_forward(params, buffers, images, mask1, mask2, mask4, mask8)
-                preds = logits.argmax(dim=-1)  # [num_widths, batch_size]
-                correct = (preds == labels.unsqueeze(0)).float().sum(dim=1)
-                epoch_correct += correct
-
-        # Compute epoch train metrics
-        num_batches = batch_idx + 1
-        train_loss = (epoch_loss / num_batches).cpu()
-        train_acc = (epoch_correct / epoch_samples).cpu()
-        train_error = 1.0 - train_acc
-
-        # Evaluate on test set
-        template.eval()
-        test_loss = torch.zeros(num_widths, device=device)
-        test_correct = torch.zeros(num_widths, device=device)
-        test_samples = 0
-
-        with torch.no_grad():
-            for images, labels in test_loader:
-                images = images.to(device)
-                labels = labels.to(device)
-                batch_size = images.shape[0]
-
-                logits = vectorized_forward(params, buffers, images, mask1, mask2, mask4, mask8)
-
-                # Compute loss for each width
-                for w_idx in range(num_widths):
-                    loss = F.cross_entropy(logits[w_idx], labels)
-                    test_loss[w_idx] += loss * batch_size
-
-                # Compute accuracy
-                preds = logits.argmax(dim=-1)  # [num_widths, batch_size]
-                correct = (preds == labels.unsqueeze(0)).float().sum(dim=1)
-                test_correct += correct
-                test_samples += batch_size
-
-        test_loss = (test_loss / test_samples).cpu()
-        test_acc = (test_correct / test_samples).cpu()
-        test_error = 1.0 - test_acc
-
-        template.train()
+        # Evaluate
+        train_error, train_loss = evaluate(model, train_loader, device)
+        test_error, test_loss = evaluate(model, test_loader, device)
 
         # Log metrics
         epoch_time = time.time() - epoch_start
+        metrics = {
+            "epoch": epoch + 1,
+            "k": k,
+            "train_error": train_error,
+            "test_error": test_error,
+            "train_loss": train_loss,
+            "test_loss": test_loss,
+        }
         with open(metrics_path, 'a') as f:
-            for w_idx, k in enumerate(width_range):
-                metrics = {
-                    "epoch": epoch + 1,
-                    "k": k,
-                    "train_error": train_error[w_idx].item(),
-                    "test_error": test_error[w_idx].item(),
-                    "train_loss": train_loss[w_idx].item(),
-                    "test_loss": test_loss[w_idx].item(),
-                }
-                f.write(json.dumps(metrics) + "\n")
+            f.write(json.dumps(metrics) + "\n")
 
         # Print progress
         if (epoch + 1) % config.log_interval == 0 or epoch == 0:
-            # Print summary for a few key widths
-            if num_widths <= 4:
-                for w_idx, k in enumerate(width_range):
-                    print(
-                        f"Epoch {epoch + 1:4d}/{config.epochs} | k={k:2d} | "
-                        f"train_err={train_error[w_idx]:.4f} test_err={test_error[w_idx]:.4f} | "
-                        f"train_loss={train_loss[w_idx]:.4f} test_loss={test_loss[w_idx]:.4f} | "
-                        f"{epoch_time:.1f}s"
-                    )
-            else:
-                # Print summary for min, interpolation threshold, and max
-                k_min_idx = 0
-                k_max_idx = num_widths - 1
-                k_mid_idx = num_widths // 2
-                print(
-                    f"Epoch {epoch + 1:4d}/{config.epochs} | "
-                    f"k={width_range[k_min_idx]}: err={test_error[k_min_idx]:.3f} | "
-                    f"k={width_range[k_mid_idx]}: err={test_error[k_mid_idx]:.3f} | "
-                    f"k={width_range[k_max_idx]}: err={test_error[k_max_idx]:.3f} | "
-                    f"{epoch_time:.1f}s"
-                )
+            print(
+                f"[GPU {gpu_id}] k={k} Epoch {epoch + 1:4d}/{config.epochs} | "
+                f"train_err={train_error:.4f} test_err={test_error:.4f} | "
+                f"train_loss={train_loss:.4f} test_loss={test_loss:.4f} | "
+                f"{epoch_time:.1f}s"
+            )
 
-    print(f"\nTraining complete! Metrics saved to {metrics_path}")
+    print(f"[GPU {gpu_id}] k={k} training complete! Metrics saved to {metrics_path}")

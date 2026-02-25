@@ -2,10 +2,15 @@
 """Plotting utilities for Deep Double Descent experiments.
 
 Usage:
-    python -m jl.double_descent.plot ./output/metrics.jsonl --output-dir ./data
+    # Load all metrics_k*.jsonl files from a directory:
+    python -m jl.double_descent.plot ./output --output-dir ./data
+
+    # Or load a single metrics file:
+    python -m jl.double_descent.plot ./output/metrics_k1.jsonl --output-dir ./data
 """
 
 import argparse
+import glob
 import json
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -15,12 +20,36 @@ import numpy as np
 
 
 def load_metrics(metrics_path: str) -> List[Dict]:
-    """Load metrics from JSONL file."""
+    """Load metrics from JSONL file(s).
+
+    Args:
+        metrics_path: Either a path to a single .jsonl file, or a directory
+                     containing metrics_k*.jsonl files.
+
+    Returns:
+        List of metrics dictionaries.
+    """
+    path = Path(metrics_path)
     metrics = []
-    with open(metrics_path, 'r') as f:
-        for line in f:
-            if line.strip():
-                metrics.append(json.loads(line))
+
+    if path.is_dir():
+        # Load all metrics_k*.jsonl files from directory
+        pattern = str(path / "metrics_k*.jsonl")
+        files = sorted(glob.glob(pattern))
+        if not files:
+            raise FileNotFoundError(f"No metrics_k*.jsonl files found in {path}")
+        for file_path in files:
+            with open(file_path, 'r') as f:
+                for line in f:
+                    if line.strip():
+                        metrics.append(json.loads(line))
+    else:
+        # Load single file
+        with open(path, 'r') as f:
+            for line in f:
+                if line.strip():
+                    metrics.append(json.loads(line))
+
     return metrics
 
 
@@ -327,7 +356,7 @@ def main():
     parser.add_argument(
         "metrics_path",
         type=str,
-        help="Path to metrics.jsonl file"
+        help="Path to metrics directory (containing metrics_k*.jsonl) or single .jsonl file"
     )
     parser.add_argument(
         "--output-dir",

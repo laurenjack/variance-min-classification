@@ -8,6 +8,20 @@ import numpy as np
 from typing import Tuple
 
 
+def download_cifar10(data_dir: str = "./data") -> None:
+    """Download CIFAR-10 dataset if not already present.
+
+    Call this before spawning multiprocessing workers to avoid
+    concurrent download issues.
+
+    Args:
+        data_dir: Directory to store CIFAR-10 data.
+    """
+    # Download train and test sets
+    torchvision.datasets.CIFAR10(root=data_dir, train=True, download=True)
+    torchvision.datasets.CIFAR10(root=data_dir, train=False, download=True)
+
+
 class NoisyCIFAR10(Dataset):
     """CIFAR-10 dataset with corrupted training labels.
 

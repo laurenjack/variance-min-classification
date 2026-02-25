@@ -1,92 +1,58 @@
-"""ResNet18 with channel masking for parallel width training.
+"""Standard Pre-activation ResNet18 with width parameter k.
 
 Based on PreActResNet from https://github.com/kuangliu/pytorch-cifar
-Modified to support channel masking for parallel training across width values.
-Includes gradient checkpointing to reduce memory usage.
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.checkpoint import checkpoint
-from typing import Optional, List
-
-from jl.double_descent.masked_batchnorm import MaskedBatchNorm2d
+from typing import List
 
 
-class MaskedPreActBlock(nn.Module):
-    """Pre-activation ResNet block with channel masking support."""
+class PreActBlock(nn.Module):
+    """Pre-activation ResNet block."""
     expansion = 1
 
     def __init__(self, in_planes: int, planes: int, stride: int = 1):
         super().__init__()
-        self.bn1 = MaskedBatchNorm2d(in_planes)
+        self.bn1 = nn.BatchNorm2d(in_planes)
         self.conv1 = nn.Conv2d(
             in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False
         )
-        self.bn2 = MaskedBatchNorm2d(planes)
+        self.bn2 = nn.BatchNorm2d(planes)
         self.conv2 = nn.Conv2d(
             planes, planes, kernel_size=3, stride=1, padding=1, bias=False
         )
 
-        self.shortcut = None
+        self.shortcut = nn.Sequential()
         if stride != 1 or in_planes != self.expansion * planes:
             self.shortcut = nn.Conv2d(
                 in_planes, self.expansion * planes,
                 kernel_size=1, stride=stride, bias=False
             )
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        in_mask: Optional[torch.Tensor] = None,
-        out_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Forward pass with optional channel masks.
-
-        Args:
-            x: Input tensor [N, C_in, H, W]
-            in_mask: Mask for input channels [C_in], 1 for active, 0 for inactive
-            out_mask: Mask for output channels [C_out], 1 for active, 0 for inactive
-
-        Returns:
-            Output tensor [N, C_out, H, W]
-        """
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Pre-activation: BN -> ReLU
-        out = F.relu(self.bn1(x, in_mask))
+        out = F.relu(self.bn1(x))
 
         # Shortcut uses the activated input
-        if self.shortcut is not None:
-            shortcut = self.shortcut(out)
-            if out_mask is not None:
-                shortcut = shortcut * out_mask.view(1, -1, 1, 1)
-        else:
-            shortcut = x
+        shortcut = self.shortcut(out)
 
         # First conv
         out = self.conv1(out)
-        if out_mask is not None:
-            out = out * out_mask.view(1, -1, 1, 1)
 
         # Second pre-activation and conv
-        out = self.conv2(F.relu(self.bn2(out, out_mask)))
-        if out_mask is not None:
-            out = out * out_mask.view(1, -1, 1, 1)
+        out = self.conv2(F.relu(self.bn2(out)))
 
         # Residual connection
         out = out + shortcut
         return out
 
 
-class MaskedPreActResNet(nn.Module):
-    """Pre-activation ResNet with channel masking for parallel width training.
+class PreActResNet(nn.Module):
+    """Pre-activation ResNet with width parameter k.
 
     Architecture uses layer widths [k, 2k, 4k, 8k] with strides [1, 2, 2, 2].
-    The model is built with k=k_max channels, and a width mask can be applied
-    to simulate training with smaller k values.
-
-    Supports gradient checkpointing to reduce memory usage at the cost of
-    recomputing activations during backward pass.
     """
 
     def __init__(
@@ -94,12 +60,10 @@ class MaskedPreActResNet(nn.Module):
         num_blocks: List[int],
         num_classes: int = 10,
         init_channels: int = 64,
-        use_checkpoint: bool = False,
     ):
         super().__init__()
         self.init_channels = init_channels
         self.in_planes = init_channels
-        self.use_checkpoint = use_checkpoint
 
         # Initial conv layer: 3 -> k channels
         self.conv1 = nn.Conv2d(
@@ -112,6 +76,9 @@ class MaskedPreActResNet(nn.Module):
         self.layer3 = self._make_layer(4 * init_channels, num_blocks[2], stride=2)
         self.layer4 = self._make_layer(8 * init_channels, num_blocks[3], stride=2)
 
+        # Final batch norm for the last pre-activation
+        self.bn = nn.BatchNorm2d(8 * init_channels)
+
         # Final linear layer: 8k -> num_classes
         self.linear = nn.Linear(8 * init_channels, num_classes)
 
@@ -120,91 +87,31 @@ class MaskedPreActResNet(nn.Module):
         planes: int,
         num_blocks: int,
         stride: int,
-    ) -> nn.ModuleList:
+    ) -> nn.Sequential:
         """Create a stage with multiple blocks."""
         strides = [stride] + [1] * (num_blocks - 1)
-        layers = nn.ModuleList()
+        layers = []
         for s in strides:
-            layers.append(MaskedPreActBlock(self.in_planes, planes, s))
-            self.in_planes = planes * MaskedPreActBlock.expansion
-        return layers
+            layers.append(PreActBlock(self.in_planes, planes, s))
+            self.in_planes = planes * PreActBlock.expansion
+        return nn.Sequential(*layers)
 
-    def _run_block(
-        self,
-        block: MaskedPreActBlock,
-        x: torch.Tensor,
-        in_mask: Optional[torch.Tensor],
-        out_mask: Optional[torch.Tensor],
-    ) -> torch.Tensor:
-        """Run a single block, optionally with checkpointing."""
-        if self.use_checkpoint and self.training:
-            # Checkpoint requires use_reentrant=False for vmap compatibility
-            return checkpoint(
-                block,
-                x,
-                in_mask,
-                out_mask,
-                use_reentrant=False,
-            )
-        else:
-            return block(x, in_mask, out_mask)
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        width_masks: Optional[List[torch.Tensor]] = None,
-    ) -> torch.Tensor:
-        """Forward pass with optional width masks.
-
-        Args:
-            x: Input images [N, 3, 32, 32]
-            width_masks: List of 4 masks for each stage's channels:
-                [mask_k, mask_2k, mask_4k, mask_8k]
-                Each mask is shape [num_channels] with 1s for active channels.
-                If None, all channels are used (full width).
-
-        Returns:
-            Logits [N, num_classes]
-        """
-        if width_masks is None:
-            # No masking - use all channels
-            mask1 = mask2 = mask4 = mask8 = None
-        else:
-            mask1, mask2, mask4, mask8 = width_masks
-
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Initial conv
         out = self.conv1(x)
-        if mask1 is not None:
-            out = out * mask1.view(1, -1, 1, 1)
 
-        # Stage 1: k channels
-        in_mask = mask1
-        for block in self.layer1:
-            out = self._run_block(block, out, in_mask, mask1)
-            in_mask = mask1
+        # Four stages
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.layer4(out)
 
-        # Stage 2: 2k channels
-        for block in self.layer2:
-            out = self._run_block(block, out, in_mask, mask2)
-            in_mask = mask2
-
-        # Stage 3: 4k channels
-        for block in self.layer3:
-            out = self._run_block(block, out, in_mask, mask4)
-            in_mask = mask4
-
-        # Stage 4: 8k channels
-        for block in self.layer4:
-            out = self._run_block(block, out, in_mask, mask8)
-            in_mask = mask8
+        # Final pre-activation before pooling
+        out = F.relu(self.bn(out))
 
         # Global average pooling
         out = F.avg_pool2d(out, 4)
         out = out.view(out.size(0), -1)
-
-        # Mask the features before linear layer
-        if mask8 is not None:
-            out = out * mask8
 
         # Linear layer
         out = self.linear(out)
@@ -215,43 +122,19 @@ class MaskedPreActResNet(nn.Module):
 def make_resnet18k(
     k: int = 64,
     num_classes: int = 10,
-    use_checkpoint: bool = False,
-) -> MaskedPreActResNet:
+) -> PreActResNet:
     """Create a ResNet18 with width parameter k.
 
     Args:
         k: Width multiplier. Layer channels will be [k, 2k, 4k, 8k].
            k=64 is standard ResNet18.
         num_classes: Number of output classes.
-        use_checkpoint: If True, use gradient checkpointing to reduce memory.
 
     Returns:
-        MaskedPreActResNet model.
+        PreActResNet model.
     """
-    return MaskedPreActResNet(
+    return PreActResNet(
         num_blocks=[2, 2, 2, 2],
         num_classes=num_classes,
         init_channels=k,
-        use_checkpoint=use_checkpoint,
     )
-
-
-def create_width_masks(k: int, k_max: int, device: torch.device) -> List[torch.Tensor]:
-    """Create channel masks for a given width k within a k_max model.
-
-    Args:
-        k: Target width (1 to k_max)
-        k_max: Maximum width the model was built with
-        device: Device for the tensors
-
-    Returns:
-        List of 4 masks for [k, 2k, 4k, 8k] channel stages.
-    """
-    masks = []
-    for multiplier in [1, 2, 4, 8]:
-        active_channels = k * multiplier
-        total_channels = k_max * multiplier
-        mask = torch.zeros(total_channels, device=device)
-        mask[:active_channels] = 1.0
-        masks.append(mask)
-    return masks
