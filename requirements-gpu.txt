@@ -3,5 +3,6 @@
 
 accelerate>=0.30
 torch==2.9.1
+torchvision
 # Pre-built Flash Attention 3 wheels from HuggingFace Hub (no compilation needed)
 kernels
