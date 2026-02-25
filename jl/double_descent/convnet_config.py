@@ -9,11 +9,11 @@ class DDConfig:
 
     # Resnet k values (full range is 1-64)
     width_min: int = 1
-    width_max: int = 20  # Test run
+    width_max: int = 10  # 10 models to fit in 40GB A100
 
     # Training (from paper)
     epochs: int = 10  # Test run
-    batch_size: int = 128
+    batch_size: int = 64  # Reduced for memory
     learning_rate: float = 0.0001
     optimizer: str = "adam"
 
