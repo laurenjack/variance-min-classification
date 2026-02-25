@@ -4,8 +4,16 @@
 # Downloads training log and metrics (not the model), then auto-generates training plots.
 #
 # Usage:
-#   ./lambda_download.sh <instance_ip>
-#   ./lambda_download.sh <instance_ip> <local_output_dir>
+#   ./lambda_download.sh <instance_ip> [options]
+#
+# Options:
+#   --output-dir <dir>    Local directory for downloads (default: ./data/lambda_output)
+#   --plot-module <mod>   Plot module to use (default: jl.reward_model.plot_metrics)
+#
+# Examples:
+#   ./lambda_download.sh 192.222.54.255
+#   ./lambda_download.sh 192.222.54.255 --output-dir ./my_output
+#   ./lambda_download.sh 192.222.54.255 --plot-module jl.double_descent.plot
 
 set -euo pipefail
 
@@ -18,12 +26,33 @@ NC='\033[0m'
 log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 
 if [[ $# -lt 1 ]]; then
-    echo "Usage: $0 <instance_ip> [local_output_dir]"
+    echo "Usage: $0 <instance_ip> [--output-dir <dir>] [--plot-module <mod>]"
     exit 1
 fi
 
 INSTANCE_IP="$1"
-LOCAL_OUTPUT="${2:-./data/lambda_output}"
+shift
+
+# Parse optional arguments
+LOCAL_OUTPUT="./data/lambda_output"
+PLOT_MODULE="jl.reward_model.plot_metrics"
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --output-dir)
+            LOCAL_OUTPUT="$2"
+            shift 2
+            ;;
+        --plot-module)
+            PLOT_MODULE="$2"
+            shift 2
+            ;;
+        *)
+            # Legacy: treat first positional arg as output dir
+            LOCAL_OUTPUT="$1"
+            shift
+            ;;
+    esac
+done
 
 log_info "Downloading artifacts from $INSTANCE_IP to $LOCAL_OUTPUT..."
 
@@ -58,7 +87,7 @@ if [[ -f "$METRICS_FILE" ]]; then
 
     # Activate venv and run plotting script
     source "$PROJECT_ROOT/venv/bin/activate" 2>/dev/null || true
-    python -m jl.reward_model.plot_metrics "$METRICS_FILE" --output-dir "$DATA_DIR"
+    python -m "$PLOT_MODULE" "$METRICS_FILE" --output-dir "$DATA_DIR"
 
     log_info "Plots saved to $DATA_DIR"
 else

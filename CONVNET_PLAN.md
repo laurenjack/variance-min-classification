@@ -4,7 +4,7 @@
 Reproduce the ResNet18 double-descent curve from Nakkiran et al. (2019) Figure 1:
 - ResNet18 with varying width parameter k (1-64)
 - CIFAR-10 with 15% label noise
-- Train/test error vs model width
+- Train/test error AND loss vs model width (to show error and loss can be at odds)
 
 ## Approach
 Use channel masking with vmap to train all width configurations in parallel on H100.
@@ -18,12 +18,13 @@ Create `jl/double_descent/` mirroring `jl/reward_model/`:
 ```
 jl/double_descent/
 ├── __init__.py
-├── config.py          # DDConfig dataclass
-├── resnet18k.py       # PreActResNet18 with channel masking
+├── convnet_config.py   # DDConfig dataclass
+├── convnet_data.py     # CIFAR-10 with label noise
+├── convnet_main.py     # Entry point
+├── resnet18k.py        # PreActResNet18 with channel masking
 ├── masked_batchnorm.py # MaskedBatchNorm2d implementation
-├── data.py            # CIFAR-10 with label noise
-├── trainer.py         # Parallel training with vmap
-├── main.py            # Entry point
+├── trainer.py          # Parallel training with vmap
+├── plot.py             # Visualization (5 plots)
 └── deep_double_descent.pdf  # (already exists)
 ```
 
@@ -31,7 +32,7 @@ jl/double_descent/
 
 ## Phase 2: Implementation Details
 
-### 2.1 Config (`config.py`)
+### 2.1 Config (`convnet_config.py`)
 
 ```python
 @dataclass
@@ -76,7 +77,7 @@ Key architecture (from paper):
 - Strides [1, 2, 2, 2]
 - Final: avg_pool → linear(8k → 10)
 
-### 2.4 Data Loading (`data.py`)
+### 2.4 Data Loading (`convnet_data.py`)
 
 ```python
 def load_cifar10_with_noise(noise_prob: float, data_dir: str):
@@ -138,14 +139,26 @@ This captures the key phenomenon: loss and error can be at odds, especially near
 
 Add `--module` argument:
 ```bash
-./infra/lambda_train.sh <ip> --module jl.double_descent.main
+./infra/lambda_train.sh <ip> --module jl.double_descent.convnet_main
 ```
 
 Changes:
 - Parse `--module` argument (default: `jl.reward_model.reward_main`)
 - Pass module to remote script
+- Handle different argument patterns per module
 
-### 3.2 Update CLAUDE.md
+### 3.2 Modify `lambda_download.sh`
+
+Add `--plot-module` argument:
+```bash
+./infra/lambda_download.sh <ip> --plot-module jl.double_descent.plot
+```
+
+Changes:
+- Parse `--plot-module` argument (default: `jl.reward_model.plot_metrics`)
+- Use specified module for plot generation
+
+### 3.3 Update CLAUDE.md
 
 Document the double descent training command.
 
@@ -183,16 +196,17 @@ Create `jl/double_descent/plot.py`:
 
 ## Implementation Order
 
-1. `config.py` - Simple dataclass
+1. `convnet_config.py` - Simple dataclass
 2. `masked_batchnorm.py` - Core masking primitive
 3. `resnet18k.py` - Adapt from double-descent repo
-4. `data.py` - CIFAR-10 with noise
+4. `convnet_data.py` - CIFAR-10 with noise
 5. `trainer.py` - Parallel training (most complex)
-6. `main.py` - Entry point with arg parsing
-7. Modify `lambda_train.sh`
-8. Local smoke test
-9. `plot.py` - Visualization
-10. H100 run with k=1-16
+6. `convnet_main.py` - Entry point with arg parsing
+7. Modify `lambda_train.sh` (add `--module`)
+8. Modify `lambda_download.sh` (add `--plot-module`)
+9. Local smoke test
+10. `plot.py` - Visualization (5 plots: error, loss, error vs loss, 2 heatmaps)
+11. H100 run with k=1-16
 
 ---
 
