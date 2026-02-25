@@ -9,10 +9,10 @@ class DDConfig:
 
     # Resnet k values (full range is 1-64)
     width_min: int = 1
-    width_max: int = 20 
+    width_max: int = 4  # Start small for memory testing
 
     # Training (from paper)
-    epochs: int = 10 # 4000 for full run
+    epochs: int = 10  # 4000 for full run
     batch_size: int = 128
     learning_rate: float = 0.0001
     optimizer: str = "adam"
