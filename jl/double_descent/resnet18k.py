@@ -2,11 +2,13 @@
 
 Based on PreActResNet from https://github.com/kuangliu/pytorch-cifar
 Modified to support channel masking for parallel training across width values.
+Includes gradient checkpointing to reduce memory usage.
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 from typing import Optional, List
 
 from jl.double_descent.masked_batchnorm import MaskedBatchNorm2d
@@ -82,6 +84,9 @@ class MaskedPreActResNet(nn.Module):
     Architecture uses layer widths [k, 2k, 4k, 8k] with strides [1, 2, 2, 2].
     The model is built with k=k_max channels, and a width mask can be applied
     to simulate training with smaller k values.
+
+    Supports gradient checkpointing to reduce memory usage at the cost of
+    recomputing activations during backward pass.
     """
 
     def __init__(
@@ -89,10 +94,12 @@ class MaskedPreActResNet(nn.Module):
         num_blocks: List[int],
         num_classes: int = 10,
         init_channels: int = 64,
+        use_checkpoint: bool = False,
     ):
         super().__init__()
         self.init_channels = init_channels
         self.in_planes = init_channels
+        self.use_checkpoint = use_checkpoint
 
         # Initial conv layer: 3 -> k channels
         self.conv1 = nn.Conv2d(
@@ -121,6 +128,26 @@ class MaskedPreActResNet(nn.Module):
             layers.append(MaskedPreActBlock(self.in_planes, planes, s))
             self.in_planes = planes * MaskedPreActBlock.expansion
         return layers
+
+    def _run_block(
+        self,
+        block: MaskedPreActBlock,
+        x: torch.Tensor,
+        in_mask: Optional[torch.Tensor],
+        out_mask: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        """Run a single block, optionally with checkpointing."""
+        if self.use_checkpoint and self.training:
+            # Checkpoint requires use_reentrant=False for vmap compatibility
+            return checkpoint(
+                block,
+                x,
+                in_mask,
+                out_mask,
+                use_reentrant=False,
+            )
+        else:
+            return block(x, in_mask, out_mask)
 
     def forward(
         self,
@@ -153,25 +180,22 @@ class MaskedPreActResNet(nn.Module):
         # Stage 1: k channels
         in_mask = mask1
         for block in self.layer1:
-            out = block(out, in_mask, mask1)
+            out = self._run_block(block, out, in_mask, mask1)
             in_mask = mask1
 
         # Stage 2: 2k channels
-        for i, block in enumerate(self.layer2):
-            out_mask = mask2
-            out = block(out, in_mask, out_mask)
+        for block in self.layer2:
+            out = self._run_block(block, out, in_mask, mask2)
             in_mask = mask2
 
         # Stage 3: 4k channels
-        for i, block in enumerate(self.layer3):
-            out_mask = mask4
-            out = block(out, in_mask, out_mask)
+        for block in self.layer3:
+            out = self._run_block(block, out, in_mask, mask4)
             in_mask = mask4
 
         # Stage 4: 8k channels
-        for i, block in enumerate(self.layer4):
-            out_mask = mask8
-            out = block(out, in_mask, out_mask)
+        for block in self.layer4:
+            out = self._run_block(block, out, in_mask, mask8)
             in_mask = mask8
 
         # Global average pooling
@@ -188,13 +212,18 @@ class MaskedPreActResNet(nn.Module):
         return out
 
 
-def make_resnet18k(k: int = 64, num_classes: int = 10) -> MaskedPreActResNet:
+def make_resnet18k(
+    k: int = 64,
+    num_classes: int = 10,
+    use_checkpoint: bool = False,
+) -> MaskedPreActResNet:
     """Create a ResNet18 with width parameter k.
 
     Args:
         k: Width multiplier. Layer channels will be [k, 2k, 4k, 8k].
            k=64 is standard ResNet18.
         num_classes: Number of output classes.
+        use_checkpoint: If True, use gradient checkpointing to reduce memory.
 
     Returns:
         MaskedPreActResNet model.
@@ -203,6 +232,7 @@ def make_resnet18k(k: int = 64, num_classes: int = 10) -> MaskedPreActResNet:
         num_blocks=[2, 2, 2, 2],
         num_classes=num_classes,
         init_channels=k,
+        use_checkpoint=use_checkpoint,
     )
 
 

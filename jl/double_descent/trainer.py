@@ -22,11 +22,16 @@ def _build_models(
     num_widths: int,
     num_classes: int,
     device: torch.device,
+    use_checkpoint: bool = False,
 ) -> List[nn.Module]:
     """Create num_widths copies of ResNet18 with width k_max."""
     models = []
     for _ in range(num_widths):
-        model = make_resnet18k(k=k_max, num_classes=num_classes).to(device)
+        model = make_resnet18k(
+            k=k_max,
+            num_classes=num_classes,
+            use_checkpoint=use_checkpoint,
+        ).to(device)
         models.append(model)
     return models
 
@@ -81,9 +86,10 @@ def train(
 
     print(f"Training {num_widths} models with k={config.width_min}..{config.width_max}")
     print(f"Epochs: {config.epochs}, Batch size: {config.batch_size}, LR: {config.learning_rate}")
+    print(f"Gradient checkpointing: {config.use_checkpoint}")
 
     # Build models and stack parameters
-    models = _build_models(k_max, num_widths, num_classes, device)
+    models = _build_models(k_max, num_widths, num_classes, device, config.use_checkpoint)
     template = models[0]
     params, buffers = stack_module_state(models)
     params = {name: nn.Parameter(p) for name, p in params.items()}
