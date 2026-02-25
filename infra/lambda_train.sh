@@ -1,5 +1,5 @@
 #!/bin/bash
-# lambda_train.sh - Run reward model training on a Lambda Labs instance
+# lambda_train.sh - Run training on a Lambda Labs instance
 #
 # Prerequisites:
 #   - Instance running (use lambda_launch.sh first)
@@ -7,7 +7,7 @@
 #   - LAMBDA_SSH_KEY_PATH environment variable set
 #
 # Usage:
-#   ./lambda_train.sh <instance_ip> [--background] [--learning-rate <lr>] [--warmup-steps <steps>]
+#   ./lambda_train.sh <instance_ip> [--background] [--module <module>] [--learning-rate <lr>] [--warmup-steps <steps>]
 #
 # Examples:
 #   ./lambda_train.sh 192.222.54.255
@@ -15,6 +15,7 @@
 #   ./lambda_train.sh 192.222.54.255 --learning-rate 3e-5
 #   ./lambda_train.sh 192.222.54.255 --background --learning-rate 3e-4
 #   ./lambda_train.sh 192.222.54.255 --learning-rate 3e-5 --warmup-steps 50
+#   ./lambda_train.sh 192.222.54.255 --module jl.double_descent.convnet_main
 
 set -euo pipefail
 
@@ -34,7 +35,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 # Check arguments
 if [[ $# -lt 1 ]]; then
-    echo "Usage: $0 <instance_ip> [--background] [--learning-rate <lr>] [--warmup-steps <steps>]"
+    echo "Usage: $0 <instance_ip> [--background] [--module <module>] [--learning-rate <lr>] [--warmup-steps <steps>]"
     exit 1
 fi
 
@@ -45,6 +46,7 @@ shift
 BACKGROUND=""
 LEARNING_RATE=""
 WARMUP_STEPS=""
+MODULE="jl.reward_model.reward_main"
 while [[ $# -gt 0 ]]; do
     case $1 in
         --background)
@@ -57,6 +59,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --warmup-steps)
             WARMUP_STEPS="$2"
+            shift 2
+            ;;
+        --module)
+            MODULE="$2"
             shift 2
             ;;
         *)
@@ -75,6 +81,17 @@ fi
 if [[ -n "$WARMUP_STEPS" ]]; then
     EXTRA_FLAGS="$EXTRA_FLAGS --warmup-steps $WARMUP_STEPS"
     log_info "Using warmup steps: $WARMUP_STEPS"
+fi
+log_info "Using module: $MODULE"
+
+# Build the python command based on module
+if [[ "$MODULE" == "jl.reward_model.reward_main" ]]; then
+    PYTHON_CMD="python -m $MODULE --train-path ./data/tokenized --output-path ./output $EXTRA_FLAGS"
+elif [[ "$MODULE" == "jl.double_descent.convnet_main" ]]; then
+    PYTHON_CMD="python -m $MODULE --output-path ./output --data-path ./data $EXTRA_FLAGS"
+else
+    # Generic module - just pass output-path
+    PYTHON_CMD="python -m $MODULE --output-path ./output $EXTRA_FLAGS"
 fi
 
 # Check prerequisites
@@ -124,9 +141,7 @@ pip install -r requirements-gpu.txt --index-url https://download.pytorch.org/whl
 echo '=== Starting training ==='
 mkdir -p output data
 
-python -m jl.reward_model.reward_main \\
-    --train-path ./data/tokenized \\
-    --output-path ./output $EXTRA_FLAGS
+$PYTHON_CMD
 
 echo '=== Training complete ==='
 ls -la output/
@@ -163,10 +178,7 @@ pip install -r requirements-gpu.txt --index-url https://download.pytorch.org/whl
 echo '=== Starting training in background ==='
 mkdir -p output data
 
-nohup python -m jl.reward_model.reward_main \\
-    --train-path ./data/tokenized \\
-    --output-path ./output $EXTRA_FLAGS \\
-    > training.log 2>&1 &
+nohup $PYTHON_CMD > training.log 2>&1 &
 
 echo \"Training started in background. PID: \\\$!\"
 echo \"Monitor with: ssh -i $SSH_KEY_PATH ubuntu@$INSTANCE_IP 'tail -f ~/variance-min-classification/training.log'\"
