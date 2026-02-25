@@ -9,16 +9,16 @@ class DDConfig:
 
     # Resnet k values (full range is 1-64)
     width_min: int = 10
-    width_max: int = 20
+    width_max: int = 15  # Reduced for memory (6 models)
 
     # Training (from paper)
     epochs: int = 10  # 4000 for full run
-    batch_size: int = 128
+    batch_size: int = 32  # Reduced from 128 for memory
     learning_rate: float = 0.0001
     optimizer: str = "adam"
 
     # Memory optimization
-    use_checkpoint: bool = True  # Gradient checkpointing to reduce memory
+    use_checkpoint: bool = False  # Doesn't work with vmap
 
     # Data
     label_noise: float = 0.15
