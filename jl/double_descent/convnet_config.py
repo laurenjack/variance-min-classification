@@ -13,7 +13,7 @@ class DDConfig:
 
     # Training (from paper)
     epochs: int = 10  # Test run
-    batch_size: int = 64  # Reduced for memory
+    batch_size: int = 16  # Very small for vmap memory
     learning_rate: float = 0.0001
     optimizer: str = "adam"
 
