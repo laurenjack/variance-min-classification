@@ -159,7 +159,7 @@ Each k value gets its own file: `output/metrics_k{k}.jsonl`
 
 ### 3.1 Running Training
 
-Manually provision an 8-GPU instance (8x H100 SXM5 or 8x A100 80GB), then:
+Manually provision an 8-GPU instance (8x V100, 8x A100, or 8x H100), then:
 
 ```bash
 ./infra/lambda_train.sh <ip> --module jl.double_descent.convnet_main --k-start 1
@@ -235,6 +235,6 @@ Create `jl/double_descent/plot.py`:
 ## Hardware Requirements
 
 - **8 GPUs required** - script will fail with clear error if fewer available
-- Recommended: 8x H100 SXM5 or 8x A100 80GB on Lambda Labs
+- Recommended: 8x V100 (16GB), 8x A100, or 8x H100 on Lambda Labs
 - Each GPU trains one model independently
 - Memory per GPU: ~2-4GB for k≤64 (ResNet18 is small)
