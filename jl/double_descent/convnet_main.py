@@ -118,7 +118,7 @@ def main():
     if num_gpus < 8:
         raise RuntimeError(
             f"This script requires 8 GPUs, but only found {num_gpus}. "
-            f"Please run on an 8-GPU instance (e.g., 8x H100 or 8x A100)."
+            f"Please run on an 8-GPU instance (e.g., 8x V100, 8x A100, or 8x H100)."
         )
 
     # Compute k values for this run
