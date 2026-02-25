@@ -4,11 +4,18 @@
 Reproduces Figure 1 from Nakkiran et al. (2019) "Deep Double Descent":
 ResNet18 with varying width parameter k trained on CIFAR-10 with 15% label noise.
 
+This script trains 8 models in parallel on 8 GPUs using torch.multiprocessing.
+Each GPU trains one model with width k, k+1, ..., k+7.
+
 Usage:
-    python -m jl.double_descent.convnet_main --output-path ./output
+    # Train models with k=1 to k=8
+    python -m jl.double_descent.convnet_main --output-path ./output --k-start 1
 
     # For quick smoke test:
-    python -m jl.double_descent.convnet_main --output-path ./output --width-max 4 --epochs 10
+    python -m jl.double_descent.convnet_main --output-path ./output --k-start 1 --epochs 10
+
+    # Full run (64 widths) requires 8 separate runs:
+    # --k-start 1, 9, 17, 25, 33, 41, 49, 57
 """
 
 import argparse
@@ -17,10 +24,11 @@ import os
 import time
 
 import torch
+import torch.multiprocessing as mp
 
 from jl.double_descent.convnet_config import DDConfig
-from jl.double_descent.convnet_data import load_cifar10_with_noise
-from jl.double_descent.trainer import train
+from jl.double_descent.convnet_data import download_cifar10
+from jl.double_descent.trainer import train_single_model
 
 # Configure logging with timestamps
 logging.basicConfig(
@@ -49,40 +57,34 @@ def parse_args():
         help="Path to store CIFAR-10 data"
     )
     parser.add_argument(
-        "--width-min",
+        "--k-start",
         type=int,
-        default=None,
-        help="Minimum width parameter k (overrides config default)"
-    )
-    parser.add_argument(
-        "--width-max",
-        type=int,
-        default=None,
-        help="Maximum width parameter k (overrides config default)"
+        required=True,
+        help="Starting width parameter k. Will train k, k+1, ..., k+7."
     )
     parser.add_argument(
         "--epochs",
         type=int,
         default=None,
-        help="Number of training epochs (overrides config default)"
+        help="Number of training epochs (overrides config default of 4000)"
     )
     parser.add_argument(
         "--batch-size",
         type=int,
         default=None,
-        help="Batch size (overrides config default)"
+        help="Batch size (overrides config default of 128)"
     )
     parser.add_argument(
         "--learning-rate",
         type=float,
         default=None,
-        help="Learning rate (overrides config default)"
+        help="Learning rate (overrides config default of 0.0001)"
     )
     parser.add_argument(
         "--label-noise",
         type=float,
         default=None,
-        help="Label noise probability (overrides config default)"
+        help="Label noise probability (overrides config default of 0.15)"
     )
     parser.add_argument(
         "--no-augmentation",
@@ -98,10 +100,6 @@ def main():
     total_start = time.time()
 
     # Override config with command line arguments
-    if args.width_min is not None:
-        config.width_min = args.width_min
-    if args.width_max is not None:
-        config.width_max = args.width_max
     if args.epochs is not None:
         config.epochs = args.epochs
     if args.batch_size is not None:
@@ -113,43 +111,57 @@ def main():
     if args.no_augmentation:
         config.data_augmentation = False
 
-    # Setup device
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    os.makedirs(args.output_path, exist_ok=True)
+    # Check GPU count - require exactly 8 GPUs
+    num_gpus = torch.cuda.device_count()
+    if num_gpus < 8:
+        raise RuntimeError(
+            f"This script requires 8 GPUs, but only found {num_gpus}. "
+            f"Please run on an 8-GPU instance (e.g., 8x H100 or 8x A100)."
+        )
 
-    logger.info(f"Deep Double Descent Training")
-    logger.info(f"Width range: k={config.width_min}..{config.width_max}")
+    # Compute k values for this run
+    k_values = [args.k_start + i for i in range(8)]
+
+    logger.info("Deep Double Descent Training")
+    logger.info(f"Width values: k={k_values}")
     logger.info(f"Epochs: {config.epochs}, Batch size: {config.batch_size}")
     logger.info(f"Learning rate: {config.learning_rate}")
     logger.info(f"Label noise: {config.label_noise}")
     logger.info(f"Data augmentation: {config.data_augmentation}")
-    logger.info(f"Device: {device}")
+    logger.info(f"GPUs available: {num_gpus}")
 
-    # Load data
-    logger.info("Loading CIFAR-10 with label noise...")
-    data_start = time.time()
-    train_loader, test_loader = load_cifar10_with_noise(
-        noise_prob=config.label_noise,
-        batch_size=config.batch_size,
-        data_augmentation=config.data_augmentation,
-        data_dir=args.data_path,
-    )
-    data_time = time.time() - data_start
-    logger.info(f"Data loading completed in {data_time:.2f}s")
-    logger.info(f"Training samples: {len(train_loader.dataset)}")
-    logger.info(f"Test samples: {len(test_loader.dataset)}")
+    # Create output directory
+    os.makedirs(args.output_path, exist_ok=True)
 
-    # Train
-    logger.info("Starting training...")
-    train_start = time.time()
-    train(config, train_loader, test_loader, device, args.output_path)
-    train_time = time.time() - train_start
+    # Download data once before spawning processes
+    logger.info("Downloading CIFAR-10 if needed...")
+    download_cifar10(args.data_path)
+    logger.info("Data ready.")
+
+    # Set multiprocessing start method
+    mp.set_start_method('spawn', force=True)
+
+    # Spawn 8 training processes
+    logger.info("Spawning 8 training processes...")
+    processes = []
+    for gpu_id in range(8):
+        k = k_values[gpu_id]
+        p = mp.Process(
+            target=train_single_model,
+            args=(gpu_id, k, config, args.output_path, args.data_path)
+        )
+        p.start()
+        processes.append(p)
+        logger.info(f"Started process for k={k} on GPU {gpu_id}")
+
+    # Wait for all processes to complete
+    for i, p in enumerate(processes):
+        p.join()
+        logger.info(f"Process for k={k_values[i]} completed")
 
     total_time = time.time() - total_start
-    logger.info(
-        f"Training completed! Total time: {total_time:.2f}s "
-        f"(data: {data_time:.2f}s, train: {train_time:.2f}s)"
-    )
+    logger.info(f"All training completed! Total time: {total_time:.2f}s ({total_time/3600:.2f}h)")
+    logger.info(f"Metrics saved to {args.output_path}/metrics_k*.jsonl")
 
 
 if __name__ == "__main__":

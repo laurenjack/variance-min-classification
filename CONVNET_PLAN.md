@@ -7,25 +7,22 @@ Reproduce the ResNet18 double-descent curve from Nakkiran et al. (2019) Figure 1
 - Train/test error AND loss vs model width (to show error and loss can be at odds)
 
 ## Approach
-Use channel masking with vmap to train all width configurations in parallel on H100.
+Train 8 models in parallel on an 8-GPU instance using `torch.multiprocessing`. Each GPU trains one model with a different k value. To cover k=1-64, run 8 times with `--k-start 1`, `--k-start 9`, ..., `--k-start 57`.
 
 ---
 
 ## Phase 1: Package Structure
-
-Create `jl/double_descent/` mirroring `jl/reward_model/`:
 
 ```
 jl/double_descent/
 ├── __init__.py
 ├── convnet_config.py   # DDConfig dataclass
 ├── convnet_data.py     # CIFAR-10 with label noise
-├── convnet_main.py     # Entry point
-├── resnet18k.py        # PreActResNet18 with channel masking
-├── masked_batchnorm.py # MaskedBatchNorm2d implementation
-├── trainer.py          # Parallel training with vmap
+├── convnet_main.py     # Entry point (spawns 8 processes)
+├── resnet18k.py        # Standard PreActResNet18
+├── trainer.py          # Single-model training function
 ├── plot.py             # Visualization (5 plots)
-└── deep_double_descent.pdf  # (already exists)
+└── deep_double_descent.pdf  # Reference paper
 ```
 
 ---
@@ -37,10 +34,6 @@ jl/double_descent/
 ```python
 @dataclass
 class DDConfig:
-    # Model
-    width_min: int = 1
-    width_max: int = 64  # Start with 16 for testing
-
     # Training (from paper)
     epochs: int = 4000
     batch_size: int = 128
@@ -55,137 +48,158 @@ class DDConfig:
     log_interval: int = 1  # Every epoch
 ```
 
-### 2.2 Masked BatchNorm (`masked_batchnorm.py`)
+### 2.2 ResNet18 (`resnet18k.py`)
 
-Implement `MaskedBatchNorm2d`:
-- Compute running mean/var only over active channels (mask == 1)
-- Zero output for inactive channels
-- Handle the per-channel γ, β parameters correctly
-
-### 2.3 ResNet18 with Masking (`resnet18k.py`)
-
-Copy `PreActResNet` from `double-descent/models/resnet18k.py` and modify:
-
-1. Replace `BatchNorm2d` with `MaskedBatchNorm2d`
-2. Add `width_mask` parameter to forward pass (shape: `[k_max]`)
-3. After each conv layer, apply channel mask: `out = out * mask.view(1, -1, 1, 1)`
-4. Shortcut convolutions also need masking
-
-Key architecture (from paper):
-- Pre-activation ResNet18: BN → ReLU → Conv
-- 4 blocks with widths [k, 2k, 4k, 8k]
+Standard Pre-activation ResNet18 with width parameter k:
+- Pre-activation: BN → ReLU → Conv
+- 4 stages with widths [k, 2k, 4k, 8k]
 - Strides [1, 2, 2, 2]
 - Final: avg_pool → linear(8k → 10)
 
-### 2.4 Data Loading (`convnet_data.py`)
+No masking needed - each model is built with its actual k value.
+
+### 2.3 Data Loading (`convnet_data.py`)
 
 ```python
 def load_cifar10_with_noise(noise_prob: float, data_dir: str):
     """
     Load CIFAR-10 with label noise.
 
-    - Download if needed
+    - Download if needed (should be pre-downloaded before spawning processes)
     - Apply noise_prob corruption to training labels (fixed, sampled once)
     - Data augmentation: RandomCrop(32, padding=4), RandomHorizontalFlip
     - Return train_loader, test_loader
     """
 ```
 
-### 2.5 Parallel Trainer (`trainer.py`)
+Each of the 8 processes loads data independently from the pre-downloaded files.
 
-Adapt from `multi_runner.py`:
+### 2.4 Multi-GPU Training (`convnet_main.py`)
 
-1. **Build models**: Create `width_max - width_min + 1` copies of ResNet18(k=k_max)
-2. **Stack parameters**: Use `stack_module_state`
-3. **Create width masks**:
-   ```python
-   # For k in [1, 2, ..., 16], mask first k channels of each layer
-   # Layer 1: mask[:k], Layer 2: mask[:2k], etc.
-   ```
-4. **Vectorized forward/backward**: Use `vmap` over the width dimension
-5. **Training loop**:
-   - For each epoch:
-     - For each batch:
-       - Forward all widths in parallel
-       - Compute cross-entropy loss per width
-       - Backward all widths in parallel
-       - Update parameters
-     - Evaluate train/test error for all widths
-     - Log metrics to JSONL
+```python
+def main():
+    # Parse args: --k-start, --output-path, --data-path, etc.
+
+    # Check GPU count
+    num_gpus = torch.cuda.device_count()
+    if num_gpus < 8:
+        raise RuntimeError(f"Requires 8 GPUs, found {num_gpus}")
+
+    # Download data once before spawning
+    download_cifar10(args.data_path)
+
+    # Spawn 8 training processes
+    mp.set_start_method('spawn')
+    processes = []
+    for gpu_id in range(8):
+        k = args.k_start + gpu_id
+        p = mp.Process(
+            target=train_single_model,
+            args=(gpu_id, k, config, args.output_path, args.data_path)
+        )
+        p.start()
+        processes.append(p)
+
+    # Wait for all to complete
+    for p in processes:
+        p.join()
+```
+
+### 2.5 Single Model Trainer (`trainer.py`)
+
+```python
+def train_single_model(gpu_id: int, k: int, config: DDConfig, output_path: str, data_path: str):
+    """Train a single ResNet18 with width k on the specified GPU."""
+    device = torch.device(f"cuda:{gpu_id}")
+
+    # Load data (each process loads independently)
+    train_loader, test_loader = load_cifar10_with_noise(
+        config.label_noise, config.batch_size, data_path
+    )
+
+    # Create model
+    model = make_resnet18k(k=k, num_classes=10).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
+
+    # Standard training loop
+    for epoch in range(config.epochs):
+        # Train
+        for images, labels in train_loader:
+            images, labels = images.to(device), labels.to(device)
+            optimizer.zero_grad()
+            loss = F.cross_entropy(model(images), labels)
+            loss.backward()
+            optimizer.step()
+
+        # Evaluate and log
+        train_error, train_loss = evaluate(model, train_loader, device)
+        test_error, test_loss = evaluate(model, test_loader, device)
+        log_metrics(output_path, k, epoch, train_error, test_error, train_loss, test_loss)
+```
 
 ### 2.6 Metrics Output
 
-Store in `output/metrics.jsonl`:
+Each k value gets its own file: `output/metrics_k{k}.jsonl`
+
 ```json
-{"epoch": 1, "k": 1, "train_error": 0.85, "test_error": 0.87, "train_loss": 2.31, "test_loss": 2.35}
-{"epoch": 1, "k": 2, "train_error": 0.82, "test_error": 0.84, "train_loss": 2.12, "test_loss": 2.18}
+{"epoch": 1, "k": 5, "train_error": 0.85, "test_error": 0.87, "train_loss": 2.31, "test_loss": 2.35}
+{"epoch": 2, "k": 5, "train_error": 0.82, "test_error": 0.84, "train_loss": 2.12, "test_loss": 2.18}
 ...
-{"epoch": 4000, "k": 64, "train_error": 0.0, "test_error": 0.28, "train_loss": 0.001, "test_loss": 0.95}
 ```
 
-**Four metrics per (epoch, k):**
+**Four metrics per epoch:**
 - `train_error`: 1 - train accuracy (classification error rate)
 - `test_error`: 1 - test accuracy (classification error rate)
 - `train_loss`: Cross-entropy loss on training set
 - `test_loss`: Cross-entropy loss on test set
 
-This captures the key phenomenon: loss and error can be at odds, especially near the interpolation threshold where train_loss → 0 but test_loss may spike.
-
 ---
 
 ## Phase 3: Lambda Integration
 
-### 3.1 Modify `lambda_train.sh`
+### 3.1 Running Training
 
-Add `--module` argument:
+Manually provision an 8-GPU instance (8x H100 SXM5 or 8x A100 80GB), then:
+
 ```bash
-./infra/lambda_train.sh <ip> --module jl.double_descent.convnet_main
+./infra/lambda_train.sh <ip> --module jl.double_descent.convnet_main --k-start 1
+./infra/lambda_train.sh <ip> --module jl.double_descent.convnet_main --k-start 9
+# ... repeat for k-start 17, 25, 33, 41, 49, 57
 ```
 
-Changes:
-- Parse `--module` argument (default: `jl.reward_model.reward_main`)
-- Pass module to remote script
-- Handle different argument patterns per module
+### 3.2 Downloading Results
 
-### 3.2 Modify `lambda_download.sh`
-
-Add `--plot-module` argument:
 ```bash
 ./infra/lambda_download.sh <ip> --plot-module jl.double_descent.plot
 ```
 
-Changes:
-- Parse `--plot-module` argument (default: `jl.reward_model.plot_metrics`)
-- Use specified module for plot generation
-
-### 3.3 Update CLAUDE.md
-
-Document the double descent training command.
+The plot module will combine all `metrics_k*.jsonl` files to generate plots.
 
 ---
 
 ## Phase 4: Testing Strategy
 
-### 4.1 Local Smoke Test
-- k = 1-4 only
+### 4.1 Local Smoke Test (if 8 GPUs available)
+- k = 1-8
 - 10 epochs
-- Verify shapes, masking, metrics logging
+- Verify parallel training works, metrics files created
 
-### 4.2 H100 Initial Run
-- k = 1-16
+### 4.2 8-GPU Initial Run
+- k = 1-8
 - 4000 epochs
-- Monitor memory usage, step times
+- Monitor GPU utilization, training speed
 
-### 4.3 Full Run (if 1-16 works)
-- k = 1-64
-- 4000 epochs
+### 4.3 Full Run
+- 8 runs: k-start = 1, 9, 17, 25, 33, 41, 49, 57
+- 4000 epochs each
+- Produces metrics_k1.jsonl through metrics_k64.jsonl
 
 ---
 
 ## Phase 5: Plotting
 
 Create `jl/double_descent/plot.py`:
-- Load metrics.jsonl
+- Load all `metrics_k*.jsonl` files from output directory
 - **Plot 1**: Test/train error vs k (final epoch) - reproduces Figure 1
 - **Plot 2**: Test/train loss vs k (final epoch) - shows loss/error divergence
 - **Plot 3**: Test error vs (k, epoch) heatmap - reproduces Figure 2
@@ -196,17 +210,14 @@ Create `jl/double_descent/plot.py`:
 
 ## Implementation Order
 
-1. `convnet_config.py` - Simple dataclass
-2. `masked_batchnorm.py` - Core masking primitive
-3. `resnet18k.py` - Adapt from double-descent repo
-4. `convnet_data.py` - CIFAR-10 with noise
-5. `trainer.py` - Parallel training (most complex)
-6. `convnet_main.py` - Entry point with arg parsing
-7. Modify `lambda_train.sh` (add `--module`)
-8. Modify `lambda_download.sh` (add `--plot-module`)
-9. Local smoke test
-10. `plot.py` - Visualization (5 plots: error, loss, error vs loss, 2 heatmaps)
-11. H100 run with k=1-16
+1. Simplify `convnet_config.py` - remove width_min/width_max
+2. Simplify `resnet18k.py` - remove masking, use standard BatchNorm
+3. Remove `masked_batchnorm.py` - no longer needed
+4. Update `convnet_data.py` - add download-only function
+5. Rewrite `trainer.py` - single model training function
+6. Rewrite `convnet_main.py` - multiprocessing with 8-GPU check
+7. Update `plot.py` - load multiple metrics files
+8. Test on 8-GPU instance
 
 ---
 
@@ -215,14 +226,15 @@ Create `jl/double_descent/plot.py`:
 | Aspect | Paper | Our Implementation |
 |--------|-------|-------------------|
 | Trials | 5 | 1 |
-| Training | Sequential per k | Parallel via vmap |
-| BatchNorm | Standard | Masked |
-| Width range | 1-64 | 1-16 initially, then 1-64 |
+| Training | Sequential per k | 8 models parallel on 8 GPUs |
+| BatchNorm | Standard | Standard |
+| Width range | 1-64 | 8 per run (8 runs total) |
 
 ---
 
-## Open Questions / Risks
+## Hardware Requirements
 
-1. **MaskedBatchNorm correctness**: Need to verify running stats are computed correctly over active channels only
-2. **Memory**: If 16 widths don't fit, we'll split into 2 passes of 8
-3. **Training dynamics**: Masked approach may have slightly different training dynamics than truly separate models - we should verify final test error matches paper's ~28% for k=64
+- **8 GPUs required** - script will fail with clear error if fewer available
+- Recommended: 8x H100 SXM5 or 8x A100 80GB on Lambda Labs
+- Each GPU trains one model independently
+- Memory per GPU: ~2-4GB for k≤64 (ResNet18 is small)
