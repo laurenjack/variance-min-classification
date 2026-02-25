@@ -59,8 +59,8 @@ def parse_args():
     parser.add_argument(
         "--k-start",
         type=int,
-        required=True,
-        help="Starting width parameter k. Will train k, k+1, ..., k+7."
+        default=None,
+        help="Starting width parameter k. Will train k, k+1, ..., k+7. (default: 9)"
     )
     parser.add_argument(
         "--epochs",
@@ -110,6 +110,8 @@ def main():
         config.label_noise = args.label_noise
     if args.no_augmentation:
         config.data_augmentation = False
+    if args.k_start is not None:
+        config.k_start = args.k_start
 
     # Check GPU count - require exactly 8 GPUs
     num_gpus = torch.cuda.device_count()
@@ -120,7 +122,7 @@ def main():
         )
 
     # Compute k values for this run
-    k_values = [args.k_start + i for i in range(8)]
+    k_values = [config.k_start + i for i in range(8)]
 
     logger.info("Deep Double Descent Training")
     logger.info(f"Width values: k={k_values}")

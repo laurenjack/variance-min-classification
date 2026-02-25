@@ -7,8 +7,11 @@ from dataclasses import dataclass
 class DDConfig:
     """Configuration for double descent training."""
 
+    # Width parameter
+    k_start: int = 9  # Starting k value, trains k, k+1, ..., k+7
+
     # Training (from paper)
-    epochs: int = 10 # 4000 for full run
+    epochs: int = 10  # 4000 for full run
     batch_size: int = 128
     learning_rate: float = 0.0001
     optimizer: str = "adam"
