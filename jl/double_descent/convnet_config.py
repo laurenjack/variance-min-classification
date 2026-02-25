@@ -8,12 +8,12 @@ class DDConfig:
     """Configuration for double descent training."""
 
     # Resnet k values (full range is 1-64)
-    width_min: int = 15
-    width_max: int = 15  # Single model test
+    width_min: int = 1
+    width_max: int = 20  # Test run
 
     # Training (from paper)
-    epochs: int = 10  # 4000 for full run
-    batch_size: int = 8  # Heavily reduced for vmap memory
+    epochs: int = 10  # Test run
+    batch_size: int = 128
     learning_rate: float = 0.0001
     optimizer: str = "adam"
 
