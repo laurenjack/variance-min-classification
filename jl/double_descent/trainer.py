@@ -194,6 +194,10 @@ def train(
             epoch_loss += losses
             epoch_samples += batch_size
 
+            # Critical: free memory from vmap grad computation
+            del grads, losses
+            torch.cuda.empty_cache()
+
             # Compute training accuracy for this batch
             with torch.no_grad():
                 logits = vectorized_forward(params, buffers, images, mask1, mask2, mask4, mask8)
