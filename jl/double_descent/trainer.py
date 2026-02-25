@@ -17,6 +17,14 @@ from jl.double_descent.convnet_config import DDConfig
 from jl.double_descent.resnet18k import make_resnet18k, create_width_masks
 
 
+def print_memory(tag: str):
+    """Print current GPU memory usage."""
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / 1e9
+        reserved = torch.cuda.memory_reserved() / 1e9
+        print(f"[MEM {tag}] allocated={allocated:.2f}GB reserved={reserved:.2f}GB")
+
+
 def _build_models(
     k_max: int,
     num_widths: int,
@@ -88,14 +96,27 @@ def train(
     print(f"Epochs: {config.epochs}, Batch size: {config.batch_size}, LR: {config.learning_rate}")
     print(f"Gradient checkpointing: {config.use_checkpoint}")
 
+    print_memory("start")
+
     # Build models and stack parameters
     models = _build_models(k_max, num_widths, num_classes, device, config.use_checkpoint)
+    print_memory("after_build_models")
+
     template = models[0]
     params, buffers = stack_module_state(models)
+    print_memory("after_stack_module_state")
+
     params = {name: nn.Parameter(p) for name, p in params.items()}
+    print_memory("after_params_wrap")
+
+    # Delete individual models to free memory - we only need stacked params
+    del models
+    torch.cuda.empty_cache()
+    print_memory("after_delete_models")
 
     # Create width masks for all configurations
     mask1, mask2, mask4, mask8 = _create_all_width_masks(width_range, k_max, device)
+    print_memory("after_create_masks")
 
     # Define loss function for a single model
     def single_loss(params, buffers, x, y, m1, m2, m4, m8):
@@ -148,17 +169,26 @@ def train(
             labels = labels.to(device)
             batch_size = images.shape[0]
 
+            if batch_idx == 0 and epoch == 0:
+                print_memory("before_first_forward")
+
             # Forward and backward for all widths
             grads, losses = vectorized_loss_grad(
                 params, buffers, images, labels,
                 mask1, mask2, mask4, mask8,
             )
 
+            if batch_idx == 0 and epoch == 0:
+                print_memory("after_first_forward_backward")
+
             # Update parameters
             for name, param in params.items():
                 param.grad = grads[name]
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
+
+            if batch_idx == 0 and epoch == 0:
+                print_memory("after_first_optimizer_step")
 
             # Accumulate metrics
             epoch_loss += losses
