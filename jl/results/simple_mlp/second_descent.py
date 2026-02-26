@@ -3,7 +3,7 @@ from jl.results.simple_mlp.simple_mlp_conf import run_experiment
 
 
 def main():
-    width_range = list(range(80, 4001, 40))
+    width_range = list(range(80, 6001, 40))
     num_runs = 1
     graph_config = GraphConfig(
         # constant_name="Classical Minimum",

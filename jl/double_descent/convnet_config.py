@@ -15,7 +15,7 @@ class DDConfig:
     # We use AdamW with 10x learning rate for faster convergence
     epochs: int = 100
     batch_size: int = 128
-    learning_rate: float = 0.001
+    learning_rate: float = 0.003
     optimizer: str = "adam_w"
 
     # Data
