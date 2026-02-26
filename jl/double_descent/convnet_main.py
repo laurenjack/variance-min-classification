@@ -4,18 +4,18 @@
 Reproduces Figure 1 from Nakkiran et al. (2019) "Deep Double Descent":
 ResNet18 with varying width parameter k trained on CIFAR-10 with 15% label noise.
 
-This script trains 8 models in parallel on 8 GPUs using torch.multiprocessing.
-Each GPU trains one model with width k, k+1, ..., k+7.
+This script trains N models in parallel on N GPUs using torch.multiprocessing.
+Each GPU trains one model with width k, k+1, ..., k+(N-1).
 
 Usage:
-    # Train models with k=1 to k=8
-    python -m jl.double_descent.convnet_main --output-path ./output --k-start 1
+    # Train models starting at k=9 (one model per available GPU)
+    python -m jl.double_descent.convnet_main --output-path ./output --k-start 9
 
     # For quick smoke test:
     python -m jl.double_descent.convnet_main --output-path ./output --k-start 1 --epochs 10
 
-    # Full run (64 widths) requires 8 separate runs:
-    # --k-start 1, 9, 17, 25, 33, 41, 49, 57
+    # On 8 GPUs with k-start=1, trains k=1,2,3,4,5,6,7,8
+    # On 1 GPU with k-start=1, trains k=1
 """
 
 import argparse
@@ -60,7 +60,7 @@ def parse_args():
         "--k-start",
         type=int,
         default=None,
-        help="Starting width parameter k. Will train k, k+1, ..., k+7. (default: 9)"
+        help="Starting width parameter k. Will train k, k+1, ..., k+(N-1) where N is GPU count. (default: 9)"
     )
     parser.add_argument(
         "--epochs",
@@ -113,16 +113,16 @@ def main():
     if args.k_start is not None:
         config.k_start = args.k_start
 
-    # Check GPU count - require exactly 8 GPUs
+    # Check GPU count - require at least 1 GPU
     num_gpus = torch.cuda.device_count()
-    if num_gpus < 8:
+    if num_gpus == 0:
         raise RuntimeError(
-            f"This script requires 8 GPUs, but only found {num_gpus}. "
-            f"Please run on an 8-GPU instance (e.g., 8x V100, 8x A100, or 8x H100)."
+            "This script requires at least 1 GPU, but none were found. "
+            "Please run on a machine with CUDA-capable GPUs."
         )
 
-    # Compute k values for this run
-    k_values = [config.k_start + i for i in range(8)]
+    # Compute k values for this run (one k per GPU)
+    k_values = [config.k_start + i for i in range(num_gpus)]
 
     logger.info("Deep Double Descent Training")
     logger.info(f"Width values: k={k_values}")
@@ -143,10 +143,10 @@ def main():
     # Set multiprocessing start method
     mp.set_start_method('spawn', force=True)
 
-    # Spawn 8 training processes
-    logger.info("Spawning 8 training processes...")
+    # Spawn training processes (one per GPU)
+    logger.info(f"Spawning {num_gpus} training process(es)...")
     processes = []
-    for gpu_id in range(8):
+    for gpu_id in range(num_gpus):
         k = k_values[gpu_id]
         p = mp.Process(
             target=train_single_model,
