@@ -92,7 +92,7 @@ def train_single_model(
     print(f"[GPU {gpu_id}] k={k} has {num_params:,} parameters")
 
     # Optimizer
-    if config.optimizer == "adamw":
+    if config.optimizer == "adam_w":
         optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
     else:
         optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
