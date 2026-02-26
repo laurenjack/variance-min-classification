@@ -8,7 +8,7 @@ class DDConfig:
     """Configuration for double descent training."""
 
     # Width parameter
-    k_start: int = 9  # Starting k value, trains k, k+1, ..., k+7
+    k_start: int = 32  # Starting k value, trains k, k+1, ..., k+(N-1)
 
     # Training
     # Paper used: epochs=4000, batch_size=128, lr=0.0001, optimizer=Adam
