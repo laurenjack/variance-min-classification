@@ -58,10 +58,14 @@ log_info "Downloading artifacts from $INSTANCE_IP to $LOCAL_OUTPUT..."
 
 mkdir -p "$LOCAL_OUTPUT"
 
-# Copy metrics file
+# Copy metrics file(s) - handles both single metrics.jsonl and multiple metrics_k*.jsonl
 scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no \
     "ubuntu@$INSTANCE_IP:~/variance-min-classification/output/metrics.jsonl" \
-    "$LOCAL_OUTPUT/" 2>/dev/null || log_info "No metrics file yet"
+    "$LOCAL_OUTPUT/" 2>/dev/null || log_info "No metrics.jsonl file"
+
+scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no \
+    "ubuntu@$INSTANCE_IP:~/variance-min-classification/output/metrics_k*.jsonl" \
+    "$LOCAL_OUTPUT/" 2>/dev/null || log_info "No metrics_k*.jsonl files"
 
 # Copy validation metrics file
 scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no \
@@ -76,9 +80,11 @@ scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no \
 log_info "Downloaded to $LOCAL_OUTPUT:"
 ls -la "$LOCAL_OUTPUT"
 
-# Auto-generate training plots if metrics file exists
+# Auto-generate training plots if metrics file(s) exist
 METRICS_FILE="$LOCAL_OUTPUT/metrics.jsonl"
-if [[ -f "$METRICS_FILE" ]]; then
+METRICS_DIR_HAS_K_FILES=$(ls "$LOCAL_OUTPUT"/metrics_k*.jsonl 2>/dev/null | head -1)
+
+if [[ -f "$METRICS_FILE" ]] || [[ -n "$METRICS_DIR_HAS_K_FILES" ]]; then
     log_info "Generating training plots..."
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -87,9 +93,15 @@ if [[ -f "$METRICS_FILE" ]]; then
 
     # Activate venv and run plotting script
     source "$PROJECT_ROOT/venv/bin/activate" 2>/dev/null || true
-    python -m "$PLOT_MODULE" "$METRICS_FILE" --output-dir "$DATA_DIR"
+
+    # For double_descent, pass directory; for others, pass metrics.jsonl
+    if [[ -n "$METRICS_DIR_HAS_K_FILES" ]]; then
+        python -m "$PLOT_MODULE" "$LOCAL_OUTPUT" --output-dir "$DATA_DIR"
+    else
+        python -m "$PLOT_MODULE" "$METRICS_FILE" --output-dir "$DATA_DIR"
+    fi
 
     log_info "Plots saved to $DATA_DIR"
 else
-    log_info "No metrics.jsonl found - skipping plot generation"
+    log_info "No metrics files found - skipping plot generation"
 fi
