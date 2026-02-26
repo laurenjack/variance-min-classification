@@ -92,7 +92,10 @@ def train_single_model(
     print(f"[GPU {gpu_id}] k={k} has {num_params:,} parameters")
 
     # Optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
+    if config.optimizer == "adamw":
+        optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
+    else:
+        optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
 
     # Metrics file for this k value
     os.makedirs(output_path, exist_ok=True)
