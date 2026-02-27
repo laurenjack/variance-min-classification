@@ -21,7 +21,7 @@ def make_cosine_decay_scheduler(
     optimizer: torch.optim.Optimizer,
     cosine_decay_epoch: int,
     total_epochs: int,
-    min_lr_ratio: float = 0.1,
+    min_lr_ratio: float = 0.0,
 ) -> LambdaLR:
     """Create a scheduler that holds LR constant then cosine decays to min_lr_ratio.
 
@@ -29,7 +29,7 @@ def make_cosine_decay_scheduler(
         optimizer: The optimizer to schedule.
         cosine_decay_epoch: Epoch at which to start cosine decay.
         total_epochs: Total number of training epochs.
-        min_lr_ratio: Final LR as fraction of initial (default 0.1 = 10%).
+        min_lr_ratio: Final LR as fraction of initial (default 0.0).
 
     Returns:
         LambdaLR scheduler.
@@ -134,7 +134,7 @@ def train_single_model(
         scheduler = make_cosine_decay_scheduler(
             optimizer, config.cosine_decay_epoch, config.epochs
         )
-        print(f"[GPU {gpu_id}] Cosine decay from epoch {config.cosine_decay_epoch} to {config.epochs} (to 10% LR)")
+        print(f"[GPU {gpu_id}] Cosine decay from epoch {config.cosine_decay_epoch} to {config.epochs} (to 0)")
 
     # Metrics file for this k value
     os.makedirs(output_path, exist_ok=True)

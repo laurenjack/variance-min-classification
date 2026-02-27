@@ -5,17 +5,17 @@ Reproduces Figure 1 from Nakkiran et al. (2019) "Deep Double Descent":
 ResNet18 with varying width parameter k trained on CIFAR-10 with 15% label noise.
 
 This script trains N models in parallel on N GPUs using torch.multiprocessing.
-Each GPU trains one model with width k, k+2, k+4, ..., k+2*(N-1).
+Each GPU trains one model with width k, k+4, k+8, ..., k+4*(N-1).
 
 Usage:
-    # Train models starting at k=18 (one model per available GPU)
-    python -m jl.double_descent.resnet18.resnet18_main --output-path ./output --k-start 18
+    # Train models starting at k=4 (one model per available GPU)
+    python -m jl.double_descent.resnet18.resnet18_main --output-path ./output --k-start 4
 
     # For quick smoke test:
-    python -m jl.double_descent.resnet18.resnet18_main --output-path ./output --k-start 18 --epochs 10
+    python -m jl.double_descent.resnet18.resnet18_main --output-path ./output --k-start 4 --epochs 10
 
-    # On 8 GPUs with k-start=18, trains k=18,20,22,24,26,28,30,32
-    # On 1 GPU with k-start=18, trains k=18
+    # On 8 GPUs with k-start=4, trains k=4,8,12,16,20,24,28,32
+    # On 1 GPU with k-start=4, trains k=4
 """
 
 import argparse
@@ -60,7 +60,7 @@ def parse_args():
         "--k-start",
         type=int,
         default=None,
-        help="Starting width parameter k. Will train k, k+2, k+4, ..., k+2*(N-1) where N is GPU count. (default: 18)"
+        help="Starting width parameter k. Will train k, k+4, k+8, ..., k+4*(N-1) where N is GPU count. (default: 4)"
     )
     parser.add_argument(
         "--epochs",
@@ -129,8 +129,8 @@ def main():
             "Please run on a machine with CUDA-capable GPUs."
         )
 
-    # Compute k values for this run (one k per GPU, incrementing by 2)
-    k_values = [config.k_start + 2 * i for i in range(num_gpus)]
+    # Compute k values for this run (one k per GPU, incrementing by 4)
+    k_values = [config.k_start + 4 * i for i in range(num_gpus)]
 
     logger.info("Deep Double Descent Training")
     logger.info(f"Width values: k={k_values}")
