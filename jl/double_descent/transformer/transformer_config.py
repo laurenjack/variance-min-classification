@@ -16,9 +16,9 @@ class TDDConfig:
     # Note: dropout hardcoded to 0.0 in model (per paper)
 
     # Training (from paper: 80K steps)
-    max_steps: int = 1000  # Gradient steps
+    max_steps: int = 80000  # Gradient steps
     max_tokens: int = 4096  # Tokens per batch (max-tokens batching)
-    warmup_steps: Optional[int] = None  # LR warmup steps (None = constant LR)
+    warmup_steps: Optional[int] = 4000  # LR warmup steps (None = constant LR)
     learning_rate: float = 1e-4  # Learning rate (used when warmup_steps=None)
     optimizer: str = "adam_w"  # AdamW with Vaswani params (beta1=0.9, beta2=0.98, eps=1e-9)
 

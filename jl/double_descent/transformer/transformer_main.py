@@ -10,10 +10,10 @@ Each GPU trains one model with d_model, d_model+8, d_model+16, ..., d_model+8*(N
 
 Usage:
     # Train models starting at d_model=8 (one model per available GPU)
-    python -m jl.transformer_dd.transformer_main --output-path ./output --d-model-start 8
+    python -m jl.double_descent.transformer.transformer_main --output-path ./output --d-model-start 8
 
     # For quick smoke test:
-    python -m jl.transformer_dd.transformer_main --output-path ./output --d-model-start 64 --max-steps 100
+    python -m jl.double_descent.transformer.transformer_main --output-path ./output --d-model-start 64 --max-steps 100
 
     # On 8 GPUs with d-model-start=8, trains d_model=8,16,24,32,40,48,56,64
     # On 1 GPU with d-model-start=8, trains d_model=8
@@ -27,8 +27,8 @@ import time
 import torch
 import torch.multiprocessing as mp
 
-from jl.transformer_dd.transformer_config import TDDConfig
-from jl.transformer_dd.trainer import train_single_model
+from jl.double_descent.transformer.transformer_config import TDDConfig
+from jl.double_descent.transformer.trainer import train_single_model
 
 # Configure logging with timestamps
 logging.basicConfig(

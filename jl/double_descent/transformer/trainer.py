@@ -12,16 +12,16 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from jl.transformer_dd.bleu import compute_bleu
-from jl.transformer_dd.transformer_config import TDDConfig
-from jl.transformer_dd.transformer_data import (
+from jl.double_descent.transformer.bleu import compute_bleu
+from jl.double_descent.transformer.transformer_config import TDDConfig
+from jl.double_descent.transformer.transformer_data import (
     MaxTokensBatchSampler,
     TranslationDataset,
     Vocab,
     collate_fn,
     load_iwslt14,
 )
-from jl.transformer_dd.transformer_model import TransformerModel, count_parameters
+from jl.double_descent.transformer.transformer_model import TransformerModel, count_parameters
 
 logger = logging.getLogger(__name__)
 

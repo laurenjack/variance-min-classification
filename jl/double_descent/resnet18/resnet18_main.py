@@ -9,10 +9,10 @@ Each GPU trains one model with width k, k+2, k+4, ..., k+2*(N-1).
 
 Usage:
     # Train models starting at k=18 (one model per available GPU)
-    python -m jl.double_descent.convnet_main --output-path ./output --k-start 18
+    python -m jl.double_descent.resnet18.resnet18_main --output-path ./output --k-start 18
 
     # For quick smoke test:
-    python -m jl.double_descent.convnet_main --output-path ./output --k-start 18 --epochs 10
+    python -m jl.double_descent.resnet18.resnet18_main --output-path ./output --k-start 18 --epochs 10
 
     # On 8 GPUs with k-start=18, trains k=18,20,22,24,26,28,30,32
     # On 1 GPU with k-start=18, trains k=18
@@ -26,9 +26,9 @@ import time
 import torch
 import torch.multiprocessing as mp
 
-from jl.double_descent.convnet_config import DDConfig
-from jl.double_descent.convnet_data import download_cifar10
-from jl.double_descent.trainer import train_single_model
+from jl.double_descent.resnet18.resnet18_config import DDConfig
+from jl.double_descent.resnet18.resnet18_data import download_cifar10
+from jl.double_descent.resnet18.trainer import train_single_model
 
 # Configure logging with timestamps
 logging.basicConfig(

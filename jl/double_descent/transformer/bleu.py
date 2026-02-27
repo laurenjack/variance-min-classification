@@ -6,8 +6,8 @@ import sacrebleu
 import torch
 from torch.utils.data import DataLoader
 
-from jl.transformer_dd.transformer_data import TranslationDataset, Vocab, collate_fn
-from jl.transformer_dd.transformer_model import TransformerModel
+from jl.double_descent.transformer.transformer_data import TranslationDataset, Vocab, collate_fn
+from jl.double_descent.transformer.transformer_model import TransformerModel
 
 
 def compute_bleu(
