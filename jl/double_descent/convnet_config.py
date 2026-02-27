@@ -1,6 +1,7 @@
 """Configuration for Deep Double Descent experiments."""
 
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -17,6 +18,7 @@ class DDConfig:
     batch_size: int = 128
     learning_rate: float = 0.001
     optimizer: str = "adam_w"
+    cosine_decay_epoch: Optional[int] = None  # If set, cosine decay LR to 0 from this epoch
 
     # Data
     label_noise: float = 0.15

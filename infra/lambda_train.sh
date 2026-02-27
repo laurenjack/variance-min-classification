@@ -46,6 +46,8 @@ shift
 BACKGROUND=""
 LEARNING_RATE=""
 WARMUP_STEPS=""
+K_START=""
+COSINE_DECAY_EPOCH=""
 MODULE="jl.reward_model.reward_main"
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -59,6 +61,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --warmup-steps)
             WARMUP_STEPS="$2"
+            shift 2
+            ;;
+        --k-start)
+            K_START="$2"
+            shift 2
+            ;;
+        --cosine-decay-epoch)
+            COSINE_DECAY_EPOCH="$2"
             shift 2
             ;;
         --module)
@@ -81,6 +91,14 @@ fi
 if [[ -n "$WARMUP_STEPS" ]]; then
     EXTRA_FLAGS="$EXTRA_FLAGS --warmup-steps $WARMUP_STEPS"
     log_info "Using warmup steps: $WARMUP_STEPS"
+fi
+if [[ -n "$K_START" ]]; then
+    EXTRA_FLAGS="$EXTRA_FLAGS --k-start $K_START"
+    log_info "Using k-start: $K_START"
+fi
+if [[ -n "$COSINE_DECAY_EPOCH" ]]; then
+    EXTRA_FLAGS="$EXTRA_FLAGS --cosine-decay-epoch $COSINE_DECAY_EPOCH"
+    log_info "Using cosine decay from epoch: $COSINE_DECAY_EPOCH"
 fi
 log_info "Using module: $MODULE"
 

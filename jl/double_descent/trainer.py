@@ -1,18 +1,47 @@
 """Single model training for double descent experiments."""
 
 import json
+import math
 import os
 import time
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 import torch
 import torch.nn.functional as F
+from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 
 from jl.double_descent.convnet_config import DDConfig
 from jl.double_descent.convnet_data import load_cifar10_with_noise
 from jl.double_descent.resnet18k import make_resnet18k
+
+
+def make_cosine_decay_scheduler(
+    optimizer: torch.optim.Optimizer,
+    cosine_decay_epoch: int,
+    total_epochs: int,
+) -> LambdaLR:
+    """Create a scheduler that holds LR constant then cosine decays to 0.
+
+    Args:
+        optimizer: The optimizer to schedule.
+        cosine_decay_epoch: Epoch at which to start cosine decay.
+        total_epochs: Total number of training epochs.
+
+    Returns:
+        LambdaLR scheduler.
+    """
+    decay_epochs = total_epochs - cosine_decay_epoch
+
+    def lr_lambda(epoch: int) -> float:
+        if epoch < cosine_decay_epoch:
+            return 1.0
+        # Cosine decay from 1.0 to 0 over remaining epochs
+        progress = (epoch - cosine_decay_epoch) / decay_epochs
+        return 0.5 * (1 + math.cos(math.pi * progress))
+
+    return LambdaLR(optimizer, lr_lambda)
 
 
 def evaluate(
@@ -97,6 +126,14 @@ def train_single_model(
     else:
         optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
 
+    # Learning rate scheduler (optional cosine decay)
+    scheduler = None
+    if config.cosine_decay_epoch is not None:
+        scheduler = make_cosine_decay_scheduler(
+            optimizer, config.cosine_decay_epoch, config.epochs
+        )
+        print(f"[GPU {gpu_id}] Cosine decay from epoch {config.cosine_decay_epoch} to {config.epochs}")
+
     # Metrics file for this k value
     os.makedirs(output_path, exist_ok=True)
     metrics_path = Path(output_path) / f"metrics_k{k}.jsonl"
@@ -139,6 +176,10 @@ def train_single_model(
 
         # Only evaluate on test set (separate pass required)
         test_error, test_loss = evaluate(model, test_loader, device)
+
+        # Step the scheduler if using cosine decay
+        if scheduler is not None:
+            scheduler.step()
 
         # Log metrics
         epoch_time = time.time() - epoch_start

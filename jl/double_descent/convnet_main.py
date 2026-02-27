@@ -91,6 +91,12 @@ def parse_args():
         action="store_true",
         help="Disable data augmentation"
     )
+    parser.add_argument(
+        "--cosine-decay-epoch",
+        type=int,
+        default=None,
+        help="Epoch to start cosine LR decay to 0 (disabled by default)"
+    )
     return parser.parse_args()
 
 
@@ -112,6 +118,8 @@ def main():
         config.data_augmentation = False
     if args.k_start is not None:
         config.k_start = args.k_start
+    if args.cosine_decay_epoch is not None:
+        config.cosine_decay_epoch = args.cosine_decay_epoch
 
     # Check GPU count - require at least 1 GPU
     num_gpus = torch.cuda.device_count()
@@ -128,6 +136,8 @@ def main():
     logger.info(f"Width values: k={k_values}")
     logger.info(f"Epochs: {config.epochs}, Batch size: {config.batch_size}")
     logger.info(f"Learning rate: {config.learning_rate}")
+    if config.cosine_decay_epoch is not None:
+        logger.info(f"Cosine decay from epoch {config.cosine_decay_epoch} to 0")
     logger.info(f"Label noise: {config.label_noise}")
     logger.info(f"Data augmentation: {config.data_augmentation}")
     logger.info(f"GPUs available: {num_gpus}")
