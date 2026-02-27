@@ -79,5 +79,5 @@ ls -la "$LOCAL_OUTPUT"
 
 log_info "To plot results, run the appropriate plot module:"
 log_info "  Reward model:    python -m jl.reward_model.plot_metrics <metrics.jsonl> --output-dir ./data"
-log_info "  Double descent:  python -m jl.double_descent.plot <output_dir> --output-dir ./data"
-log_info "  Transformer DD:  python -m jl.transformer_dd.plot <metrics_d*.jsonl or dir> --output-dir ./data"
+log_info "  ResNet18 DD:     python -m jl.double_descent.resnet18.plot <output_dir> --output-dir ./data"
+log_info "  Transformer DD:  python -m jl.double_descent.transformer.plot <metrics_d*.jsonl or dir> --output-dir ./data"

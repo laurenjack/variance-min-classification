@@ -14,22 +14,22 @@ Train 8 models in parallel on an 8-GPU instance using `torch.multiprocessing`. E
 ## Phase 1: Package Structure
 
 ```
-jl/double_descent/
+jl/double_descent/resnet18/
 ├── __init__.py
-├── convnet_config.py   # DDConfig dataclass
-├── convnet_data.py     # CIFAR-10 with label noise
-├── convnet_main.py     # Entry point (spawns 8 processes)
-├── resnet18k.py        # Standard PreActResNet18
-├── trainer.py          # Single-model training function
-├── plot.py             # Visualization (5 plots)
-└── deep_double_descent.pdf  # Reference paper
+├── resnet18_config.py   # DDConfig dataclass
+├── resnet18_data.py     # CIFAR-10 with label noise
+├── resnet18_main.py     # Entry point (spawns 8 processes)
+├── resnet18k.py         # Standard PreActResNet18
+├── trainer.py           # Single-model training function
+├── plot.py              # Visualization (5 plots)
+└── RESNET18_PLAN.md     # This plan file
 ```
 
 ---
 
 ## Phase 2: Implementation Details
 
-### 2.1 Config (`convnet_config.py`)
+### 2.1 Config (`resnet18_config.py`)
 
 ```python
 @dataclass
@@ -58,7 +58,7 @@ Standard Pre-activation ResNet18 with width parameter k:
 
 No masking needed - each model is built with its actual k value.
 
-### 2.3 Data Loading (`convnet_data.py`)
+### 2.3 Data Loading (`resnet18_data.py`)
 
 ```python
 def load_cifar10_with_noise(noise_prob: float, data_dir: str):
@@ -74,7 +74,7 @@ def load_cifar10_with_noise(noise_prob: float, data_dir: str):
 
 Each of the 8 processes loads data independently from the pre-downloaded files.
 
-### 2.4 Multi-GPU Training (`convnet_main.py`)
+### 2.4 Multi-GPU Training (`resnet18_main.py`)
 
 ```python
 def main():
@@ -163,16 +163,16 @@ Manually provision an 8-GPU instance (8x V100, 8x A100, or 8x H100), then:
 
 ```bash
 # Default: k-start=18, trains k=18,20,22,24,26,28,30,32 on 8 GPUs
-./infra/lambda_train.sh <ip> --module jl.double_descent.convnet_main
+./infra/lambda_train.sh <ip> --module jl.double_descent.resnet18.resnet18_main
 
 # Or specify a different starting k (increments by 2 per GPU)
-./infra/lambda_train.sh <ip> --module jl.double_descent.convnet_main --k-start 34
+./infra/lambda_train.sh <ip> --module jl.double_descent.resnet18.resnet18_main --k-start 34
 ```
 
 ### 3.2 Downloading Results
 
 ```bash
-./infra/lambda_download.sh <ip> --plot-module jl.double_descent.plot
+./infra/lambda_download.sh <ip> --plot-module jl.double_descent.resnet18.plot
 ```
 
 The plot module will combine all `metrics_k*.jsonl` files to generate plots.
@@ -200,24 +200,38 @@ The plot module will combine all `metrics_k*.jsonl` files to generate plots.
 
 ## Phase 5: Plotting
 
-Create `jl/double_descent/plot.py`:
-- Load all `metrics_k*.jsonl` files from output directory
-- **Plot 1**: Test/train error vs k (final epoch) - reproduces Figure 1
-- **Plot 2**: Test/train loss vs k (final epoch) - shows loss/error divergence
-- **Plot 3**: Test error vs (k, epoch) heatmap - reproduces Figure 2
-- **Plot 4**: Test loss vs (k, epoch) heatmap - shows loss dynamics
-- Save PNGs to `data/`
+Two plot scripts in `jl/double_descent/resnet18/`:
+
+### `plot_vary_k.py` - Final metrics across k values
+Plots final-epoch results for a range of k values (reproduces Figure 1):
+- Single figure with 2 subplots:
+  - Top: Train/Test error vs k
+  - Bottom: Train/Test loss vs k
+
+```bash
+python -m jl.double_descent.resnet18.plot_vary_k ./output --min-k 18 --max-k 32 --output-dir ./data
+```
+
+### `plot_single_k.py` - Training curves for single k
+Plots epoch-wise training for a specific k value:
+- Single figure with 2 subplots:
+  - Top: Train/Test error vs epoch
+  - Bottom: Train/Test loss vs epoch
+
+```bash
+python -m jl.double_descent.resnet18.plot_single_k ./output --k 18 --output-dir ./data
+```
 
 ---
 
 ## Implementation Order
 
-1. Simplify `convnet_config.py` - remove width_min/width_max
+1. Simplify `resnet18_config.py` - remove width_min/width_max
 2. Simplify `resnet18k.py` - remove masking, use standard BatchNorm
 3. Remove `masked_batchnorm.py` - no longer needed
-4. Update `convnet_data.py` - add download-only function
+4. Update `resnet18_data.py` - add download-only function
 5. Rewrite `trainer.py` - single model training function
-6. Rewrite `convnet_main.py` - multiprocessing with 8-GPU check
+6. Rewrite `resnet18_main.py` - multiprocessing with 8-GPU check
 7. Update `plot.py` - load multiple metrics files
 8. Test on 8-GPU instance
 

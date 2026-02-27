@@ -12,9 +12,9 @@ import torch.nn.functional as F
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 
-from jl.double_descent.convnet_config import DDConfig
-from jl.double_descent.convnet_data import load_cifar10_with_noise
-from jl.double_descent.resnet18k import make_resnet18k
+from jl.double_descent.resnet18.resnet18_config import DDConfig
+from jl.double_descent.resnet18.resnet18_data import load_cifar10_with_noise
+from jl.double_descent.resnet18.resnet18k import make_resnet18k
 
 
 def make_cosine_decay_scheduler(

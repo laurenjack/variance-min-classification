@@ -15,7 +15,7 @@
 #   ./lambda_train.sh 192.222.54.255 --learning-rate 3e-5
 #   ./lambda_train.sh 192.222.54.255 --background --learning-rate 3e-4
 #   ./lambda_train.sh 192.222.54.255 --learning-rate 3e-5 --warmup-steps 50
-#   ./lambda_train.sh 192.222.54.255 --module jl.double_descent.convnet_main
+#   ./lambda_train.sh 192.222.54.255 --module jl.double_descent.resnet18.resnet18_main
 
 set -euo pipefail
 
@@ -105,9 +105,9 @@ log_info "Using module: $MODULE"
 # Build the python command based on module
 if [[ "$MODULE" == "jl.reward_model.reward_main" ]]; then
     PYTHON_CMD="python -m $MODULE --train-path ./data/tokenized --output-path ./output $EXTRA_FLAGS"
-elif [[ "$MODULE" == "jl.double_descent.convnet_main" ]]; then
+elif [[ "$MODULE" == "jl.double_descent.resnet18.resnet18_main" ]]; then
     PYTHON_CMD="python -m $MODULE --output-path ./output --data-path ./data $EXTRA_FLAGS"
-elif [[ "$MODULE" == "jl.transformer_dd.transformer_main" ]]; then
+elif [[ "$MODULE" == "jl.double_descent.transformer.transformer_main" ]]; then
     PYTHON_CMD="python -m $MODULE --output-path ./output --data-path ./data/iwslt14.tokenized.de-en $EXTRA_FLAGS"
 else
     # Generic module - just pass output-path
@@ -162,7 +162,7 @@ echo '=== Starting training ==='
 mkdir -p output data
 
 # Run IWSLT preprocessing if using transformer module and data doesn't exist
-if [[ $MODULE == jl.transformer_dd.transformer_main ]] && [[ ! -f data/iwslt14.tokenized.de-en/train.de ]]; then
+if [[ $MODULE == jl.double_descent.transformer.transformer_main ]] && [[ ! -f data/iwslt14.tokenized.de-en/train.de ]]; then
     echo '=== Running IWSLT preprocessing ==='
     ./infra/prepare_iwslt14.sh
 fi
@@ -205,7 +205,7 @@ echo '=== Starting training in background ==='
 mkdir -p output data
 
 # Run IWSLT preprocessing if using transformer module and data doesn't exist
-if [[ $MODULE == jl.transformer_dd.transformer_main ]] && [[ ! -f data/iwslt14.tokenized.de-en/train.de ]]; then
+if [[ $MODULE == jl.double_descent.transformer.transformer_main ]] && [[ ! -f data/iwslt14.tokenized.de-en/train.de ]]; then
     echo '=== Running IWSLT preprocessing ==='
     ./infra/prepare_iwslt14.sh
 fi

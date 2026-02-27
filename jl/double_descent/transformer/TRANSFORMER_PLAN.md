@@ -55,7 +55,7 @@ data/iwslt14.tokenized.de-en/
 ## Phase 2: Package Structure
 
 ```
-jl/transformer_dd/
+jl/double_descent/transformer/
 ├── __init__.py
 ├── transformer_config.py   # TDDConfig dataclass
 ├── transformer_data.py     # IWSLT data loading with max-tokens batching
@@ -63,7 +63,8 @@ jl/transformer_dd/
 ├── transformer_model.py    # Encoder-decoder Transformer
 ├── trainer.py              # Single-model training function
 ├── plot.py                 # Visualization (3 plots)
-└── bleu.py                 # BLEU score computation
+├── bleu.py                 # BLEU score computation
+└── TRANSFORMER_PLAN.md     # This plan file
 ```
 
 ---
@@ -183,10 +184,10 @@ Each GPU trains one model with d_model, d_model+8, d_model+16, ..., d_model+8*(N
 
 Usage:
     # Train models starting at d_model=8 (one model per available GPU)
-    python -m jl.transformer_dd.transformer_main --output-path ./output --d-model-start 8
+    python -m jl.double_descent.transformer.transformer_main --output-path ./output --d-model-start 8
 
     # For quick smoke test:
-    python -m jl.transformer_dd.transformer_main --output-path ./output --d-model-start 64 --max-steps 100
+    python -m jl.double_descent.transformer.transformer_main --output-path ./output --d-model-start 64 --max-steps 100
 
     # On 8 GPUs with d-model-start=8, trains d_model=8,16,24,32,40,48,56,64
     # On 1 GPU with d-model-start=8, trains d_model=8
@@ -374,19 +375,19 @@ Data preprocessing runs automatically on the remote instance if needed (download
 # Provision 8-GPU instance, then run 3 times to cover d_model=8-192:
 
 # Run 1: d_model = 8,16,24,32,40,48,56,64 (8 GPUs in parallel)
-./infra/lambda_train.sh <ip> --module jl.transformer_dd.transformer_main --d-model-start 8
+./infra/lambda_train.sh <ip> --module jl.double_descent.transformer.transformer_main --d-model-start 8
 
 # Run 2: d_model = 72,80,88,96,104,112,120,128
-./infra/lambda_train.sh <ip> --module jl.transformer_dd.transformer_main --d-model-start 72
+./infra/lambda_train.sh <ip> --module jl.double_descent.transformer.transformer_main --d-model-start 72
 
 # Run 3: d_model = 136,144,152,160,168,176,184,192
-./infra/lambda_train.sh <ip> --module jl.transformer_dd.transformer_main --d-model-start 136
+./infra/lambda_train.sh <ip> --module jl.double_descent.transformer.transformer_main --d-model-start 136
 ```
 
 ### 4.2 Downloading Results
 
 ```bash
-./infra/lambda_download.sh <ip> --plot-module jl.transformer_dd.plot
+./infra/lambda_download.sh <ip> --plot-module jl.double_descent.transformer.plot
 ```
 
 The plot module will combine all `metrics_d*.jsonl` files to generate plots.
@@ -395,49 +396,29 @@ The plot module will combine all `metrics_d*.jsonl` files to generate plots.
 
 ## Phase 5: Plotting
 
-Create `jl/transformer_dd/plot.py`:
+Two plot scripts in `jl/double_descent/transformer/`:
 
-### Final Metrics Plots (all d_model values)
+### `plot_vary_d_model.py` - Final metrics across d_model values
 
-When given a directory of metrics files:
-
-**Plot 1: Loss vs d_model**
-- X-axis: Transformer embedding dimension (d_model)
-- Y-axis: Cross-entropy loss (per-token perplexity)
-- Lines: Train loss, Test loss
-- Save: `data/transformer_dd_loss.png`
-
-**Plot 2: Accuracy vs d_model**
-- X-axis: Transformer embedding dimension (d_model)
-- Y-axis: Token-level accuracy
-- Lines: Train accuracy, Test accuracy
-- Save: `data/transformer_dd_accuracy.png`
-
-**Plot 3: BLEU vs d_model**
-- X-axis: Transformer embedding dimension (d_model)
-- Y-axis: BLEU score
-- Lines: Train BLEU, Test BLEU
-- Save: `data/transformer_dd_bleu.png`
-
-### Step-wise Training Curves (single d_model)
-
-When given a single metrics file (e.g., `metrics_d64.jsonl`) or `--d-model 64`:
-
-**Single figure with 2 subplots:**
-- Top: Train loss & Valid loss vs Step
-- Bottom: Train accuracy & Valid accuracy vs Step
-- Save: `data/transformer_dd_training_d64.png`
-
-### Usage
+Plots final results for a range of d_model values:
+- Single figure with 3 subplots:
+  - Top: Train/Test loss vs d_model
+  - Middle: Train/Test accuracy vs d_model
+  - Bottom: Train/Test BLEU vs d_model
 
 ```bash
-# All plots for all d_model values (final metrics: loss, accuracy, BLEU)
-python -m jl.transformer_dd.plot ./output --output-dir ./data
+python -m jl.double_descent.transformer.plot_vary_d_model ./output --min-d-model 8 --max-d-model 192 --output-dir ./data
+```
 
-# Step-wise training curves for a specific d_model
-python -m jl.transformer_dd.plot ./output/metrics_d64.jsonl --output-dir ./data
-# OR
-python -m jl.transformer_dd.plot ./output --d-model 64 --output-dir ./data
+### `plot_single_d_model.py` - Training curves for single d_model
+
+Plots step-wise training for a specific d_model value:
+- Single figure with 2 subplots:
+  - Top: Train/Valid loss vs step
+  - Bottom: Train/Valid accuracy vs step
+
+```bash
+python -m jl.double_descent.transformer.plot_single_d_model ./output --d-model 64 --output-dir ./data
 ```
 
 ---
@@ -459,7 +440,7 @@ wc -l data/iwslt14.tokenized.de-en/train.de  # Should be ~170K
 ### 6.2 Local Smoke Test (1 GPU)
 ```bash
 # On 1 GPU, trains only d_model=64
-python -m jl.transformer_dd.transformer_main \
+python -m jl.double_descent.transformer.transformer_main \
     --output-path ./output \
     --d-model-start 64 \
     --max-steps 100 \
@@ -471,7 +452,7 @@ python -m jl.transformer_dd.transformer_main \
 ### 6.3 Multi-GPU Test (if available)
 ```bash
 # On 8 GPUs with d-model-start=8, trains d_model=8,16,24,32,40,48,56,64
-python -m jl.transformer_dd.transformer_main \
+python -m jl.double_descent.transformer.transformer_main \
     --output-path ./output \
     --d-model-start 8 \
     --max-steps 1000
@@ -490,13 +471,13 @@ python -m jl.transformer_dd.transformer_main \
 
 1. Create `infra/prepare_iwslt14.sh` - preprocessing script
 2. Run preprocessing, verify output in `data/`
-3. Create `jl/transformer_dd/transformer_config.py` - config dataclass
-4. Create `jl/transformer_dd/transformer_data.py` - data loading + max-tokens batching
-5. Create `jl/transformer_dd/transformer_model.py` - Transformer architecture
-6. Create `jl/transformer_dd/bleu.py` - BLEU computation
-7. Create `jl/transformer_dd/trainer.py` - single model training
-8. Create `jl/transformer_dd/transformer_main.py` - multi-GPU entry point
-9. Create `jl/transformer_dd/plot.py` - visualization
+3. Create `jl/double_descent/transformer/transformer_config.py` - config dataclass
+4. Create `jl/double_descent/transformer/transformer_data.py` - data loading + max-tokens batching
+5. Create `jl/double_descent/transformer/transformer_model.py` - Transformer architecture
+6. Create `jl/double_descent/transformer/bleu.py` - BLEU computation
+7. Create `jl/double_descent/transformer/trainer.py` - single model training
+8. Create `jl/double_descent/transformer/transformer_main.py` - multi-GPU entry point
+9. Create `jl/double_descent/transformer/plot.py` - visualization
 10. Local smoke test
 11. Full run on 8-GPU instance
 
