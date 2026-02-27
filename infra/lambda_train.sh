@@ -162,7 +162,7 @@ echo '=== Starting training ==='
 mkdir -p output data
 
 # Run IWSLT preprocessing if using transformer module and data doesn't exist
-if [[ $MODULE == jl.transformer_dd.transformer_main ]] && [[ ! -d data/iwslt14.tokenized.de-en ]]; then
+if [[ $MODULE == jl.transformer_dd.transformer_main ]] && [[ ! -f data/iwslt14.tokenized.de-en/train.de ]]; then
     echo '=== Running IWSLT preprocessing ==='
     pip install subword-nmt
     ./infra/prepare_iwslt14.sh
@@ -206,7 +206,7 @@ echo '=== Starting training in background ==='
 mkdir -p output data
 
 # Run IWSLT preprocessing if using transformer module and data doesn't exist
-if [[ $MODULE == jl.transformer_dd.transformer_main ]] && [[ ! -d data/iwslt14.tokenized.de-en ]]; then
+if [[ $MODULE == jl.transformer_dd.transformer_main ]] && [[ ! -f data/iwslt14.tokenized.de-en/train.de ]]; then
     echo '=== Running IWSLT preprocessing ==='
     pip install subword-nmt
     ./infra/prepare_iwslt14.sh
