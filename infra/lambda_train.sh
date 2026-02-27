@@ -107,6 +107,8 @@ if [[ "$MODULE" == "jl.reward_model.reward_main" ]]; then
     PYTHON_CMD="python -m $MODULE --train-path ./data/tokenized --output-path ./output $EXTRA_FLAGS"
 elif [[ "$MODULE" == "jl.double_descent.convnet_main" ]]; then
     PYTHON_CMD="python -m $MODULE --output-path ./output --data-path ./data $EXTRA_FLAGS"
+elif [[ "$MODULE" == "jl.transformer_dd.transformer_main" ]]; then
+    PYTHON_CMD="python -m $MODULE --output-path ./output --data-path ./data/iwslt14.tokenized.de-en $EXTRA_FLAGS"
 else
     # Generic module - just pass output-path
     PYTHON_CMD="python -m $MODULE --output-path ./output $EXTRA_FLAGS"
@@ -159,6 +161,13 @@ pip install -r requirements-gpu.txt --index-url https://download.pytorch.org/whl
 echo '=== Starting training ==='
 mkdir -p output data
 
+# Run IWSLT preprocessing if using transformer module and data doesn't exist
+if [[ \"$MODULE\" == 'jl.transformer_dd.transformer_main' ]] && [[ ! -d 'data/iwslt14.tokenized.de-en' ]]; then
+    echo '=== Running IWSLT preprocessing ==='
+    pip install subword-nmt
+    ./infra/prepare_iwslt14.sh
+fi
+
 $PYTHON_CMD
 
 echo '=== Training complete ==='
@@ -195,6 +204,13 @@ pip install -r requirements-gpu.txt --index-url https://download.pytorch.org/whl
 
 echo '=== Starting training in background ==='
 mkdir -p output data
+
+# Run IWSLT preprocessing if using transformer module and data doesn't exist
+if [[ \"$MODULE\" == 'jl.transformer_dd.transformer_main' ]] && [[ ! -d 'data/iwslt14.tokenized.de-en' ]]; then
+    echo '=== Running IWSLT preprocessing ==='
+    pip install subword-nmt
+    ./infra/prepare_iwslt14.sh
+fi
 
 nohup $PYTHON_CMD > training.log 2>&1 &
 
