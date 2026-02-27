@@ -155,19 +155,29 @@ def train_single_model(
     process_logger.info(f"Model parameters: {num_params:,}")
 
     # Optimizer with Vaswani hyperparameters (hardcoded)
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=1.0,  # Scaled by scheduler
-        betas=(0.9, 0.98),
-        eps=1e-9,
-    )
+    if config.warmup_steps is not None:
+        # Vaswani LR schedule: lr scaled by scheduler
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=1.0,  # Scaled by scheduler
+            betas=(0.9, 0.98),
+            eps=1e-9,
+        )
 
-    # Vaswani LR schedule
-    def lr_lambda(step: int) -> float:
-        step = max(step, 1)
-        return (d_model ** -0.5) * min(step ** -0.5, step * config.warmup_steps ** -1.5)
+        def lr_lambda(step: int) -> float:
+            step = max(step, 1)
+            return (d_model ** -0.5) * min(step ** -0.5, step * config.warmup_steps ** -1.5)
 
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    else:
+        # Constant learning rate (no warmup)
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=config.learning_rate,
+            betas=(0.9, 0.98),
+            eps=1e-9,
+        )
+        scheduler = None
 
     # Loss function with optional label smoothing
     criterion = nn.CrossEntropyLoss(
@@ -221,7 +231,8 @@ def train_single_model(
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            scheduler.step()
+            if scheduler is not None:
+                scheduler.step()
 
             step += 1
 
@@ -232,7 +243,7 @@ def train_single_model(
                 mask = target != vocab.pad_idx
                 train_acc = ((predictions == target) & mask).sum().item() / mask.sum().item()
 
-                current_lr = scheduler.get_last_lr()[0]
+                current_lr = scheduler.get_last_lr()[0] if scheduler else config.learning_rate
 
                 metrics = {
                     "step": step,
@@ -286,7 +297,7 @@ def train_single_model(
         "test_acc": test_acc,
         "train_bleu": train_bleu,
         "test_bleu": test_bleu,
-        "lr": scheduler.get_last_lr()[0],
+        "lr": scheduler.get_last_lr()[0] if scheduler else config.learning_rate,
     }
     log_metrics(output_path, d_model, final_metrics)
 
