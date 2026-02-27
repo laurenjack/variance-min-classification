@@ -5,17 +5,17 @@ Reproduces Figure 1 from Nakkiran et al. (2019) "Deep Double Descent":
 ResNet18 with varying width parameter k trained on CIFAR-10 with 15% label noise.
 
 This script trains N models in parallel on N GPUs using torch.multiprocessing.
-Each GPU trains one model with width k, k+1, ..., k+(N-1).
+Each GPU trains one model with width k, k+2, k+4, ..., k+2*(N-1).
 
 Usage:
-    # Train models starting at k=9 (one model per available GPU)
-    python -m jl.double_descent.convnet_main --output-path ./output --k-start 9
+    # Train models starting at k=18 (one model per available GPU)
+    python -m jl.double_descent.convnet_main --output-path ./output --k-start 18
 
     # For quick smoke test:
-    python -m jl.double_descent.convnet_main --output-path ./output --k-start 1 --epochs 10
+    python -m jl.double_descent.convnet_main --output-path ./output --k-start 18 --epochs 10
 
-    # On 8 GPUs with k-start=1, trains k=1,2,3,4,5,6,7,8
-    # On 1 GPU with k-start=1, trains k=1
+    # On 8 GPUs with k-start=18, trains k=18,20,22,24,26,28,30,32
+    # On 1 GPU with k-start=18, trains k=18
 """
 
 import argparse
@@ -60,7 +60,7 @@ def parse_args():
         "--k-start",
         type=int,
         default=None,
-        help="Starting width parameter k. Will train k, k+1, ..., k+(N-1) where N is GPU count. (default: 9)"
+        help="Starting width parameter k. Will train k, k+2, k+4, ..., k+2*(N-1) where N is GPU count. (default: 18)"
     )
     parser.add_argument(
         "--epochs",
@@ -121,8 +121,8 @@ def main():
             "Please run on a machine with CUDA-capable GPUs."
         )
 
-    # Compute k values for this run (one k per GPU)
-    k_values = [config.k_start + i for i in range(num_gpus)]
+    # Compute k values for this run (one k per GPU, incrementing by 2)
+    k_values = [config.k_start + 2 * i for i in range(num_gpus)]
 
     logger.info("Deep Double Descent Training")
     logger.info(f"Width values: k={k_values}")

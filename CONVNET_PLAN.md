@@ -7,7 +7,7 @@ Reproduce the ResNet18 double-descent curve from Nakkiran et al. (2019) Figure 1
 - Train/test error AND loss vs model width (to show error and loss can be at odds)
 
 ## Approach
-Train 8 models in parallel on an 8-GPU instance using `torch.multiprocessing`. Each GPU trains one model with a different k value. To cover k=1-64, run 8 times with `--k-start 1`, `--k-start 9`, ..., `--k-start 57`.
+Train 8 models in parallel on an 8-GPU instance using `torch.multiprocessing`. Each GPU trains one model with a different k value, incrementing by 2. Default k=18. On 8 GPUs with default k-start=18, trains k=18,20,22,24,26,28,30,32.
 
 ---
 
@@ -34,8 +34,8 @@ jl/double_descent/
 ```python
 @dataclass
 class DDConfig:
-    # Training (from paper)
-    epochs: int = 4000
+    # Training
+    epochs: int = 500
     batch_size: int = 128
     learning_rate: float = 0.0001
     optimizer: str = "adam"
@@ -92,7 +92,7 @@ def main():
     mp.set_start_method('spawn')
     processes = []
     for gpu_id in range(8):
-        k = args.k_start + gpu_id
+        k = args.k_start + 2 * gpu_id  # Increment by 2
         p = mp.Process(
             target=train_single_model,
             args=(gpu_id, k, config, args.output_path, args.data_path)
@@ -162,9 +162,11 @@ Each k value gets its own file: `output/metrics_k{k}.jsonl`
 Manually provision an 8-GPU instance (8x V100, 8x A100, or 8x H100), then:
 
 ```bash
-./infra/lambda_train.sh <ip> --module jl.double_descent.convnet_main --k-start 1
-./infra/lambda_train.sh <ip> --module jl.double_descent.convnet_main --k-start 9
-# ... repeat for k-start 17, 25, 33, 41, 49, 57
+# Default: k-start=18, trains k=18,20,22,24,26,28,30,32 on 8 GPUs
+./infra/lambda_train.sh <ip> --module jl.double_descent.convnet_main
+
+# Or specify a different starting k (increments by 2 per GPU)
+./infra/lambda_train.sh <ip> --module jl.double_descent.convnet_main --k-start 34
 ```
 
 ### 3.2 Downloading Results
@@ -180,19 +182,19 @@ The plot module will combine all `metrics_k*.jsonl` files to generate plots.
 ## Phase 4: Testing Strategy
 
 ### 4.1 Local Smoke Test (if 8 GPUs available)
-- k = 1-8
+- k = 18,20,22,24,26,28,30,32 (default, incrementing by 2)
 - 10 epochs
 - Verify parallel training works, metrics files created
 
 ### 4.2 8-GPU Initial Run
-- k = 1-8
-- 4000 epochs
+- k = 18,20,22,24,26,28,30,32
+- 500 epochs
 - Monitor GPU utilization, training speed
 
 ### 4.3 Full Run
-- 8 runs: k-start = 1, 9, 17, 25, 33, 41, 49, 57
-- 4000 epochs each
-- Produces metrics_k1.jsonl through metrics_k64.jsonl
+- Default run: k-start=18, produces k=18,20,22,24,26,28,30,32
+- 500 epochs
+- Produces metrics_k18.jsonl through metrics_k32.jsonl
 
 ---
 
@@ -228,7 +230,8 @@ Create `jl/double_descent/plot.py`:
 | Trials | 5 | 1 |
 | Training | Sequential per k | 8 models parallel on 8 GPUs |
 | BatchNorm | Standard | Standard |
-| Width range | 1-64 | 8 per run (8 runs total) |
+| Epochs | 4000 | 500 |
+| Width range | 1-64 | Default k=18,20,...,32 (increment by 2) |
 
 ---
 
