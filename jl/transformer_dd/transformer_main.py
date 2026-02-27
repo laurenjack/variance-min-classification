@@ -152,11 +152,16 @@ def main():
     # Create output directory
     os.makedirs(args.output_path, exist_ok=True)
 
-    # Verify data exists
-    if not os.path.exists(args.data_path):
+    # Verify data exists - check for required files
+    required_files = ["train.de", "train.en", "valid.de", "valid.en", "test.de", "test.en", "code"]
+    missing_files = [f for f in required_files if not os.path.isfile(os.path.join(args.data_path, f))]
+    if missing_files:
         raise FileNotFoundError(
-            f"Data not found at {args.data_path}. "
-            "Please run ./infra/prepare_iwslt14.sh first."
+            f"Preprocessed IWSLT'14 data not found at {args.data_path}.\n"
+            f"Missing files: {missing_files}\n\n"
+            "Please run preprocessing locally first:\n"
+            "  ./infra/prepare_iwslt14.sh\n\n"
+            "Then upload the data directory to the remote machine before training."
         )
 
     # Set multiprocessing start method

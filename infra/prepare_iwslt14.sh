@@ -42,11 +42,12 @@ except ImportError:
 
 tmpdir = os.environ.get('TMPDIR', '/tmp')
 
-print("Loading IWSLT2017 de-en dataset...")
-# IWSLT2017 contains IWSLT14 data as a subset
-dataset = load_dataset("iwslt2017", "iwslt2017-de-en", trust_remote_code=True)
+print("Loading IWSLT14 de-en dataset from bbaaaa/iwslt14-de-en...")
+# Community-uploaded IWSLT14 dataset - load from parquet branch to avoid deprecated scripts
+dataset = load_dataset("bbaaaa/iwslt14-de-en", revision="refs/convert/parquet")
 
 # Extract train/validation/test splits
+# Note: bbaaaa dataset uses "validation" for valid split
 for split_name, hf_split in [("train", "train"), ("valid", "validation"), ("test", "test")]:
     print(f"Processing {split_name}...")
     split_data = dataset[hf_split]
@@ -57,6 +58,7 @@ for split_name, hf_split in [("train", "train"), ("valid", "validation"), ("test
     with open(de_file, "w", encoding="utf-8") as f_de, \
          open(en_file, "w", encoding="utf-8") as f_en:
         for example in split_data:
+            # bbaaaa dataset has 'translation' dict with 'de' and 'en' keys
             de_text = example["translation"]["de"].lower().strip()
             en_text = example["translation"]["en"].lower().strip()
             if de_text and en_text:  # Skip empty lines
