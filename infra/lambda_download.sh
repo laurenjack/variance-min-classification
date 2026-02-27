@@ -1,19 +1,17 @@
 #!/bin/bash
 # lambda_download.sh - Download training logs and metrics from Lambda Labs instance
 #
-# Downloads training log and metrics (not the model), then auto-generates training plots.
+# Downloads training log and metrics (not the model).
 #
 # Usage:
 #   ./lambda_download.sh <instance_ip> [options]
 #
 # Options:
 #   --output-dir <dir>    Local directory for downloads (default: ./data/lambda_output)
-#   --plot-module <mod>   Plot module to use (default: jl.reward_model.plot_metrics)
 #
 # Examples:
 #   ./lambda_download.sh 192.222.54.255
 #   ./lambda_download.sh 192.222.54.255 --output-dir ./my_output
-#   ./lambda_download.sh 192.222.54.255 --plot-module jl.double_descent.plot
 
 set -euo pipefail
 
@@ -26,7 +24,7 @@ NC='\033[0m'
 log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 
 if [[ $# -lt 1 ]]; then
-    echo "Usage: $0 <instance_ip> [--output-dir <dir>] [--plot-module <mod>]"
+    echo "Usage: $0 <instance_ip> [--output-dir <dir>]"
     exit 1
 fi
 
@@ -35,15 +33,10 @@ shift
 
 # Parse optional arguments
 LOCAL_OUTPUT="./data/lambda_output"
-PLOT_MODULE="jl.reward_model.plot_metrics"
 while [[ $# -gt 0 ]]; do
     case $1 in
         --output-dir)
             LOCAL_OUTPUT="$2"
-            shift 2
-            ;;
-        --plot-module)
-            PLOT_MODULE="$2"
             shift 2
             ;;
         *)
@@ -58,7 +51,7 @@ log_info "Downloading artifacts from $INSTANCE_IP to $LOCAL_OUTPUT..."
 
 mkdir -p "$LOCAL_OUTPUT"
 
-# Copy metrics file(s) - handles both single metrics.jsonl and multiple metrics_k*.jsonl
+# Copy metrics file(s) - handles reward_model, double_descent, and transformer_dd
 scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no \
     "ubuntu@$INSTANCE_IP:~/variance-min-classification/output/metrics.jsonl" \
     "$LOCAL_OUTPUT/" 2>/dev/null || log_info "No metrics.jsonl file"
@@ -66,6 +59,10 @@ scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no \
 scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no \
     "ubuntu@$INSTANCE_IP:~/variance-min-classification/output/metrics_k*.jsonl" \
     "$LOCAL_OUTPUT/" 2>/dev/null || log_info "No metrics_k*.jsonl files"
+
+scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no \
+    "ubuntu@$INSTANCE_IP:~/variance-min-classification/output/metrics_d*.jsonl" \
+    "$LOCAL_OUTPUT/" 2>/dev/null || log_info "No metrics_d*.jsonl files"
 
 # Copy validation metrics file
 scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no \
@@ -80,28 +77,7 @@ scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no \
 log_info "Downloaded to $LOCAL_OUTPUT:"
 ls -la "$LOCAL_OUTPUT"
 
-# Auto-generate training plots if metrics file(s) exist
-METRICS_FILE="$LOCAL_OUTPUT/metrics.jsonl"
-METRICS_DIR_HAS_K_FILES=$(ls "$LOCAL_OUTPUT"/metrics_k*.jsonl 2>/dev/null | head -1)
-
-if [[ -f "$METRICS_FILE" ]] || [[ -n "$METRICS_DIR_HAS_K_FILES" ]]; then
-    log_info "Generating training plots..."
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-    DATA_DIR="$PROJECT_ROOT/data"
-    mkdir -p "$DATA_DIR"
-
-    # Activate venv and run plotting script
-    source "$PROJECT_ROOT/venv/bin/activate" 2>/dev/null || true
-
-    # For double_descent, pass directory; for others, pass metrics.jsonl
-    if [[ -n "$METRICS_DIR_HAS_K_FILES" ]]; then
-        python -m "$PLOT_MODULE" "$LOCAL_OUTPUT" --output-dir "$DATA_DIR"
-    else
-        python -m "$PLOT_MODULE" "$METRICS_FILE" --output-dir "$DATA_DIR"
-    fi
-
-    log_info "Plots saved to $DATA_DIR"
-else
-    log_info "No metrics files found - skipping plot generation"
-fi
+log_info "To plot results, run the appropriate plot module:"
+log_info "  Reward model:    python -m jl.reward_model.plot_metrics <metrics.jsonl> --output-dir ./data"
+log_info "  Double descent:  python -m jl.double_descent.plot <output_dir> --output-dir ./data"
+log_info "  Transformer DD:  python -m jl.transformer_dd.plot <metrics_d*.jsonl or dir> --output-dir ./data"
