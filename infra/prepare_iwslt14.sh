@@ -21,7 +21,7 @@ OUTDIR=data/iwslt14.tokenized.de-en
 mkdir -p $OUTDIR
 
 # Temp directory for intermediate files
-TMPDIR=$(mktemp -d)
+export TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT
 
 echo "Temporary directory: $TMPDIR"
