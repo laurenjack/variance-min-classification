@@ -15,21 +15,24 @@ To cover d_model=8-192 (24 values), run 3 times with `--d-model-start 8`, `--d-m
 
 ---
 
-## Phase 1: Data Preprocessing (One-Time, Local)
+## Phase 1: Data Preprocessing (Automatic)
 
 ### 1.1 Preprocessing Script (`infra/prepare_iwslt14.sh`)
 
 A shell script that:
-1. Clones Moses tokenizer (Perl scripts from GitHub - no pip install)
-2. Installs subword-nmt via pip (for BPE)
-3. Downloads IWSLT'14 de-en raw data
-4. Applies Moses tokenization
-5. Lowercases text
-6. Learns joint BPE vocabulary (10K merge operations)
-7. Applies BPE to train/valid/test splits
-8. Outputs to `data/iwslt14.tokenized.de-en/`
+1. Downloads IWSLT'14 de-en from HuggingFace (`bbaaaa/iwslt14-de-en`, parquet branch)
+2. Lowercases text
+3. Learns joint BPE vocabulary (10K merge operations) using subword-nmt
+4. Applies BPE to train/valid/test splits
+5. Outputs to `data/iwslt14.tokenized.de-en/`
 
-Based on fairseq's `prepare-iwslt14.sh`. **Note**: Does NOT require fairseq as a dependency - only uses Moses (Perl) and subword-nmt (Python).
+**Note**: Original wit3.fbk.eu URL is no longer available (404). Using community-uploaded HuggingFace dataset.
+
+### 1.2 Automatic Preprocessing in Training
+
+The `lambda_train.sh` script automatically checks for preprocessed data and runs `prepare_iwslt14.sh` if needed. This happens on the remote instance, so no manual data upload is required.
+
+The training script (`transformer_main.py`) will fail with a clear error message if data files are missing (as a safety check).
 
 ### 1.2 Output Structure
 
@@ -365,6 +368,8 @@ Each d_model value gets its own file: `output/metrics_d{d_model}.jsonl`
 
 ### 4.1 Running Training
 
+Data preprocessing runs automatically on the remote instance if needed (downloads from HuggingFace, applies BPE).
+
 ```bash
 # Provision 8-GPU instance, then run 3 times to cover d_model=8-192:
 
@@ -441,13 +446,15 @@ python -m jl.transformer_dd.plot ./output --d-model 64 --output-dir ./data
 
 ### 6.1 Local Preprocessing Test
 ```bash
-# Run preprocessing script
+# Run preprocessing script (required before any training)
 ./infra/prepare_iwslt14.sh
 
 # Verify output
 ls -la data/iwslt14.tokenized.de-en/
-wc -l data/iwslt14.tokenized.de-en/train.de  # Should be ~160K
+wc -l data/iwslt14.tokenized.de-en/train.de  # Should be ~170K
 ```
+
+**Note**: If data files are missing, `transformer_main.py` will fail with a clear error listing the missing files.
 
 ### 6.2 Local Smoke Test (1 GPU)
 ```bash
