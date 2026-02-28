@@ -95,6 +95,7 @@ def evaluate(
 def log_metrics(
     output_path: str,
     d_model: int,
+    samples_k: int,
     metrics: Dict,
 ) -> None:
     """Log metrics to JSONL file.
@@ -102,9 +103,10 @@ def log_metrics(
     Args:
         output_path: Directory to save metrics.
         d_model: Model embedding dimension.
+        samples_k: Training samples in thousands (4 or 18).
         metrics: Dictionary of metrics to log.
     """
-    metrics_file = Path(output_path) / f"metrics_d{d_model}.jsonl"
+    metrics_file = Path(output_path) / f"metrics_d{d_model}_{samples_k}k.jsonl"
     with open(metrics_file, "a") as f:
         f.write(json.dumps(metrics) + "\n")
 
@@ -112,6 +114,7 @@ def log_metrics(
 def train_single_model(
     gpu_id: int,
     d_model: int,
+    train_samples: int,
     config: TDDConfig,
     output_path: str,
     data_path: str,
@@ -119,23 +122,25 @@ def train_single_model(
     """Train a single Transformer with embedding dimension d_model.
 
     Args:
-        gpu_id: GPU device ID.
+        gpu_id: GPU device ID (0-7).
         d_model: Embedding dimension.
+        train_samples: Number of training samples (4000 or 18000).
         config: Training configuration.
         output_path: Directory to save metrics.
         data_path: Directory containing preprocessed IWSLT data.
     """
     device = torch.device(f"cuda:{gpu_id}")
+    samples_k = train_samples // 1000
 
     # Setup logging for this process
-    process_logger = logging.getLogger(f"trainer_d{d_model}")
+    process_logger = logging.getLogger(f"trainer_d{d_model}_{samples_k}k")
     process_logger.setLevel(logging.INFO)
 
-    process_logger.info(f"Starting training for d_model={d_model} on GPU {gpu_id}")
+    process_logger.info(f"Starting training for d_model={d_model}, {samples_k}K samples on GPU {gpu_id}")
 
-    # Load data
+    # Load data with specified sample count
     train_dataset, valid_dataset, test_dataset, vocab = load_iwslt14(
-        data_path, config.train_samples, config.subsample_seed
+        data_path, train_samples, config.subsample_seed
     )
 
     process_logger.info(f"Loaded data: {len(train_dataset)} train, {len(valid_dataset)} valid, {len(test_dataset)} test")
@@ -200,7 +205,7 @@ def train_single_model(
     )
 
     # Clear metrics file
-    metrics_file = Path(output_path) / f"metrics_d{d_model}.jsonl"
+    metrics_file = Path(output_path) / f"metrics_d{d_model}_{samples_k}k.jsonl"
     if metrics_file.exists():
         metrics_file.unlink()
 
@@ -248,6 +253,7 @@ def train_single_model(
                 metrics = {
                     "step": step,
                     "d_model": d_model,
+                    "train_samples": train_samples,
                     "train_loss": loss.item(),
                     "train_acc": train_acc,
                     "lr": current_lr,
@@ -261,11 +267,11 @@ def train_single_model(
                     metrics["valid_loss"] = valid_loss
                     metrics["valid_acc"] = valid_acc
 
-                log_metrics(output_path, d_model, metrics)
+                log_metrics(output_path, d_model, samples_k, metrics)
 
                 elapsed = time.time() - train_start
                 process_logger.info(
-                    f"[d_model={d_model}] Step {step}/{config.max_steps} | "
+                    f"[d_model={d_model}, {samples_k}K] Step {step}/{config.max_steps} | "
                     f"Loss: {loss.item():.4f} | LR: {current_lr:.6f} | "
                     f"Time: {elapsed:.1f}s"
                 )
@@ -274,12 +280,12 @@ def train_single_model(
                 break
 
     # Final evaluation
-    process_logger.info(f"[d_model={d_model}] Running final evaluation...")
+    process_logger.info(f"[d_model={d_model}, {samples_k}K] Running final evaluation...")
 
     valid_loss, valid_acc = evaluate(model, valid_dataset, vocab, device, criterion)
     test_loss, test_acc = evaluate(model, test_dataset, vocab, device, criterion)
 
-    process_logger.info(f"[d_model={d_model}] Computing BLEU scores...")
+    process_logger.info(f"[d_model={d_model}, {samples_k}K] Computing BLEU scores...")
 
     # Compute BLEU (only on subsets for speed)
     train_bleu = compute_bleu(model, train_dataset, vocab, device, max_len=128)
@@ -289,6 +295,7 @@ def train_single_model(
     final_metrics = {
         "step": step,
         "d_model": d_model,
+        "train_samples": train_samples,
         "train_loss": 0.0,  # Not meaningful at end
         "train_acc": 0.0,  # Not meaningful at end
         "valid_loss": valid_loss,
@@ -299,11 +306,11 @@ def train_single_model(
         "test_bleu": test_bleu,
         "lr": scheduler.get_last_lr()[0] if scheduler else config.learning_rate,
     }
-    log_metrics(output_path, d_model, final_metrics)
+    log_metrics(output_path, d_model, samples_k, final_metrics)
 
     total_time = time.time() - train_start
     process_logger.info(
-        f"[d_model={d_model}] Training complete! "
+        f"[d_model={d_model}, {samples_k}K] Training complete! "
         f"Test BLEU: {test_bleu:.2f} | Test Loss: {test_loss:.4f} | "
         f"Total time: {total_time:.1f}s ({total_time/3600:.2f}h)"
     )

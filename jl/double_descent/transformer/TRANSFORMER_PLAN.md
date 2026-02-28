@@ -5,13 +5,18 @@ Reproduce the Transformer double-descent curve from Nakkiran et al. (2019) Figur
 - 6-layer encoder-decoder Transformer with varying embedding dimension d_model (8-192)
 - IWSLT'14 German-to-English translation
 - Train/test loss, accuracy, AND BLEU vs model width
+- **Both 4K and 18K training samples** (overlaid on same plot)
 
 ---
 
 ## Approach
-Train N models in parallel on N GPUs using `torch.multiprocessing`. Each GPU trains one model with a different d_model value, incrementing by 8. On 8 GPUs with default d_model_start=8, trains d_model=8,16,24,32,40,48,56,64. On 1 GPU with d_model_start=8, trains d_model=8 only.
 
-To cover d_model=8-192 (24 values), run 3 times with `--d-model-start 8`, `--d-model-start 72`, `--d-model-start 136`.
+**Fully automated experiment** requiring exactly 8 GPUs. The script trains all 48 models automatically:
+- 24 d_model values: 8, 16, 24, ..., 192
+- 2 sample sizes: 18K first, then 4K
+- 6 batches total (3 per sample size), each training 8 models in parallel
+
+No command-line arguments for d_model or train_samples - these are hardcoded.
 
 ---
 
@@ -34,7 +39,7 @@ The `lambda_train.sh` script automatically checks for preprocessed data and runs
 
 The training script (`transformer_main.py`) will fail with a clear error message if data files are missing (as a safety check).
 
-### 1.2 Output Structure
+### 1.3 Output Structure
 
 ```
 data/iwslt14.tokenized.de-en/
@@ -57,14 +62,15 @@ data/iwslt14.tokenized.de-en/
 ```
 jl/double_descent/transformer/
 ├── __init__.py
-├── transformer_config.py   # TDDConfig dataclass
-├── transformer_data.py     # IWSLT data loading with max-tokens batching
-├── transformer_main.py     # Entry point (spawns N processes)
-├── transformer_model.py    # Encoder-decoder Transformer
-├── trainer.py              # Single-model training function
-├── plot.py                 # Visualization (3 plots)
-├── bleu.py                 # BLEU score computation
-└── TRANSFORMER_PLAN.md     # This plan file
+├── transformer_config.py     # TDDConfig dataclass (no d_model/train_samples)
+├── transformer_data.py       # IWSLT data loading with max-tokens batching
+├── transformer_main.py       # Entry point (hardcoded experiment, requires 8 GPUs)
+├── transformer_model.py      # Encoder-decoder Transformer
+├── trainer.py                # Single-model training function
+├── plot_vary_d_model.py      # Final metrics plot (overlays 4K and 18K)
+├── plot_single_d_model.py    # Step-wise training curves for single model
+├── bleu.py                   # BLEU score computation
+└── TRANSFORMER_PLAN.md       # This plan file
 ```
 
 ---
@@ -80,10 +86,13 @@ from typing import Optional
 
 @dataclass
 class TDDConfig:
-    """Configuration for Transformer double descent training."""
+    """Configuration for Transformer double descent training.
+
+    Note: d_model and train_samples are NOT configurable - they are
+    hardcoded in transformer_main.py for the full experiment.
+    """
 
     # Model architecture (from paper)
-    d_model_start: int = 8          # Starting embedding dim, trains d_model, d_model+8, ..., d_model+8*(N-1)
     n_layers: int = 6               # Encoder and decoder layers
     n_heads: int = 8                # Attention heads (always 8, even for small d_model)
     d_ff_multiplier: int = 4        # d_ff = d_ff_multiplier * d_model
@@ -99,7 +108,6 @@ class TDDConfig:
     label_smoothing: Optional[float] = 0.1  # None to disable
 
     # Data
-    train_samples: int = 4000       # Subsample training set (paper uses 4K and 18K)
     subsample_seed: int = 42        # Fixed seed for reproducibility
 
     # Logging
@@ -150,11 +158,16 @@ Key implementation notes:
 ```python
 def load_iwslt14(
     data_dir: str,
-    train_samples: int = 4000,
+    train_samples: int,
     subsample_seed: int = 42,
 ) -> Tuple[Dataset, Dataset, Dataset, Vocab]:
     """
     Load IWSLT'14 de-en with subsampling.
+
+    Args:
+        data_dir: Directory containing preprocessed data.
+        train_samples: Number of training samples (4000 or 18000).
+        subsample_seed: Seed for reproducible subsampling.
 
     Returns:
         train_dataset: Subsampled to train_samples
@@ -179,64 +192,76 @@ class MaxTokensBatchSampler:
 """
 Entry point for Transformer Double Descent training.
 
-This script trains N models in parallel on N GPUs using torch.multiprocessing.
-Each GPU trains one model with d_model, d_model+8, d_model+16, ..., d_model+8*(N-1).
+Runs the FULL experiment automatically:
+- Requires exactly 8 GPUs (fails fast otherwise)
+- Trains all 48 models: 24 d_model values x 2 sample sizes
+- 6 batches total, 8 models per batch
 
 Usage:
-    # Train models starting at d_model=8 (one model per available GPU)
-    python -m jl.double_descent.transformer.transformer_main --output-path ./output --d-model-start 8
-
-    # For quick smoke test:
-    python -m jl.double_descent.transformer.transformer_main --output-path ./output --d-model-start 64 --max-steps 100
-
-    # On 8 GPUs with d-model-start=8, trains d_model=8,16,24,32,40,48,56,64
-    # On 1 GPU with d-model-start=8, trains d_model=8
+    python -m jl.double_descent.transformer.transformer_main \
+        --output-path ./output \
+        --data-path ./data/iwslt14.tokenized.de-en
 """
+
+# Hardcoded experiment parameters
+TRAIN_SAMPLES = [18000, 4000]  # 18K first, then 4K
+D_MODEL_VALUES = list(range(8, 200, 8))  # [8, 16, 24, ..., 192] - 24 values
+REQUIRED_GPUS = 8
+
 
 def main():
     args = parse_args()
     config = TDDConfig()
 
-    # Override config with command line arguments
-    if args.d_model_start is not None:
-        config.d_model_start = args.d_model_start
-    if args.max_steps is not None:
-        config.max_steps = args.max_steps
-    # ... etc for other args
-
-    # Check GPU count - require at least 1 GPU
+    # Require exactly 8 GPUs
     num_gpus = torch.cuda.device_count()
-    if num_gpus == 0:
+    if num_gpus != REQUIRED_GPUS:
         raise RuntimeError(
-            "This script requires at least 1 GPU, but none were found. "
-            "Please run on a machine with CUDA-capable GPUs."
+            f"This experiment requires exactly {REQUIRED_GPUS} GPUs, "
+            f"but found {num_gpus}. Please run on an 8-GPU instance."
         )
 
-    # Compute d_model values for this run (one d_model per GPU, incrementing by 8)
-    d_model_values = [config.d_model_start + 8 * i for i in range(num_gpus)]
+    logger.info("Transformer Double Descent - Full Experiment")
+    logger.info(f"d_model values: {D_MODEL_VALUES}")
+    logger.info(f"Train samples: {TRAIN_SAMPLES}")
+    logger.info(f"Total models: {len(D_MODEL_VALUES) * len(TRAIN_SAMPLES)} = 48")
+    logger.info(f"Batches: {len(D_MODEL_VALUES) // REQUIRED_GPUS * len(TRAIN_SAMPLES)} = 6")
 
-    logger.info("Transformer Double Descent Training")
-    logger.info(f"d_model values: {d_model_values}")
-    logger.info(f"Max steps: {config.max_steps}, Max tokens/batch: {config.max_tokens}")
-    logger.info(f"GPUs available: {num_gpus}")
+    # Outer loop: sample sizes (18K first, then 4K)
+    for train_samples in TRAIN_SAMPLES:
+        samples_k = train_samples // 1000
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Starting {samples_k}K sample runs")
+        logger.info(f"{'='*60}")
 
-    # Spawn training processes (one per GPU)
-    mp.set_start_method('spawn', force=True)
-    processes = []
-    for gpu_id in range(num_gpus):
-        d_model = d_model_values[gpu_id]
-        p = mp.Process(
-            target=train_single_model,
-            args=(gpu_id, d_model, config, args.output_path, args.data_path)
-        )
-        p.start()
-        processes.append(p)
-        logger.info(f"Started process for d_model={d_model} on GPU {gpu_id}")
+        # Inner loop: d_model batches (3 batches of 8)
+        for batch_idx in range(0, len(D_MODEL_VALUES), REQUIRED_GPUS):
+            batch_d_models = D_MODEL_VALUES[batch_idx:batch_idx + REQUIRED_GPUS]
+            batch_num = batch_idx // REQUIRED_GPUS + 1
 
-    # Wait for all to complete
-    for i, p in enumerate(processes):
-        p.join()
-        logger.info(f"Process for d_model={d_model_values[i]} completed")
+            logger.info(f"\n[{samples_k}K] Batch {batch_num}/3: d_model = {batch_d_models}")
+
+            # Spawn 8 training processes
+            mp.set_start_method('spawn', force=True)
+            processes = []
+            for gpu_id, d_model in enumerate(batch_d_models):
+                p = mp.Process(
+                    target=train_single_model,
+                    args=(gpu_id, d_model, train_samples, config,
+                          args.output_path, args.data_path)
+                )
+                p.start()
+                processes.append(p)
+
+            # Wait for batch to complete
+            for p in processes:
+                p.join()
+
+            logger.info(f"[{samples_k}K] Batch {batch_num}/3 complete")
+
+    logger.info("\n" + "="*60)
+    logger.info("Full experiment complete!")
+    logger.info(f"Metrics files: {args.output_path}/metrics_d*_*k.jsonl")
 ```
 
 ### 3.5 Single Model Trainer (`trainer.py`)
@@ -245,123 +270,49 @@ def main():
 def train_single_model(
     gpu_id: int,
     d_model: int,
+    train_samples: int,
     config: TDDConfig,
     output_path: str,
     data_path: str,
 ) -> None:
-    """Train a single Transformer with embedding dimension d_model."""
+    """Train a single Transformer with embedding dimension d_model.
+
+    Args:
+        gpu_id: GPU device ID (0-7).
+        d_model: Embedding dimension.
+        train_samples: Number of training samples (4000 or 18000).
+        config: Training configuration.
+        output_path: Directory to save metrics.
+        data_path: Directory containing preprocessed IWSLT data.
+    """
     device = torch.device(f"cuda:{gpu_id}")
+    samples_k = train_samples // 1000
 
-    # Load data
+    # Load data with specified sample count
     train_dataset, valid_dataset, test_dataset, vocab = load_iwslt14(
-        data_path, config.train_samples, config.subsample_seed
+        data_path, train_samples, config.subsample_seed
     )
 
-    # Create model
-    model = TransformerModel(
-        vocab_size=len(vocab),
-        d_model=d_model,
-        n_layers=config.n_layers,
-        n_heads=config.n_heads,
-        d_ff_multiplier=config.d_ff_multiplier,
-    ).to(device)
+    # ... training loop ...
 
-    # Optimizer with Vaswani LR schedule (betas and eps hardcoded per paper)
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=1.0,  # Scaled by scheduler
-        betas=(0.9, 0.98),
-        eps=1e-9,
-    )
-
-    def lr_lambda(step):
-        # Vaswani formula: d_model^(-0.5) * min(step^(-0.5), step * warmup^(-1.5))
-        step = max(step, 1)
-        return (d_model ** -0.5) * min(step ** -0.5, step * config.warmup_steps ** -1.5)
-
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-
-    # Loss function with optional label smoothing
-    criterion = nn.CrossEntropyLoss(
-        ignore_index=vocab.pad_idx,
-        label_smoothing=config.label_smoothing or 0.0,
-    )
-
-    # Training loop (80K steps)
-    step = 0
-    while step < config.max_steps:
-        for src, tgt in train_loader:
-            # Forward pass
-            logits = model(src, tgt[:, :-1])
-            loss = criterion(logits.view(-1, len(vocab)), tgt[:, 1:].view(-1))
-
-            # Backward pass
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
-
-            step += 1
-
-            # Log metrics
-            if step % config.log_interval == 0:
-                log_metrics(...)
-
-            # Evaluate on validation set
-            if step % config.eval_interval == 0:
-                evaluate(model, valid_dataset, ...)
-
-            if step >= config.max_steps:
-                break
-
-    # Final evaluation with BLEU
-    test_loss, test_acc = evaluate(model, test_dataset, device)
-    test_bleu = compute_bleu(model, test_dataset, vocab, device)
-    train_bleu = compute_bleu(model, train_dataset, vocab, device)
-
-    log_final_metrics(output_path, d_model, test_loss, test_acc, test_bleu, train_bleu)
+    # Log to file with sample size in name
+    log_metrics(output_path, d_model, samples_k, metrics)
 ```
 
-### 3.6 BLEU Computation (`bleu.py`)
+### 3.6 Metrics Output
 
-```python
-def compute_bleu(
-    model: nn.Module,
-    dataset: Dataset,
-    vocab: Vocab,
-    device: torch.device,
-    max_len: int = 128,
-) -> float:
-    """
-    Compute corpus-level BLEU score using greedy decoding.
-
-    - Generates translations autoregressively
-    - Uses greedy decoding (argmax at each step)
-    - Computes BLEU using sacrebleu library
-    """
-```
-
-### 3.7 Metrics Output
-
-Each d_model value gets its own file: `output/metrics_d{d_model}.jsonl`
+Each model gets its own file with sample size in the name:
+- `output/metrics_d{d_model}_{samples}k.jsonl`
+- Example: `metrics_d64_18k.jsonl`, `metrics_d64_4k.jsonl`
 
 ```json
-{"step": 100, "d_model": 64, "train_loss": 8.5, "train_acc": 0.05, "valid_loss": 8.7, "valid_acc": 0.04, "lr": 0.0001}
-{"step": 200, "d_model": 64, "train_loss": 7.2, "train_acc": 0.12, "valid_loss": 7.5, "valid_acc": 0.10, "lr": 0.0002}
+{"step": 100, "d_model": 64, "train_samples": 18000, "train_loss": 8.5, "train_acc": 0.05, "valid_loss": 8.7, "valid_acc": 0.04, "lr": 0.0001}
+{"step": 200, "d_model": 64, "train_samples": 18000, "train_loss": 7.2, "train_acc": 0.12, "valid_loss": 7.5, "valid_acc": 0.10, "lr": 0.0002}
 ...
-{"step": 80000, "d_model": 64, "train_loss": 2.1, "train_acc": 0.65, "valid_loss": 3.2, "valid_acc": 0.48, "lr": 0.00003, "train_bleu": 45.2, "test_bleu": 28.5, "test_loss": 3.3, "test_acc": 0.47}
+{"step": 80000, "d_model": 64, "train_samples": 18000, "train_loss": 2.1, "train_acc": 0.65, "valid_loss": 3.2, "valid_acc": 0.48, "lr": 0.00003, "train_bleu": 45.2, "test_bleu": 28.5, "test_loss": 3.3, "test_acc": 0.47}
 ```
 
-**Metrics tracked:**
-- `train_loss`: Cross-entropy loss on training batch
-- `train_acc`: Token-level accuracy on training batch
-- `valid_loss`: Loss on full validation set
-- `valid_acc`: Token-level accuracy on validation set
-- `lr`: Current learning rate
-- `train_bleu`: BLEU on training set (final only)
-- `test_bleu`: BLEU on test set (final only)
-- `test_loss`: Loss on test set (final only)
-- `test_acc`: Accuracy on test set (final only)
+**Total output files:** 48 (24 d_model × 2 sample sizes)
 
 ---
 
@@ -369,56 +320,55 @@ Each d_model value gets its own file: `output/metrics_d{d_model}.jsonl`
 
 ### 4.1 Running Training
 
-Data preprocessing runs automatically on the remote instance if needed (downloads from HuggingFace, applies BPE).
+Single command runs the full experiment:
 
 ```bash
-# Provision 8-GPU instance, then run 3 times to cover d_model=8-192:
-
-# Run 1: d_model = 8,16,24,32,40,48,56,64 (8 GPUs in parallel)
-./infra/lambda_train.sh <ip> --module jl.double_descent.transformer.transformer_main --d-model-start 8
-
-# Run 2: d_model = 72,80,88,96,104,112,120,128
-./infra/lambda_train.sh <ip> --module jl.double_descent.transformer.transformer_main --d-model-start 72
-
-# Run 3: d_model = 136,144,152,160,168,176,184,192
-./infra/lambda_train.sh <ip> --module jl.double_descent.transformer.transformer_main --d-model-start 136
+# Provision 8-GPU instance, then run once:
+./infra/lambda_train.sh <ip> --module jl.double_descent.transformer.transformer_main
 ```
+
+The script automatically:
+1. Checks for exactly 8 GPUs (fails fast otherwise)
+2. Runs 18K samples: batches for d_model 8-64, 72-128, 136-192
+3. Runs 4K samples: batches for d_model 8-64, 72-128, 136-192
+4. Produces 48 metrics files total
 
 ### 4.2 Downloading Results
 
 ```bash
-./infra/lambda_download.sh <ip> --plot-module jl.double_descent.transformer.plot
+./infra/lambda_download.sh <ip>
 ```
 
-The plot module will combine all `metrics_d*.jsonl` files to generate plots.
+Downloads all `metrics_d*_*k.jsonl` files.
 
 ---
 
 ## Phase 5: Plotting
 
-Two plot scripts in `jl/double_descent/transformer/`:
+### `plot_vary_d_model.py` - Final metrics across d_model values (MAIN PLOT)
 
-### `plot_vary_d_model.py` - Final metrics across d_model values
-
-Plots final results for a range of d_model values:
+Auto-loads ALL metrics files and overlays 4K and 18K curves:
 - Single figure with 3 subplots:
-  - Top: Train/Test loss vs d_model
-  - Middle: Train/Test accuracy vs d_model
-  - Bottom: Train/Test BLEU vs d_model
+  - Top: Test loss vs d_model (4K and 18K overlaid)
+  - Middle: Test accuracy vs d_model (4K and 18K overlaid)
+  - Bottom: Test BLEU vs d_model (4K and 18K overlaid)
 
 ```bash
-python -m jl.double_descent.transformer.plot_vary_d_model ./output --min-d-model 8 --max-d-model 192 --output-dir ./data
+# No arguments needed - auto-discovers all files
+python -m jl.double_descent.transformer.plot_vary_d_model ./output --output-dir ./data
 ```
+
+Output: `data/transformer_double_descent.png`
 
 ### `plot_single_d_model.py` - Training curves for single d_model
 
-Plots step-wise training for a specific d_model value:
+Plots step-wise training for a specific d_model and sample size:
 - Single figure with 2 subplots:
   - Top: Train/Valid loss vs step
   - Bottom: Train/Valid accuracy vs step
 
 ```bash
-python -m jl.double_descent.transformer.plot_single_d_model ./output --d-model 64 --output-dir ./data
+python -m jl.double_descent.transformer.plot_single_d_model ./output --d-model 64 --samples 18k --output-dir ./data
 ```
 
 ---
@@ -437,49 +387,29 @@ wc -l data/iwslt14.tokenized.de-en/train.de  # Should be ~170K
 
 **Note**: If data files are missing, `transformer_main.py` will fail with a clear error listing the missing files.
 
-### 6.2 Local Smoke Test (1 GPU)
+### 6.2 Full Run (8 GPUs required)
 ```bash
-# On 1 GPU, trains only d_model=64
 python -m jl.double_descent.transformer.transformer_main \
     --output-path ./output \
-    --d-model-start 64 \
-    --max-steps 100 \
-    --train-samples 1000
+    --data-path ./data/iwslt14.tokenized.de-en
 ```
-- Verify: model trains, metrics file created, no errors
-- Output: `output/metrics_d64.jsonl`
 
-### 6.3 Multi-GPU Test (if available)
-```bash
-# On 8 GPUs with d-model-start=8, trains d_model=8,16,24,32,40,48,56,64
-python -m jl.double_descent.transformer.transformer_main \
-    --output-path ./output \
-    --d-model-start 8 \
-    --max-steps 1000
-```
-- Monitor GPU utilization, training speed
-- Output: `output/metrics_d8.jsonl` through `output/metrics_d64.jsonl`
+**Expected runtime:** ~6-8 hours total (48 models × ~8 minutes each)
 
-### 6.4 Full Run (8 GPUs)
-- 3 runs: d-model-start = 8, 72, 136
-- 80K steps each
-- Produces metrics_d8.jsonl through metrics_d192.jsonl (24 files total)
+**Output:** 48 files: `metrics_d{8-192}_{4k,18k}.jsonl`
 
 ---
 
-## Implementation Order
+## Execution Order
 
-1. Create `infra/prepare_iwslt14.sh` - preprocessing script
-2. Run preprocessing, verify output in `data/`
-3. Create `jl/double_descent/transformer/transformer_config.py` - config dataclass
-4. Create `jl/double_descent/transformer/transformer_data.py` - data loading + max-tokens batching
-5. Create `jl/double_descent/transformer/transformer_model.py` - Transformer architecture
-6. Create `jl/double_descent/transformer/bleu.py` - BLEU computation
-7. Create `jl/double_descent/transformer/trainer.py` - single model training
-8. Create `jl/double_descent/transformer/transformer_main.py` - multi-GPU entry point
-9. Create `jl/double_descent/transformer/plot.py` - visualization
-10. Local smoke test
-11. Full run on 8-GPU instance
+| Batch | Sample Size | d_model Values |
+|-------|-------------|----------------|
+| 1     | 18K         | 8, 16, 24, 32, 40, 48, 56, 64 |
+| 2     | 18K         | 72, 80, 88, 96, 104, 112, 120, 128 |
+| 3     | 18K         | 136, 144, 152, 160, 168, 176, 184, 192 |
+| 4     | 4K          | 8, 16, 24, 32, 40, 48, 56, 64 |
+| 5     | 4K          | 72, 80, 88, 96, 104, 112, 120, 128 |
+| 6     | 4K          | 136, 144, 152, 160, 168, 176, 184, 192 |
 
 ---
 
@@ -489,7 +419,7 @@ python -m jl.double_descent.transformer.transformer_main \
 |--------|-------|-------------------|
 | Optimizer | Adam | AdamW (same hyperparams) |
 | Trials | Unknown | 1 |
-| Sample sizes | 4K and 18K | 4K (configurable) |
+| Sample sizes | 4K and 18K | Both (overlaid on same plot) |
 | Framework | fairseq | Custom PyTorch |
 | BLEU frequency | Unknown | End of training only |
 
@@ -498,12 +428,10 @@ python -m jl.double_descent.transformer.transformer_main \
 ## Hardware Requirements
 
 - **Preprocessing**: CPU only, ~5 minutes
-- **Training**: At least 1 GPU required (script fails with clear error if none found)
-  - 1 GPU: trains single d_model value (d_model_start only)
-  - N GPUs: trains N d_model values in parallel (d_model_start, d_model_start+8, ..., d_model_start+8*(N-1))
+- **Training**: **Exactly 8 GPUs required** (script fails fast otherwise)
 - **Memory**: ~2-8GB per GPU depending on d_model
-- **Recommended**: 8x V100/A100/H100 on Lambda Labs for full runs
-- **Local testing**: 1 GPU sufficient for smoke tests
+- **Instance type**: 8x A100 or 8x H100 on Lambda Labs
+- **Estimated time**: 6-8 hours for full experiment
 
 ---
 

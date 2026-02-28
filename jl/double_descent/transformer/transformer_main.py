@@ -5,18 +5,15 @@ Reproduces Figure 3 from Nakkiran et al. (2019) "Deep Double Descent":
 6-layer encoder-decoder Transformer with varying embedding dimension d_model
 trained on IWSLT'14 German-to-English translation.
 
-This script trains N models in parallel on N GPUs using torch.multiprocessing.
-Each GPU trains one model with d_model, d_model+8, d_model+16, ..., d_model+8*(N-1).
+Runs the FULL experiment automatically:
+- Requires exactly 8 GPUs (fails fast otherwise)
+- Trains all 48 models: 24 d_model values x 2 sample sizes
+- 6 batches total, 8 models per batch
 
 Usage:
-    # Train models starting at d_model=8 (one model per available GPU)
-    python -m jl.double_descent.transformer.transformer_main --output-path ./output --d-model-start 8
-
-    # For quick smoke test:
-    python -m jl.double_descent.transformer.transformer_main --output-path ./output --d-model-start 64 --max-steps 100
-
-    # On 8 GPUs with d-model-start=8, trains d_model=8,16,24,32,40,48,56,64
-    # On 1 GPU with d-model-start=8, trains d_model=8
+    python -m jl.double_descent.transformer.transformer_main \
+        --output-path ./output \
+        --data-path ./data/iwslt14.tokenized.de-en
 """
 
 import argparse
@@ -38,6 +35,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Hardcoded experiment parameters
+TRAIN_SAMPLES = [18000, 4000]  # 18K first, then 4K
+D_MODEL_VALUES = list(range(8, 200, 8))  # [8, 16, 24, ..., 192] - 24 values
+REQUIRED_GPUS = 8
+
 
 def parse_args():
     """Parse command line arguments."""
@@ -56,54 +58,6 @@ def parse_args():
         default="./data/iwslt14.tokenized.de-en",
         help="Path to preprocessed IWSLT'14 data"
     )
-    parser.add_argument(
-        "--d-model-start",
-        type=int,
-        default=None,
-        help="Starting embedding dimension. Will train d_model, d_model+8, ..., d_model+8*(N-1) where N is GPU count. (default: 8)"
-    )
-    parser.add_argument(
-        "--max-steps",
-        type=int,
-        default=None,
-        help="Maximum training steps (overrides config default of 80000)"
-    )
-    parser.add_argument(
-        "--max-tokens",
-        type=int,
-        default=None,
-        help="Maximum tokens per batch (overrides config default of 4096)"
-    )
-    parser.add_argument(
-        "--train-samples",
-        type=int,
-        default=None,
-        help="Number of training samples (overrides config default of 4000)"
-    )
-    parser.add_argument(
-        "--warmup-steps",
-        type=int,
-        default=None,
-        help="LR warmup steps (overrides config default of 4000)"
-    )
-    parser.add_argument(
-        "--label-smoothing",
-        type=float,
-        default=None,
-        help="Label smoothing value (overrides config default of 0.1, use 0 to disable)"
-    )
-    parser.add_argument(
-        "--log-interval",
-        type=int,
-        default=None,
-        help="Log metrics every N steps (overrides config default of 100)"
-    )
-    parser.add_argument(
-        "--eval-interval",
-        type=int,
-        default=None,
-        help="Evaluate on validation set every N steps (overrides config default of 100)"
-    )
     return parser.parse_args()
 
 
@@ -112,42 +66,20 @@ def main():
     config = TDDConfig()
     total_start = time.time()
 
-    # Override config with command line arguments
-    if args.d_model_start is not None:
-        config.d_model_start = args.d_model_start
-    if args.max_steps is not None:
-        config.max_steps = args.max_steps
-    if args.max_tokens is not None:
-        config.max_tokens = args.max_tokens
-    if args.train_samples is not None:
-        config.train_samples = args.train_samples
-    if args.warmup_steps is not None:
-        config.warmup_steps = args.warmup_steps
-    if args.label_smoothing is not None:
-        config.label_smoothing = args.label_smoothing if args.label_smoothing > 0 else None
-    if args.log_interval is not None:
-        config.log_interval = args.log_interval
-    if args.eval_interval is not None:
-        config.eval_interval = args.eval_interval
-
-    # Check GPU count - require at least 1 GPU
+    # Require exactly 8 GPUs
     num_gpus = torch.cuda.device_count()
-    if num_gpus == 0:
+    if num_gpus != REQUIRED_GPUS:
         raise RuntimeError(
-            "This script requires at least 1 GPU, but none were found. "
-            "Please run on a machine with CUDA-capable GPUs."
+            f"This experiment requires exactly {REQUIRED_GPUS} GPUs, "
+            f"but found {num_gpus}. Please run on an 8-GPU instance."
         )
 
-    # Compute d_model values for this run (one d_model per GPU, incrementing by 8)
-    d_model_values = [config.d_model_start + 8 * i for i in range(num_gpus)]
-
-    logger.info("Transformer Double Descent Training")
-    logger.info(f"d_model values: {d_model_values}")
+    logger.info("Transformer Double Descent - Full Experiment")
+    logger.info(f"d_model values: {D_MODEL_VALUES}")
+    logger.info(f"Train samples: {TRAIN_SAMPLES}")
+    logger.info(f"Total models: {len(D_MODEL_VALUES) * len(TRAIN_SAMPLES)} = 48")
+    logger.info(f"Batches: {len(D_MODEL_VALUES) // REQUIRED_GPUS * len(TRAIN_SAMPLES)} = 6")
     logger.info(f"Max steps: {config.max_steps}, Max tokens/batch: {config.max_tokens}")
-    logger.info(f"Warmup steps: {config.warmup_steps}")
-    logger.info(f"Label smoothing: {config.label_smoothing}")
-    logger.info(f"Training samples: {config.train_samples}")
-    logger.info(f"GPUs available: {num_gpus}")
 
     # Create output directory
     os.makedirs(args.output_path, exist_ok=True)
@@ -159,35 +91,49 @@ def main():
         raise FileNotFoundError(
             f"Preprocessed IWSLT'14 data not found at {args.data_path}.\n"
             f"Missing files: {missing_files}\n\n"
-            "Please run preprocessing locally first:\n"
-            "  ./infra/prepare_iwslt14.sh\n\n"
-            "Then upload the data directory to the remote machine before training."
+            "Please run preprocessing first:\n"
+            "  ./infra/prepare_iwslt14.sh\n"
         )
 
-    # Set multiprocessing start method
-    mp.set_start_method('spawn', force=True)
+    # Outer loop: sample sizes (18K first, then 4K)
+    for train_samples in TRAIN_SAMPLES:
+        samples_k = train_samples // 1000
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Starting {samples_k}K sample runs")
+        logger.info(f"{'='*60}")
 
-    # Spawn training processes (one per GPU)
-    logger.info(f"Spawning {num_gpus} training process(es)...")
-    processes = []
-    for gpu_id in range(num_gpus):
-        d_model = d_model_values[gpu_id]
-        p = mp.Process(
-            target=train_single_model,
-            args=(gpu_id, d_model, config, args.output_path, args.data_path)
-        )
-        p.start()
-        processes.append(p)
-        logger.info(f"Started process for d_model={d_model} on GPU {gpu_id}")
+        # Inner loop: d_model batches (3 batches of 8)
+        for batch_idx in range(0, len(D_MODEL_VALUES), REQUIRED_GPUS):
+            batch_d_models = D_MODEL_VALUES[batch_idx:batch_idx + REQUIRED_GPUS]
+            batch_num = batch_idx // REQUIRED_GPUS + 1
 
-    # Wait for all processes to complete
-    for i, p in enumerate(processes):
-        p.join()
-        logger.info(f"Process for d_model={d_model_values[i]} completed")
+            logger.info(f"\n[{samples_k}K] Batch {batch_num}/3: d_model = {batch_d_models}")
+
+            # Set multiprocessing start method (only needed once, but force=True handles it)
+            mp.set_start_method('spawn', force=True)
+
+            # Spawn 8 training processes
+            processes = []
+            for gpu_id, d_model in enumerate(batch_d_models):
+                p = mp.Process(
+                    target=train_single_model,
+                    args=(gpu_id, d_model, train_samples, config,
+                          args.output_path, args.data_path)
+                )
+                p.start()
+                processes.append(p)
+
+            # Wait for batch to complete
+            for p in processes:
+                p.join()
+
+            logger.info(f"[{samples_k}K] Batch {batch_num}/3 complete")
 
     total_time = time.time() - total_start
-    logger.info(f"All training completed! Total time: {total_time:.2f}s ({total_time/3600:.2f}h)")
-    logger.info(f"Metrics saved to {args.output_path}/metrics_d*.jsonl")
+    logger.info("\n" + "=" * 60)
+    logger.info("Full experiment complete!")
+    logger.info(f"Total time: {total_time:.2f}s ({total_time/3600:.2f}h)")
+    logger.info(f"Metrics files: {args.output_path}/metrics_d*_*k.jsonl")
 
 
 if __name__ == "__main__":
