@@ -8,7 +8,7 @@ def main():
     graph_config = GraphConfig(
         constant_name="Classical Minimum",
         constant_value=0.27,
-        show_validation_loss=False,
+        show_validation_loss=True,
         show_line=False,
     )
     run_experiment(width_range, num_runs, graph_config)
