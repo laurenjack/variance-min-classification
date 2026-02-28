@@ -5,59 +5,52 @@ import torch
 from jl.config import Config
 from jl.multi_experiment_grapher import run_list_experiment, GraphConfig
 from jl.feature_experiments.feature_problem import SingleFeatures
-from jl.single_runner import train_once
-
-
-def _get_problem(device: torch.device) -> SingleFeatures:
-    return SingleFeatures(
-        true_d=10,
-        f=10,
-        device=device,
-        is_orthogonal=False,
-        percent_correct_per_f=[0.8] * 10,
-        noisy_d=12,
-        random_basis=True,
-    )
-
-
-def _get_config(problem: SingleFeatures, h: int, width_varyer: Optional[str]) -> Config:
-    n = 100
-    return Config(
-        model_type='simple-mlp',
-        d=problem.d,
-        n_val=1000,
-        n=n,
-        batch_size=n // 4,
-        lr=0.01,
-        epochs=100,
-        weight_decay=0.001,
-        num_layers=1,
-        num_class=problem.num_classes(),
-        h=h,
-        weight_tracker="accuracy",
-        width_varyer=width_varyer,
-        optimizer="adam_w",
-        is_norm=False,
-        unique_training_set=True,
-    )
-
-
-def _get_validation_set(problem: SingleFeatures, model_config: Config, device: torch.device):
-    x_val, y_val, center_indices = problem.generate_dataset(
-        model_config.n_val,
-        shuffle=True,
-        clean_mode=False
-    )
-    return (x_val.to(device), y_val.to(device), center_indices.to(device))
 
 
 def run_experiment(width_range: list[int], num_runs: int, graph_config: Optional[GraphConfig] = None):
     torch.manual_seed(38175)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    problem = _get_problem(device)
-    model_config = _get_config(problem, h=max(width_range), width_varyer="h")
-    validation_set = _get_validation_set(problem, model_config, device)
+    # Problem: SingleFeatures
+    problem = SingleFeatures(
+        true_d=4,
+        f=4,
+        device=device,
+        is_orthogonal=False,
+        percent_correct_per_f=[0.8] * 4,
+        noisy_d=12,
+        random_basis=True,
+    )
+    n = 128
+
+    h = max(width_range)
+
+    # Model configuration
+    model_config = Config(
+        model_type='simple-mlp',
+        d=problem.d,
+        n_val=1000,
+        n=n,
+        batch_size=n // 4,
+        lr=0.01,
+        epochs=200,
+        weight_decay=0.001,
+        num_layers=1,
+        num_class=problem.num_classes(),
+        h=h,
+        weight_tracker="accuracy",
+        width_varyer="h",
+        optimizer="adam_w",
+        is_norm=False,
+    )
+
+    # Generate validation set with class-balanced sampling
+    x_val, y_val, center_indices = problem.generate_dataset(
+        model_config.n_val,
+        shuffle=True,
+        clean_mode=False
+    )
+    validation_set = (x_val.to(device), y_val.to(device), center_indices.to(device))
 
     # Run experiments
     run_list_experiment(
@@ -70,20 +63,3 @@ def run_experiment(width_range: list[int], num_runs: int, graph_config: Optional
         clean_mode=False,
         graph_config=graph_config,
     )
-
-
-def run_single(h: int):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    problem = _get_problem(device)
-    model_config = _get_config(problem, h=h, width_varyer=None)
-    validation_set = _get_validation_set(problem, model_config, device)
-
-    # Train (train_once prints final metrics)
-    model, tracker, x_train, y_train, train_center_indices = train_once(
-        device,
-        problem,
-        validation_set,
-        model_config,
-    )
-    return model, tracker, x_train, y_train, train_center_indices
