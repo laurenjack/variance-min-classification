@@ -1,57 +1,61 @@
 #!/usr/bin/env python3
-"""Plot final metrics across varying d_model values.
+"""Plot final metrics across varying d_model values, overlaying 4K and 18K samples.
 
 Usage:
-    python -m jl.double_descent.transformer.plot_vary_d_model ./output --min-d-model 64 --max-d-model 512 --output-dir ./data
+    python -m jl.double_descent.transformer.plot_vary_d_model ./output --output-dir ./data
 """
 
 import argparse
 import glob
 import json
+import re
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import matplotlib.pyplot as plt
 
 
-def load_metrics_for_d_range(metrics_dir: str, min_d: int, max_d: int) -> List[Dict]:
-    """Load metrics from metrics_d*.jsonl files within the specified d_model range.
+def load_all_metrics(metrics_dir: str) -> Dict[str, List[Dict]]:
+    """Load metrics from all metrics_d*_*k.jsonl files, grouped by sample size.
 
     Args:
-        metrics_dir: Directory containing metrics_d*.jsonl files.
-        min_d: Minimum d_model value (inclusive).
-        max_d: Maximum d_model value (inclusive).
+        metrics_dir: Directory containing metrics_d*_*k.jsonl files.
 
     Returns:
-        List of metrics dictionaries for d_model values in [min_d, max_d].
+        Dict with keys '4k' and '18k', each containing list of metrics dicts.
     """
     path = Path(metrics_dir)
-    pattern = str(path / "metrics_d*.jsonl")
+    pattern = str(path / "metrics_d*_*k.jsonl")
     files = sorted(glob.glob(pattern))
 
     if not files:
-        raise FileNotFoundError(f"No metrics_d*.jsonl files found in {path}")
+        raise FileNotFoundError(f"No metrics_d*_*k.jsonl files found in {path}")
 
-    metrics = []
+    # Group by sample size
+    metrics_by_samples = {'4k': [], '18k': []}
+
     for file_path in files:
-        # Extract d_model value from filename (metrics_d64.jsonl -> 64)
+        # Extract sample size from filename (metrics_d64_18k.jsonl -> 18k)
         filename = Path(file_path).stem
-        d_str = filename.replace("metrics_d", "")
-        try:
-            d_model = int(d_str)
-        except ValueError:
+        match = re.search(r'_(\d+k)$', filename)
+        if not match:
+            continue
+        samples_k = match.group(1)
+
+        if samples_k not in metrics_by_samples:
             continue
 
-        if min_d <= d_model <= max_d:
-            with open(file_path, 'r') as f:
-                for line in f:
-                    if line.strip():
-                        metrics.append(json.loads(line))
+        with open(file_path, 'r') as f:
+            for line in f:
+                if line.strip():
+                    metrics_by_samples[samples_k].append(json.loads(line))
 
-    if not metrics:
-        raise ValueError(f"No metrics found for d_model in [{min_d}, {max_d}]")
+    # Check we have data
+    for k, v in metrics_by_samples.items():
+        if not v:
+            print(f"Warning: No metrics found for {k} samples")
 
-    return metrics
+    return metrics_by_samples
 
 
 def get_final_metrics(metrics: List[Dict]) -> Dict:
@@ -87,64 +91,69 @@ def get_final_metrics(metrics: List[Dict]) -> Dict:
 
 def plot_vary_d_model(
     metrics_dir: str,
-    min_d: int,
-    max_d: int,
     output_dir: str,
 ) -> None:
-    """Plot final loss, accuracy, and BLEU vs d_model.
+    """Plot final loss, accuracy, and BLEU vs d_model with 4K and 18K overlaid.
 
     Creates a single figure with 3 subplots:
-    - Top: Train/Test loss vs d_model
-    - Middle: Train/Test accuracy vs d_model
-    - Bottom: Train/Test BLEU vs d_model
+    - Top: Test loss vs d_model (4K and 18K overlaid)
+    - Middle: Test accuracy vs d_model (4K and 18K overlaid)
+    - Bottom: Test BLEU vs d_model (4K and 18K overlaid)
 
     Args:
-        metrics_dir: Directory containing metrics_d*.jsonl files.
-        min_d: Minimum d_model value (inclusive).
-        max_d: Maximum d_model value (inclusive).
+        metrics_dir: Directory containing metrics_d*_*k.jsonl files.
         output_dir: Directory to save plot.
     """
-    metrics = load_metrics_for_d_range(metrics_dir, min_d, max_d)
-    data = get_final_metrics(metrics)
+    metrics_by_samples = load_all_metrics(metrics_dir)
+
+    # Get final metrics for each sample size
+    data_by_samples = {}
+    for samples_k, metrics in metrics_by_samples.items():
+        if metrics:
+            data_by_samples[samples_k] = get_final_metrics(metrics)
+
+    if not data_by_samples:
+        raise ValueError("No final metrics found in any files")
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12), dpi=150, sharex=True)
 
-    # Loss plot
-    ax1.plot(data['d_model_values'], data['test_loss'], '-o', color='blue',
-             lw=2, label='Test Loss')
-    ax1.plot(data['d_model_values'], data['train_loss'], '--o', color='blue',
-             lw=2, alpha=0.5, label='Train Loss')
-    ax1.set_ylabel('Cross-Entropy Loss')
+    # Colors for each sample size
+    colors = {'4k': 'red', '18k': 'blue'}
+    labels = {'4k': '4K samples', '18k': '18K samples'}
+
+    # Loss plot (test only)
+    for samples_k, data in data_by_samples.items():
+        ax1.plot(data['d_model_values'], data['test_loss'], '-o', color=colors[samples_k],
+                 lw=2, label=labels[samples_k])
+    ax1.set_ylabel('Test Cross-Entropy Loss')
     ax1.set_title('Transformer Double Descent: IWSLT14 de-en')
     ax1.set_ylim(bottom=0)
     ax1.legend(loc='upper right')
     ax1.grid(True, alpha=0.3)
 
-    # Accuracy plot
-    ax2.plot(data['d_model_values'], data['test_acc'], '-o', color='green',
-             lw=2, label='Test Accuracy')
-    ax2.plot(data['d_model_values'], data['train_acc'], '--o', color='green',
-             lw=2, alpha=0.5, label='Train Accuracy')
-    ax2.set_ylabel('Token-level Accuracy')
+    # Accuracy plot (test only)
+    for samples_k, data in data_by_samples.items():
+        ax2.plot(data['d_model_values'], data['test_acc'], '-o', color=colors[samples_k],
+                 lw=2, label=labels[samples_k])
+    ax2.set_ylabel('Test Token-level Accuracy')
     ax2.set_ylim(0, 1)
     ax2.legend(loc='lower right')
     ax2.grid(True, alpha=0.3)
 
-    # BLEU plot
-    ax3.plot(data['d_model_values'], data['test_bleu'], '-o', color='purple',
-             lw=2, label='Test BLEU')
-    ax3.plot(data['d_model_values'], data['train_bleu'], '--o', color='purple',
-             lw=2, alpha=0.5, label='Train BLEU')
+    # BLEU plot (test only)
+    for samples_k, data in data_by_samples.items():
+        ax3.plot(data['d_model_values'], data['test_bleu'], '-o', color=colors[samples_k],
+                 lw=2, label=labels[samples_k])
     ax3.set_xlabel('Transformer embedding dimension (d_model)')
-    ax3.set_ylabel('BLEU Score')
+    ax3.set_ylabel('Test BLEU Score')
     ax3.set_ylim(bottom=0)
     ax3.legend(loc='lower right')
     ax3.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    output_path = Path(output_dir) / f'transformer_vary_d_{min_d}_to_{max_d}.png'
+    output_path = Path(output_dir) / 'transformer_double_descent.png'
     plt.savefig(output_path, bbox_inches='tight')
     plt.close()
     print(f"Saved plot to {output_path}")
@@ -152,24 +161,12 @@ def plot_vary_d_model(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Plot Transformer double descent: final metrics vs d_model"
+        description="Plot Transformer double descent: final metrics vs d_model (4K and 18K overlaid)"
     )
     parser.add_argument(
         "metrics_dir",
         type=str,
-        help="Directory containing metrics_d*.jsonl files"
-    )
-    parser.add_argument(
-        "--min-d-model",
-        type=int,
-        required=True,
-        help="Minimum d_model value (inclusive)"
-    )
-    parser.add_argument(
-        "--max-d-model",
-        type=int,
-        required=True,
-        help="Maximum d_model value (inclusive)"
+        help="Directory containing metrics_d*_*k.jsonl files"
     )
     parser.add_argument(
         "--output-dir",
@@ -179,7 +176,7 @@ def main():
     )
     args = parser.parse_args()
 
-    plot_vary_d_model(args.metrics_dir, args.min_d_model, args.max_d_model, args.output_dir)
+    plot_vary_d_model(args.metrics_dir, args.output_dir)
 
 
 if __name__ == "__main__":
