@@ -308,6 +308,11 @@ def train_single_model(
     }
     log_metrics(output_path, d_model, samples_k, final_metrics)
 
+    # Save final model
+    model_path = Path(output_path) / f"model_d{d_model}_{samples_k}k.pt"
+    torch.save(model.state_dict(), model_path)
+    process_logger.info(f"[d_model={d_model}, {samples_k}K] Model saved to {model_path}")
+
     total_time = time.time() - train_start
     process_logger.info(
         f"[d_model={d_model}, {samples_k}K] Training complete! "

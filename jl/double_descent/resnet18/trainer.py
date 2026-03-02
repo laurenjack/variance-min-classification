@@ -205,4 +205,7 @@ def train_single_model(
                 f"{epoch_time:.1f}s"
             )
 
-    print(f"[GPU {gpu_id}] k={k} training complete! Metrics saved to {metrics_path}")
+    # Save final model
+    model_path = Path(output_path) / f"model_k{k}.pt"
+    torch.save(model.state_dict(), model_path)
+    print(f"[GPU {gpu_id}] k={k} training complete! Model saved to {model_path}")

@@ -2,8 +2,9 @@
 """Plot training metrics from metrics.jsonl file.
 
 Usage:
-    python -m jl.reward_model.plot_metrics metrics.jsonl [output.png]
-    python -m jl.reward_model.plot_metrics metrics.jsonl --output-dir ./data
+    python -m jl.reward_model.plot_metrics ./data/reward_model/03-01-1010/metrics.jsonl
+
+Output is saved to the same directory as the metrics file by default.
 """
 
 import argparse
@@ -159,15 +160,11 @@ def main():
         output_path = args.output_path
     elif args.output_dir:
         os.makedirs(args.output_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        lrs = [m.get("lr", 0) for m in metrics]
-        lr = max(lrs) if lrs else 0
-        lr_str = f"{lr:.0e}".replace("-", "m").replace("+", "p") if isinstance(lr, float) else "unknown"
-        output_path = os.path.join(args.output_dir, f"metrics_lr{lr_str}_{timestamp}.png")
+        output_path = os.path.join(args.output_dir, "reward_model_training.png")
     else:
         # Default: same directory as metrics file
-        base = os.path.splitext(args.metrics_path)[0]
-        output_path = f"{base}.png"
+        metrics_dir = os.path.dirname(args.metrics_path) or "."
+        output_path = os.path.join(metrics_dir, "reward_model_training.png")
 
     plot_metrics(metrics, output_path, val_metrics=val_metrics)
 

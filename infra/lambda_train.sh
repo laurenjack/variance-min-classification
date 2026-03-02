@@ -102,16 +102,32 @@ if [[ -n "$COSINE_DECAY_EPOCH" ]]; then
 fi
 log_info "Using module: $MODULE"
 
+# Derive experiment type from module and generate timestamp
+TIMESTAMP=$(date +"%m-%d-%H%M")
+if [[ "$MODULE" == "jl.reward_model.reward_main" ]]; then
+    EXPERIMENT_TYPE="reward_model"
+elif [[ "$MODULE" == "jl.double_descent.resnet18.resnet18_main" ]]; then
+    EXPERIMENT_TYPE="resnet18"
+elif [[ "$MODULE" == "jl.double_descent.transformer.transformer_main" ]]; then
+    EXPERIMENT_TYPE="transformer"
+else
+    EXPERIMENT_TYPE="other"
+fi
+
+OUTPUT_PATH="./output/$EXPERIMENT_TYPE/$TIMESTAMP"
+log_info "Experiment type: $EXPERIMENT_TYPE"
+log_info "Output path: $OUTPUT_PATH"
+
 # Build the python command based on module
 if [[ "$MODULE" == "jl.reward_model.reward_main" ]]; then
-    PYTHON_CMD="python -m $MODULE --train-path ./data/tokenized --output-path ./output $EXTRA_FLAGS"
+    PYTHON_CMD="python -m $MODULE --train-path ./data/tokenized --output-path $OUTPUT_PATH $EXTRA_FLAGS"
 elif [[ "$MODULE" == "jl.double_descent.resnet18.resnet18_main" ]]; then
-    PYTHON_CMD="python -m $MODULE --output-path ./output --data-path ./data $EXTRA_FLAGS"
+    PYTHON_CMD="python -m $MODULE --output-path $OUTPUT_PATH --data-path ./data $EXTRA_FLAGS"
 elif [[ "$MODULE" == "jl.double_descent.transformer.transformer_main" ]]; then
-    PYTHON_CMD="python -m $MODULE --output-path ./output --data-path ./data/iwslt14.tokenized.de-en $EXTRA_FLAGS"
+    PYTHON_CMD="python -m $MODULE --output-path $OUTPUT_PATH --data-path ./data/iwslt14.tokenized.de-en $EXTRA_FLAGS"
 else
     # Generic module - just pass output-path
-    PYTHON_CMD="python -m $MODULE --output-path ./output $EXTRA_FLAGS"
+    PYTHON_CMD="python -m $MODULE --output-path $OUTPUT_PATH $EXTRA_FLAGS"
 fi
 
 # Check prerequisites
