@@ -48,6 +48,7 @@ LEARNING_RATE=""
 WARMUP_STEPS=""
 K_START=""
 COSINE_DECAY_EPOCH=""
+VARIANCE=""
 MODULE="jl.reward_model.reward_main"
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -70,6 +71,10 @@ while [[ $# -gt 0 ]]; do
         --cosine-decay-epoch)
             COSINE_DECAY_EPOCH="$2"
             shift 2
+            ;;
+        --variance)
+            VARIANCE="true"
+            shift
             ;;
         --module)
             MODULE="$2"
@@ -100,6 +105,10 @@ if [[ -n "$COSINE_DECAY_EPOCH" ]]; then
     EXTRA_FLAGS="$EXTRA_FLAGS --cosine-decay-epoch $COSINE_DECAY_EPOCH"
     log_info "Using cosine decay from epoch: $COSINE_DECAY_EPOCH"
 fi
+if [[ -n "$VARIANCE" ]]; then
+    EXTRA_FLAGS="$EXTRA_FLAGS --variance"
+    log_info "Using variance mode"
+fi
 log_info "Using module: $MODULE"
 
 # Derive experiment type from module and generate timestamp
@@ -109,7 +118,11 @@ if [[ "$MODULE" == "jl.reward_model.reward_main" ]]; then
 elif [[ "$MODULE" == "jl.double_descent.resnet18.resnet18_main" ]]; then
     EXPERIMENT_TYPE="resnet18"
 elif [[ "$MODULE" == "jl.double_descent.transformer.transformer_main" ]]; then
-    EXPERIMENT_TYPE="transformer"
+    if [[ -n "$VARIANCE" ]]; then
+        EXPERIMENT_TYPE="transformer_variance"
+    else
+        EXPERIMENT_TYPE="transformer"
+    fi
 else
     EXPERIMENT_TYPE="other"
 fi
