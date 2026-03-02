@@ -2,7 +2,9 @@
 """Plot final-epoch metrics across varying width k values.
 
 Usage:
-    python -m jl.double_descent.resnet18.plot_vary_k ./output --min-k 18 --max-k 32 --output-dir ./data
+    python -m jl.double_descent.resnet18.plot_vary_k ./data/resnet18/03-01-1010 --min-k 18 --max-k 32
+
+Output is saved to the same directory as the metrics files by default.
 """
 
 import argparse
@@ -167,8 +169,8 @@ def main():
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="./data",
-        help="Directory to save plot"
+        default=None,
+        help="Directory to save plot (default: same as metrics_dir)"
     )
     parser.add_argument(
         "--noise-level",
@@ -178,7 +180,8 @@ def main():
     )
     args = parser.parse_args()
 
-    plot_vary_k(args.metrics_dir, args.min_k, args.max_k, args.output_dir, args.noise_level)
+    output_dir = args.output_dir if args.output_dir else args.metrics_dir
+    plot_vary_k(args.metrics_dir, args.min_k, args.max_k, output_dir, args.noise_level)
 
 
 if __name__ == "__main__":

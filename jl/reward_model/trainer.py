@@ -302,6 +302,6 @@ def train(model, train_loader, val_loader, c, device, output_path: str, learning
     logger.info(f"Validation metrics saved to {val_metrics_path}")
 
     # Save final model
-    final_model_path = os.path.join(output_path, "final_model.pt")
-    torch.save(model.state_dict(), final_model_path)
-    logger.info(f"Final model saved to {final_model_path}")
+    model_path = os.path.join(output_path, "model.pt")
+    torch.save(model.state_dict(), model_path)
+    logger.info(f"Model saved to {model_path}")

@@ -2,7 +2,9 @@
 """Plot epoch-wise training curves for a single width k.
 
 Usage:
-    python -m jl.double_descent.resnet18.plot_single_k ./output --k 18 --output-dir ./data
+    python -m jl.double_descent.resnet18.plot_single_k ./data/resnet18/03-01-1010 --k 18
+
+Output is saved to the same directory as the metrics files by default.
 """
 
 import argparse
@@ -130,8 +132,8 @@ def main():
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="./data",
-        help="Directory to save plot"
+        default=None,
+        help="Directory to save plot (default: same as metrics_dir)"
     )
     parser.add_argument(
         "--noise-level",
@@ -141,7 +143,8 @@ def main():
     )
     args = parser.parse_args()
 
-    plot_single_k(args.metrics_dir, args.k, args.output_dir, args.noise_level)
+    output_dir = args.output_dir if args.output_dir else args.metrics_dir
+    plot_single_k(args.metrics_dir, args.k, output_dir, args.noise_level)
 
 
 if __name__ == "__main__":

@@ -2,7 +2,9 @@
 """Plot step-wise training curves for a single d_model and sample size.
 
 Usage:
-    python -m jl.double_descent.transformer.plot_single_d_model ./output --d-model 128 --samples 18k --output-dir ./data
+    python -m jl.double_descent.transformer.plot_single_d_model ./data/transformer/03-01-1010 --d-model 128 --samples 18k
+
+Output is saved to the same directory as the metrics files by default.
 """
 
 import argparse
@@ -147,12 +149,13 @@ def main():
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="./data",
-        help="Directory to save plot"
+        default=None,
+        help="Directory to save plot (default: same as metrics_dir)"
     )
     args = parser.parse_args()
 
-    plot_single_d_model(args.metrics_dir, args.d_model, args.samples, args.output_dir)
+    output_dir = args.output_dir if args.output_dir else args.metrics_dir
+    plot_single_d_model(args.metrics_dir, args.d_model, args.samples, output_dir)
 
 
 if __name__ == "__main__":
