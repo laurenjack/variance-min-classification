@@ -290,3 +290,68 @@ def load_iwslt14(
     test_dataset = TranslationDataset(test_src, test_tgt, vocab)
 
     return train_dataset, valid_dataset, test_dataset, vocab
+
+
+def load_iwslt14_variance_split(
+    data_dir: str,
+    split_id: int,
+    num_splits: int = 8,
+    samples_per_split: int = 18000,
+    subsample_seed: int = 42,
+) -> Tuple[TranslationDataset, TranslationDataset, TranslationDataset, Vocab]:
+    """Load IWSLT'14 de-en with a specific disjoint split for variance experiments.
+
+    Creates num_splits disjoint training sets by shuffling the full dataset
+    and taking consecutive chunks.
+
+    Args:
+        data_dir: Directory containing preprocessed IWSLT data.
+        split_id: Which split to return (0 to num_splits-1).
+        num_splits: Total number of disjoint splits (default 8).
+        samples_per_split: Samples per split (default 18000).
+        subsample_seed: Random seed for shuffling before splitting.
+
+    Returns:
+        train_dataset: Disjoint training subset for this split_id.
+        valid_dataset: Full validation dataset.
+        test_dataset: Full test dataset.
+        vocab: Shared vocabulary.
+    """
+    if split_id < 0 or split_id >= num_splits:
+        raise ValueError(f"split_id must be in [0, {num_splits-1}], got {split_id}")
+
+    # Build vocabulary from full training data
+    vocab = build_vocab(data_dir)
+
+    # Load all splits
+    train_src, train_tgt = load_split(data_dir, "train")
+    valid_src, valid_tgt = load_split(data_dir, "valid")
+    test_src, test_tgt = load_split(data_dir, "test")
+
+    # Verify we have enough data for disjoint splits
+    required_samples = num_splits * samples_per_split
+    if len(train_src) < required_samples:
+        raise ValueError(
+            f"Not enough training data for {num_splits} disjoint splits of {samples_per_split} samples. "
+            f"Need {required_samples}, have {len(train_src)}."
+        )
+
+    # Shuffle indices with fixed seed
+    rng = random.Random(subsample_seed)
+    indices = list(range(len(train_src)))
+    rng.shuffle(indices)
+
+    # Take the chunk for this split_id
+    start_idx = split_id * samples_per_split
+    end_idx = start_idx + samples_per_split
+    split_indices = indices[start_idx:end_idx]
+
+    train_src = [train_src[i] for i in split_indices]
+    train_tgt = [train_tgt[i] for i in split_indices]
+
+    # Create datasets
+    train_dataset = TranslationDataset(train_src, train_tgt, vocab)
+    valid_dataset = TranslationDataset(valid_src, valid_tgt, vocab)
+    test_dataset = TranslationDataset(test_src, test_tgt, vocab)
+
+    return train_dataset, valid_dataset, test_dataset, vocab

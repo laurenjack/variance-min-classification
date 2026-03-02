@@ -53,7 +53,7 @@ log_info "Found experiment folders:"
 echo "$REMOTE_STRUCTURE" | sed 's|.*/output/||'
 
 # Download each experiment type's folders
-for EXPERIMENT_TYPE in resnet18 transformer reward_model; do
+for EXPERIMENT_TYPE in resnet18 transformer transformer_variance reward_model; do
     # Find timestamp folders for this experiment type
     FOLDERS=$(echo "$REMOTE_STRUCTURE" | grep "/$EXPERIMENT_TYPE/" || true)
 
@@ -107,7 +107,7 @@ if [[ -f "./venv/bin/activate" ]]; then
 fi
 
 # Plot each downloaded experiment
-for EXPERIMENT_TYPE in resnet18 transformer reward_model; do
+for EXPERIMENT_TYPE in resnet18 transformer transformer_variance reward_model; do
     EXPERIMENT_DIR="$LOCAL_DATA/$EXPERIMENT_TYPE"
 
     if [[ ! -d "$EXPERIMENT_DIR" ]]; then
@@ -140,6 +140,10 @@ for EXPERIMENT_TYPE in resnet18 transformer reward_model; do
                 python -m jl.double_descent.transformer.plot_vary_d_model "$TIMESTAMP_DIR" \
                     --output-dir "$TIMESTAMP_DIR" || \
                     log_warn "Failed to plot transformer"
+                ;;
+            transformer_variance)
+                # Variance plotting not yet implemented - skip for now
+                log_info "Skipping plots for transformer_variance (not yet implemented)"
                 ;;
             reward_model)
                 if [[ -f "$TIMESTAMP_DIR/metrics.jsonl" ]]; then

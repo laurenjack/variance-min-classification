@@ -11,10 +11,19 @@ Reproduce the Transformer double-descent curve from Nakkiran et al. (2019) Figur
 
 ## Approach
 
-**Fully automated experiment** requiring exactly 8 GPUs. The script trains all 48 models automatically:
+**Two experiment modes**, both requiring exactly 8 GPUs:
+
+### Default Mode (Double Descent)
+Trains 48 models to reproduce the double descent curve:
 - 24 d_model values: 8, 16, 24, ..., 192
 - 2 sample sizes: 18K first, then 4K
 - 6 batches total (3 per sample size), each training 8 models in parallel
+
+### Variance Mode (`--variance` flag)
+Trains 48 models to analyze variance across different training data:
+- 6 d_model values: 32, 64, 96, 128, 160, 192
+- 8 disjoint 18K training splits (from shuffled 160K base data)
+- 6 batches total (one per d_model), training all 8 splits in parallel
 
 No command-line arguments for d_model or train_samples - these are hardcoded.
 
@@ -428,12 +437,76 @@ python -m jl.double_descent.transformer.transformer_main \
 
 ---
 
+## Variance Experiment (--variance flag)
+
+A second experiment mode that trains multiple models per d_model value to analyze variance across different training data splits.
+
+### Overview
+
+- **6 d_model values**: 32, 64, 96, 128, 160, 192 (increments of 32)
+- **8 disjoint training splits**: Each split is 18K samples from the 160K base dataset
+- **48 total models**: 6 d_model × 8 splits
+- **6 batches**: One per d_model, training 8 models in parallel (one per GPU)
+
+### Data Split Strategy
+
+The 160K training samples are shuffled with a fixed seed, then partitioned into 8 disjoint 18K chunks:
+- Split 0: indices 0-17999
+- Split 1: indices 18000-35999
+- ...
+- Split 7: indices 126000-143999
+
+### Running the Variance Experiment
+
+```bash
+# On Lambda Labs 8-GPU instance
+./infra/lambda_train.sh <ip> --module jl.double_descent.transformer.transformer_main --variance
+```
+
+### Output Structure
+
+```
+output/transformer_variance/03-01-1010/
+├── metrics_d32_split0.jsonl
+├── metrics_d32_split1.jsonl
+├── ...
+├── metrics_d32_split7.jsonl
+├── metrics_d64_split0.jsonl
+├── ...
+├── metrics_d192_split7.jsonl
+├── model_d32_split0.pt
+├── model_d32_split1.pt
+├── ...
+└── model_d192_split7.pt
+```
+
+**Total output files:** 96 (48 metrics + 48 models)
+
+### Execution Order
+
+| Batch | d_model | Splits |
+|-------|---------|--------|
+| 1     | 32      | 0, 1, 2, 3, 4, 5, 6, 7 |
+| 2     | 64      | 0, 1, 2, 3, 4, 5, 6, 7 |
+| 3     | 96      | 0, 1, 2, 3, 4, 5, 6, 7 |
+| 4     | 128     | 0, 1, 2, 3, 4, 5, 6, 7 |
+| 5     | 160     | 0, 1, 2, 3, 4, 5, 6, 7 |
+| 6     | 192     | 0, 1, 2, 3, 4, 5, 6, 7 |
+
+### Plotting (TODO)
+
+Variance plotting not yet implemented. Planned plots:
+- Per d_model: Overlay all 8 models' test loss/BLEU curves
+- Aggregate: Mean ± std of test loss/BLEU across d_model values
+
+---
+
 ## Key Differences from Paper
 
 | Aspect | Paper | Our Implementation |
 |--------|-------|-------------------|
 | Optimizer | Adam | AdamW (same hyperparams) |
-| Trials | Unknown | 1 |
+| Trials | Unknown | 1 (double descent) or 8 (variance) |
 | Sample sizes | 4K and 18K | Both (overlaid on same plot) |
 | Framework | fairseq | Custom PyTorch |
 | BLEU frequency | Unknown | End of training only |

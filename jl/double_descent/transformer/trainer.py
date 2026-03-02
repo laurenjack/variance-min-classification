@@ -20,6 +20,7 @@ from jl.double_descent.transformer.transformer_data import (
     Vocab,
     collate_fn,
     load_iwslt14,
+    load_iwslt14_variance_split,
 )
 from jl.double_descent.transformer.transformer_model import TransformerModel, count_parameters
 
@@ -95,7 +96,7 @@ def evaluate(
 def log_metrics(
     output_path: str,
     d_model: int,
-    samples_k: int,
+    output_suffix: str,
     metrics: Dict,
 ) -> None:
     """Log metrics to JSONL file.
@@ -103,10 +104,10 @@ def log_metrics(
     Args:
         output_path: Directory to save metrics.
         d_model: Model embedding dimension.
-        samples_k: Training samples in thousands (4 or 18).
+        output_suffix: Suffix for output files (e.g., "18k" or "split0").
         metrics: Dictionary of metrics to log.
     """
-    metrics_file = Path(output_path) / f"metrics_d{d_model}_{samples_k}k.jsonl"
+    metrics_file = Path(output_path) / f"metrics_d{d_model}_{output_suffix}.jsonl"
     with open(metrics_file, "a") as f:
         f.write(json.dumps(metrics) + "\n")
 
@@ -118,6 +119,7 @@ def train_single_model(
     config: TDDConfig,
     output_path: str,
     data_path: str,
+    split_id: int = None,
 ) -> None:
     """Train a single Transformer with embedding dimension d_model.
 
@@ -128,20 +130,36 @@ def train_single_model(
         config: Training configuration.
         output_path: Directory to save metrics.
         data_path: Directory containing preprocessed IWSLT data.
+        split_id: If provided, use disjoint split for variance experiments (0-7).
     """
     device = torch.device(f"cuda:{gpu_id}")
-    samples_k = train_samples // 1000
+
+    # Determine output suffix based on mode
+    if split_id is not None:
+        output_suffix = f"split{split_id}"
+        log_name = f"trainer_d{d_model}_split{split_id}"
+    else:
+        samples_k = train_samples // 1000
+        output_suffix = f"{samples_k}k"
+        log_name = f"trainer_d{d_model}_{samples_k}k"
 
     # Setup logging for this process
-    process_logger = logging.getLogger(f"trainer_d{d_model}_{samples_k}k")
+    process_logger = logging.getLogger(log_name)
     process_logger.setLevel(logging.INFO)
 
-    process_logger.info(f"Starting training for d_model={d_model}, {samples_k}K samples on GPU {gpu_id}")
-
-    # Load data with specified sample count
-    train_dataset, valid_dataset, test_dataset, vocab = load_iwslt14(
-        data_path, train_samples, config.subsample_seed
-    )
+    if split_id is not None:
+        process_logger.info(f"Starting training for d_model={d_model}, split {split_id} on GPU {gpu_id}")
+        # Load disjoint split for variance experiment
+        train_dataset, valid_dataset, test_dataset, vocab = load_iwslt14_variance_split(
+            data_path, split_id, num_splits=8, samples_per_split=train_samples, subsample_seed=config.subsample_seed
+        )
+    else:
+        samples_k = train_samples // 1000
+        process_logger.info(f"Starting training for d_model={d_model}, {samples_k}K samples on GPU {gpu_id}")
+        # Load data with specified sample count
+        train_dataset, valid_dataset, test_dataset, vocab = load_iwslt14(
+            data_path, train_samples, config.subsample_seed
+        )
 
     process_logger.info(f"Loaded data: {len(train_dataset)} train, {len(valid_dataset)} valid, {len(test_dataset)} test")
     process_logger.info(f"Vocabulary size: {len(vocab)}")
@@ -205,7 +223,7 @@ def train_single_model(
     )
 
     # Clear metrics file
-    metrics_file = Path(output_path) / f"metrics_d{d_model}_{samples_k}k.jsonl"
+    metrics_file = Path(output_path) / f"metrics_d{d_model}_{output_suffix}.jsonl"
     if metrics_file.exists():
         metrics_file.unlink()
 
@@ -267,11 +285,11 @@ def train_single_model(
                     metrics["valid_loss"] = valid_loss
                     metrics["valid_acc"] = valid_acc
 
-                log_metrics(output_path, d_model, samples_k, metrics)
+                log_metrics(output_path, d_model, output_suffix, metrics)
 
                 elapsed = time.time() - train_start
                 process_logger.info(
-                    f"[d_model={d_model}, {samples_k}K] Step {step}/{config.max_steps} | "
+                    f"[d_model={d_model}, {output_suffix}] Step {step}/{config.max_steps} | "
                     f"Loss: {loss.item():.4f} | LR: {current_lr:.6f} | "
                     f"Time: {elapsed:.1f}s"
                 )
@@ -280,12 +298,12 @@ def train_single_model(
                 break
 
     # Final evaluation
-    process_logger.info(f"[d_model={d_model}, {samples_k}K] Running final evaluation...")
+    process_logger.info(f"[d_model={d_model}, {output_suffix}] Running final evaluation...")
 
     valid_loss, valid_acc = evaluate(model, valid_dataset, vocab, device, criterion)
     test_loss, test_acc = evaluate(model, test_dataset, vocab, device, criterion)
 
-    process_logger.info(f"[d_model={d_model}, {samples_k}K] Computing BLEU scores...")
+    process_logger.info(f"[d_model={d_model}, {output_suffix}] Computing BLEU scores...")
 
     # Compute BLEU (only on subsets for speed)
     train_bleu = compute_bleu(model, train_dataset, vocab, device, max_len=128)
@@ -296,6 +314,7 @@ def train_single_model(
         "step": step,
         "d_model": d_model,
         "train_samples": train_samples,
+        "split_id": split_id,
         "train_loss": 0.0,  # Not meaningful at end
         "train_acc": 0.0,  # Not meaningful at end
         "valid_loss": valid_loss,
@@ -306,16 +325,16 @@ def train_single_model(
         "test_bleu": test_bleu,
         "lr": scheduler.get_last_lr()[0] if scheduler else config.learning_rate,
     }
-    log_metrics(output_path, d_model, samples_k, final_metrics)
+    log_metrics(output_path, d_model, output_suffix, final_metrics)
 
     # Save final model
-    model_path = Path(output_path) / f"model_d{d_model}_{samples_k}k.pt"
+    model_path = Path(output_path) / f"model_d{d_model}_{output_suffix}.pt"
     torch.save(model.state_dict(), model_path)
-    process_logger.info(f"[d_model={d_model}, {samples_k}K] Model saved to {model_path}")
+    process_logger.info(f"[d_model={d_model}, {output_suffix}] Model saved to {model_path}")
 
     total_time = time.time() - train_start
     process_logger.info(
-        f"[d_model={d_model}, {samples_k}K] Training complete! "
+        f"[d_model={d_model}, {output_suffix}] Training complete! "
         f"Test BLEU: {test_bleu:.2f} | Test Loss: {test_loss:.4f} | "
         f"Total time: {total_time:.1f}s ({total_time/3600:.2f}h)"
     )
