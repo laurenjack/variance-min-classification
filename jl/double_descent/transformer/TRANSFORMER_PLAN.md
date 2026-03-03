@@ -493,13 +493,72 @@ output/transformer_variance/03-01-1010/
 | 5     | 160     | 0, 1, 2, 3, 4, 5, 6, 7 |
 | 6     | 192     | 0, 1, 2, 3, 4, 5, 6, 7 |
 
-### Plotting (TODO)
+### Analyzing the Variance
 
-Variance plotting not yet implemented. Planned plots:
-- Per d_model: Overlay all 8 models' test loss/BLEU curves
-- Aggregate: Mean ± std of test loss/BLEU across d_model values
+We would like to examine whether double descent is driven primarily through a reduction in bias
+or variance. If the true underlying distribution of the tokens is given by p, the distribution produced by our training procedure q (which is a random variable), and a vocab V then we have:
 
----
+E[CE(p, q)] = CE(p, E[q]) + E\sum_{i=1}^V p_i * log(E(q_i)/q_i)
+
+Note, if q is an unbiased estimator for p, i.e. E(q(x)) = p(x) \forall x, then the second term is:
+
+E[CE(p, q)] = CE(p, E[q]) + KL(E(q)||q)
+E[CE(p, q)] = CE(p, E[q]) + KL(p||q)
+
+Where CE is the cross entropy, KL is KL-divergence and the expectation is across all training runs.
+The first term can be thought of as bias (albeit with an irreducible component to it) the second term
+as the variance.
+
+Given our multiple training runs, at each d_model we can calculate the "variance" term (the second term) empirically. We don't know p_i of course, using the actual labels would exclude a lot of the variation. A good metric we can use instead is KL(E(q)||q). Even though our estimator is most likely biased, this will serve as a good "variance" metric.
+
+#### Plot
+
+Single figure with dual y-axes, d_model on x-axis:
+- **Left y-axis**: Mean test loss (averaged across the 8 splits)
+- **Right y-axis**: KL(E(q)||q) averaged over each model and each test token
+
+#### KL Computation
+
+For each d_model:
+1. Run all 8 split-models on the test set, collect per-token softmax distributions q_1, ..., q_8
+2. Compute q_bar = (1/8) * sum_j(q_j) — the mean distribution at each token position
+3. For each model j, compute KL(q_bar || q_j) = sum_i q_bar_i * log(q_bar_i / q_j_i) per token
+4. Average KL over all 8 models and all test tokens
+
+#### Implementation
+
+Four new files:
+
+1. **`infra/lambda_upload.sh`** — Upload a local model run folder to the remote instance
+   - Takes an IP and a local folder path as arguments
+   - Uploads to the mirrored remote path (e.g., local `./data/transformer_variance/03-01-1010/` → remote `~/variance-min-classification/output/transformer_variance/03-01-1010/`)
+
+2. **`.claude/commands/evaluate.md`** — Agent command that orchestrates evaluation on a remote GPU instance
+   - Takes a remote IP
+   - SSHs to remote and checks if training output exists under `~/variance-min-classification/output/transformer_variance/`
+   - If not present, uses `lambda_upload.sh` to upload the local data
+   - Ensures preprocessed IWSLT data exists on remote (runs `prepare_iwslt14.sh` if missing)
+   - Ensures code is up to date on remote (git pull + venv setup)
+   - Runs `evaluate.py` on the remote instance
+   - Downloads evaluation results (`evaluation.jsonl`) via scp
+   - Runs `plot_evaluation.py` locally to produce the plot
+
+3. **`jl/double_descent/transformer/evaluate.py`** — Python module that runs on the remote GPU
+   - Discovers all variance model files (`model_d*_split*.pt`) in the output directory
+   - For each d_model, loads all 8 split-models
+   - Model architecture inferred from filename (`d_model` from name, all other params from `TDDConfig` defaults)
+   - Runs forward pass on the full test set, collects per-token softmax distributions
+   - Computes q_bar and KL(q_bar || q_j) per d_model
+   - Computes mean test loss across the 8 splits (using same label-smoothed CE criterion as training)
+   - Outputs `evaluation.jsonl` alongside the model files: one line per d_model with `{"d_model": N, "mean_test_loss": X, "mean_kl": Y}`
+   - Usage: `python -m jl.double_descent.transformer.evaluate --model-path ./output/transformer_variance/03-01-1010 --data-path ./data/iwslt14.tokenized.de-en`
+
+4. **`jl/double_descent/transformer/plot_evaluation.py`** — Plotting script that runs locally
+   - Reads the evaluation JSONL output
+   - Produces a single figure with dual y-axes: mean test loss (left, blue) and mean KL divergence (right, red) vs d_model
+   - Clean lines only (no scatter points)
+   - Usage: `python -m jl.double_descent.transformer.plot_evaluation ./data/transformer_variance/03-01-1010/evaluation.jsonl --output-dir ./data`
+
 
 ## Key Differences from Paper
 
@@ -518,7 +577,7 @@ Variance plotting not yet implemented. Planned plots:
 - **Preprocessing**: CPU only, ~5 minutes
 - **Training**: **Exactly 8 GPUs required** (script fails fast otherwise)
 - **Memory**: ~2-8GB per GPU depending on d_model
-- **Instance type**: 8x A100 or 8x H100 on Lambda Labs
+- **Instance type**: 8x Nvidia GPUs from Lambda Labs
 - **Estimated time**: 6-8 hours for full experiment
 
 ---
