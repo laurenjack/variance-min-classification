@@ -142,8 +142,13 @@ for EXPERIMENT_TYPE in resnet18 transformer transformer_variance reward_model; d
                     log_warn "Failed to plot transformer"
                 ;;
             transformer_variance)
-                # Variance plotting not yet implemented - skip for now
-                log_info "Skipping plots for transformer_variance (not yet implemented)"
+                if [[ -f "$TIMESTAMP_DIR/evaluation.jsonl" ]]; then
+                    python -m jl.double_descent.transformer.plot_evaluation \
+                        "$TIMESTAMP_DIR/evaluation.jsonl" --output-dir "$TIMESTAMP_DIR" || \
+                        log_warn "Failed to plot transformer_variance"
+                else
+                    log_info "No evaluation.jsonl in $TIMESTAMP_DIR (run evaluate first)"
+                fi
                 ;;
             reward_model)
                 if [[ -f "$TIMESTAMP_DIR/metrics.jsonl" ]]; then
