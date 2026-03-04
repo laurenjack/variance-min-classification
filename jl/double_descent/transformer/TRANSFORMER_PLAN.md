@@ -548,15 +548,13 @@ For each d_model:
 - **Mean test loss**: Cross-entropy loss averaged across the 8 training splits
 - **Jensen Gap**: E[log(q_bar[y] / q_j[y])] - the variance term
 - **Implied Bias**: test_loss - jensen_gap
-- **Mean confidence**: Average probability assigned to the predicted (most likely) token
-- **Mean log confidence**: Average log probability of the predicted token
 
-#### Plots
+#### Plot
 
-Three separate figures, d_model on x-axis:
-1. **Bias-variance decomposition**: test loss, Jensen Gap, implied bias (3 lines)
-2. **Mean confidence** vs d_model
-3. **Mean log confidence** vs d_model
+Single figure with d_model on x-axis showing three lines:
+- Mean test loss
+- Jensen Gap (variance)
+- Implied bias
 
 #### Computation
 
@@ -564,8 +562,7 @@ For each d_model:
 1. Run all 8 split-models on the test set, collect per-token softmax distributions q_1, ..., q_8
 2. Compute q_bar = (1/8) * sum_j(q_j) — the mean distribution at each token position
 3. For each model j, compute Jensen Gap: log(q_bar[y] / q_j[y]) per token
-4. Compute max probability (confidence) and log of max probability per token
-5. Average all metrics over the 8 models and all test tokens
+4. Average all metrics over the 8 models and all test tokens
 
 #### Implementation
 
@@ -590,13 +587,13 @@ Four new files:
    - For each d_model, loads all 8 split-models
    - Model architecture inferred from filename (`d_model` from name, all other params from `TDDConfig` defaults)
    - Runs forward pass on the full test set, collects per-token softmax distributions
-   - Computes mean test loss, Jensen Gap, mean confidence, and mean log confidence per d_model
-   - Outputs `evaluation.jsonl` alongside the model files: one line per d_model with `{"d_model": N, "mean_test_loss": X, "mean_jensen_gap": Y, "mean_confidence": Z, "mean_log_confidence": W}`
+   - Computes mean test loss and Jensen Gap per d_model
+   - Outputs `evaluation.jsonl` alongside the model files: one line per d_model with `{"d_model": N, "mean_test_loss": X, "mean_jensen_gap": Y}`
    - Usage: `python -m jl.double_descent.transformer.evaluate --model-path ./output/transformer_variance/03-01-1010 --data-path ./data/iwslt14.tokenized.de-en`
 
 4. **`jl/double_descent/transformer/plot_evaluation.py`** — Plotting script that runs locally
    - Reads the evaluation JSONL output
-   - Produces three separate figures: bias-variance decomposition (test loss + Jensen Gap + implied bias), mean confidence, and mean log confidence vs d_model
+   - Produces a single figure: bias-variance decomposition (test loss, Jensen Gap, implied bias) vs d_model
    - Usage: `python -m jl.double_descent.transformer.plot_evaluation ./data/transformer_variance/03-01-1010/evaluation.jsonl --output-dir ./data`
 
 
