@@ -536,45 +536,36 @@ output/transformer_variance/03-01-1010/
 
 ### Analyzing the Variance
 
-We would like to examine whether double descent is driven primarily through a reduction in bias
-or variance. If the true underlying distribution of the tokens is given by p, the distribution produced by our training procedure q (which is a random variable), and a vocab V then we have:
+We examine whether double descent is driven primarily through a reduction in bias or variance. Given the bias-variance decomposition:
 
-E[CE(p, q)] = CE(p, E[q]) + E\sum_{i=1}^V p_i * log(E(q_i)/q_i)
+E[CE(p, q)] = CE(p, E[q]) + E[log(E[q][y] / q[y])]
 
-Note, if q is an unbiased estimator for p, i.e. E(q(x)) = p(x) \forall x, then the second term is:
+Where the first term is bias and the second term (Jensen Gap) is variance.
 
-E[CE(p, q)] = CE(p, E[q]) + KL(E(q)||q)
-E[CE(p, q)] = CE(p, E[q]) + KL(p||q)
+#### Metrics
 
-Where CE is the cross entropy, KL is KL-divergence and the expectation is across all training runs.
-The first term can be thought of as bias (albeit with an irreducible component to it) the second term
-as the variance.
+For each d_model:
+- **Mean test loss**: Cross-entropy loss averaged across the 8 training splits
+- **Jensen Gap**: E[log(q_bar[y] / q_j[y])] - the variance term
+- **Implied Bias**: test_loss - jensen_gap
+- **Mean confidence**: Average probability assigned to the predicted (most likely) token
+- **Mean log confidence**: Average log probability of the predicted token
 
-Given our multiple training runs, at each d_model we can calculate the "variance" term (the second term) empirically. We compute two variance-related metrics:
+#### Plots
 
-1. **Jensen Gap** (exact variance term): E[sum_i p_i * log(q_bar_i / q_j_i)]. Since p is one-hot on the true label y, this simplifies to E[log(q_bar[y] / q_j[y])], averaged over models and test tokens. This is the exact second term of the decomposition, so test_loss = bias + jensen_gap.
-
-2. **KL(E(q)||q)** (variance proxy): E[sum_i q_bar_i * log(q_bar_i / q_j_i)]. Same as Jensen Gap but with q_bar_i weighting instead of p_i. Serves as a proxy that doesn't depend on the true labels.
-
-#### Plot
-
-Single figure with shared y-axis, d_model on x-axis, four lines:
-- **Mean test loss** (averaged across the 8 splits)
-- **Jensen Gap** (exact variance term using true labels)
-- **Implied bias** = test_loss - jensen_gap (the CE(p, E[q]) term)
-- **KL(E(q)||q)** (variance proxy)
-
-All quantities are on the same scale (nats) and share a single y-axis.
+Three separate figures, d_model on x-axis:
+1. **Bias-variance decomposition**: test loss, Jensen Gap, implied bias (3 lines)
+2. **Mean confidence** vs d_model
+3. **Mean log confidence** vs d_model
 
 #### Computation
 
 For each d_model:
 1. Run all 8 split-models on the test set, collect per-token softmax distributions q_1, ..., q_8
 2. Compute q_bar = (1/8) * sum_j(q_j) — the mean distribution at each token position
-3. For each model j:
-   - **KL**: sum_i q_bar_i * log(q_bar_i / q_j_i) per token
-   - **Jensen Gap**: log(q_bar[y] / q_j[y]) per token (where y is the true target token)
-4. Average both metrics over all 8 models and all test tokens
+3. For each model j, compute Jensen Gap: log(q_bar[y] / q_j[y]) per token
+4. Compute max probability (confidence) and log of max probability per token
+5. Average all metrics over the 8 models and all test tokens
 
 #### Implementation
 
@@ -599,15 +590,13 @@ Four new files:
    - For each d_model, loads all 8 split-models
    - Model architecture inferred from filename (`d_model` from name, all other params from `TDDConfig` defaults)
    - Runs forward pass on the full test set, collects per-token softmax distributions
-   - Computes q_bar, KL(q_bar || q_j), and Jensen Gap per d_model
-   - Computes mean test loss across the 8 splits (using same label-smoothed CE criterion as training)
-   - Outputs `evaluation.jsonl` alongside the model files: one line per d_model with `{"d_model": N, "mean_test_loss": X, "mean_kl": Y, "mean_jensen_gap": Z}`
+   - Computes mean test loss, Jensen Gap, mean confidence, and mean log confidence per d_model
+   - Outputs `evaluation.jsonl` alongside the model files: one line per d_model with `{"d_model": N, "mean_test_loss": X, "mean_jensen_gap": Y, "mean_confidence": Z, "mean_log_confidence": W}`
    - Usage: `python -m jl.double_descent.transformer.evaluate --model-path ./output/transformer_variance/03-01-1010 --data-path ./data/iwslt14.tokenized.de-en`
 
 4. **`jl/double_descent/transformer/plot_evaluation.py`** — Plotting script that runs locally
    - Reads the evaluation JSONL output
-   - Produces a single figure with shared y-axis: mean test loss, Jensen Gap, implied bias, and KL divergence vs d_model
-   - All quantities on the same scale (nats), clean lines only
+   - Produces three separate figures: bias-variance decomposition (test loss + Jensen Gap + implied bias), mean confidence, and mean log confidence vs d_model
    - Usage: `python -m jl.double_descent.transformer.plot_evaluation ./data/transformer_variance/03-01-1010/evaluation.jsonl --output-dir ./data`
 
 
