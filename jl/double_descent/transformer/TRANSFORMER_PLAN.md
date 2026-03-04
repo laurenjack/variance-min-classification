@@ -2,7 +2,7 @@
 
 ## Goal
 Reproduce the Transformer double-descent curve from Nakkiran et al. (2019) Figure 3:
-- 6-layer encoder-decoder Transformer with varying embedding dimension d_model (8-192)
+- 6-layer encoder-decoder Transformer with varying embedding dimension d_model (8-384)
 - IWSLT'14 German-to-English translation
 - Train/test loss, accuracy, AND BLEU vs model width
 - **Both 4K and 18K training samples** (overlaid on same plot)
@@ -11,13 +11,20 @@ Reproduce the Transformer double-descent curve from Nakkiran et al. (2019) Figur
 
 ## Approach
 
-**Two experiment modes**, both requiring exactly 8 GPUs:
+**Three experiment modes**, all requiring exactly 8 GPUs:
 
 ### Default Mode (Double Descent)
 Trains 48 models to reproduce the double descent curve:
 - 24 d_model values: 8, 16, 24, ..., 192
 - 2 sample sizes: 18K first, then 4K
 - 6 batches total (3 per sample size), each training 8 models in parallel
+
+### Long Double Descent Mode (`--long-double-descent` flag)
+Extends the curve to larger models:
+- 24 d_model values: 384, 376, 368, ..., 200 (largest first to detect OOM early)
+- 18K samples only
+- 3 batches total, 8 models in parallel
+- Combined with default mode, produces full 8-384 range plot
 
 ### Variance Mode (`--variance` flag)
 Trains 48 models to analyze variance across different training data:
@@ -342,10 +349,8 @@ output/transformer/03-01-1010/
 
 ### 4.1 Running Training
 
-Single command runs the full experiment:
-
+**Default double descent (d_model 8-192):**
 ```bash
-# Provision 8-GPU instance, then run once:
 ./infra/train.sh <ip> --module jl.double_descent.transformer.transformer_main
 ```
 
@@ -354,6 +359,18 @@ The script automatically:
 2. Runs 18K samples: batches for d_model 8-64, 72-128, 136-192
 3. Runs 4K samples: batches for d_model 8-64, 72-128, 136-192
 4. Produces 48 metrics files total
+
+**Long double descent (d_model 384-200, extends the curve):**
+```bash
+./infra/train.sh <ip> --module jl.double_descent.transformer.transformer_main --long-double-descent
+```
+
+The script:
+1. Runs d_model 384, 376, ..., 200 (largest first to detect OOM)
+2. 18K samples only, 24 models, 3 batches
+3. Produces 24 additional metrics files (same naming convention)
+
+**Note:** Run long-double-descent AFTER the default experiment, using the same output folder. The plot function will auto-discover all files and produce a combined 8-384 range plot.
 
 ### 4.2 Downloading Results
 
@@ -412,6 +429,8 @@ wc -l data/iwslt14.tokenized.de-en/train.de  # Should be ~170K
 **Note**: If data files are missing, `transformer_main.py` will fail with a clear error listing the missing files.
 
 ### 6.2 Full Run (8 GPUs required)
+
+**Default double descent:**
 ```bash
 python -m jl.double_descent.transformer.transformer_main \
     --output-path ./output \
@@ -421,6 +440,18 @@ python -m jl.double_descent.transformer.transformer_main \
 **Expected runtime:** ~6-8 hours total (48 models × ~8 minutes each)
 
 **Output:** 48 files: `metrics_d{8-192}_{4k,18k}.jsonl`
+
+**Long double descent (extends curve to larger models):**
+```bash
+python -m jl.double_descent.transformer.transformer_main \
+    --long-double-descent \
+    --output-path ./output \
+    --data-path ./data/iwslt14.tokenized.de-en
+```
+
+**Expected runtime:** ~3-4 hours (24 models × ~8 minutes each, larger models take longer)
+
+**Output:** 24 files: `metrics_d{200-384}_18k.jsonl`
 
 ---
 
@@ -434,6 +465,16 @@ python -m jl.double_descent.transformer.transformer_main \
 | 4     | 4K          | 8, 16, 24, 32, 40, 48, 56, 64 |
 | 5     | 4K          | 72, 80, 88, 96, 104, 112, 120, 128 |
 | 6     | 4K          | 136, 144, 152, 160, 168, 176, 184, 192 |
+
+### Long Double Descent Execution Order (`--long-double-descent`)
+
+| Batch | Sample Size | d_model Values |
+|-------|-------------|----------------|
+| 1     | 18K         | 384, 376, 368, 360, 352, 344, 336, 328 |
+| 2     | 18K         | 320, 312, 304, 296, 288, 280, 272, 264 |
+| 3     | 18K         | 256, 248, 240, 232, 224, 216, 208, 200 |
+
+**Note:** Runs largest models first to detect OOM early.
 
 ---
 
