@@ -4,23 +4,22 @@
 # Prerequisites:
 #   - Instance running with SSH access
 #   - HF_TOKEN environment variable set (for gated models like Llama)
-#   - LAMBDA_SSH_KEY_PATH environment variable set (path to SSH private key)
+#   - SSH_KEY_PATH environment variable set (path to SSH private key)
 #
 # Usage:
-#   ./infra/train.sh <instance_ip> [--background] [--module <module>] [--learning-rate <lr>] [--warmup-steps <steps>]
+#   ./infra/train.sh <instance_ip> [--user <user>] [--port <port>] [--background] [--module <module>] [--learning-rate <lr>] [--warmup-steps <steps>]
 #
 # Examples:
 #   ./infra/train.sh 192.222.54.255
 #   ./infra/train.sh 192.222.54.255 --background
+#   ./infra/train.sh 192.222.54.255 --user root --port 22005  # RunPod
 #   ./infra/train.sh 192.222.54.255 --learning-rate 3e-5
-#   ./infra/train.sh 192.222.54.255 --background --learning-rate 3e-4
-#   ./infra/train.sh 192.222.54.255 --learning-rate 3e-5 --warmup-steps 50
 #   ./infra/train.sh 192.222.54.255 --module jl.double_descent.resnet18.resnet18_main
 
 set -euo pipefail
 
 # Configuration
-SSH_KEY_PATH="${LAMBDA_SSH_KEY_PATH:?LAMBDA_SSH_KEY_PATH not set}"
+SSH_KEY_PATH="${SSH_KEY_PATH:?SSH_KEY_PATH not set}"
 REPO_URL="https://github.com/laurenjack/variance-min-classification.git"
 
 # Colors
@@ -35,7 +34,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 # Check arguments
 if [[ $# -lt 1 ]]; then
-    echo "Usage: $0 <instance_ip> [--background] [--module <module>] [--learning-rate <lr>] [--warmup-steps <steps>]"
+    echo "Usage: $0 <instance_ip> [--user <user>] [--port <port>] [--background] [--module <module>] [--learning-rate <lr>] [--warmup-steps <steps>]"
     exit 1
 fi
 
@@ -50,8 +49,18 @@ K_START=""
 COSINE_DECAY_EPOCH=""
 VARIANCE=""
 MODULE="jl.reward_model.reward_main"
+SSH_USER="ubuntu"
+SSH_PORT=""
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --user)
+            SSH_USER="$2"
+            shift 2
+            ;;
+        --port)
+            SSH_PORT="$2"
+            shift 2
+            ;;
         --background)
             BACKGROUND="true"
             shift
@@ -86,6 +95,23 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Build SSH options
+SSH_OPTS="-o StrictHostKeyChecking=no"
+if [[ -n "$SSH_PORT" ]]; then
+    SSH_OPTS="$SSH_OPTS -p $SSH_PORT"
+fi
+
+# Build SCP options (uses -P for port, not -p)
+SCP_OPTS="-o StrictHostKeyChecking=no"
+if [[ -n "$SSH_PORT" ]]; then
+    SCP_OPTS="$SCP_OPTS -P $SSH_PORT"
+fi
+
+log_info "SSH user: $SSH_USER"
+if [[ -n "$SSH_PORT" ]]; then
+    log_info "SSH port: $SSH_PORT"
+fi
 
 # Build flags for Python command
 EXTRA_FLAGS=""
@@ -155,7 +181,7 @@ fi
 
 chmod 600 "$SSH_KEY_PATH" 2>/dev/null || true
 
-log_info "Connecting to $INSTANCE_IP..."
+log_info "Connecting to $SSH_USER@$INSTANCE_IP..."
 
 # Build the remote script
 # Note: We pass HF_TOKEN from local env to remote
@@ -242,15 +268,15 @@ fi
 nohup $PYTHON_CMD > training.log 2>&1 &
 
 echo \"Training started in background. PID: \\\$!\"
-echo \"Monitor with: ssh -i $SSH_KEY_PATH ubuntu@$INSTANCE_IP 'tail -f ~/variance-min-classification/training.log'\"
+echo \"Monitor with: ssh -i $SSH_KEY_PATH ${SSH_PORT:+-p $SSH_PORT} $SSH_USER@$INSTANCE_IP 'tail -f ~/variance-min-classification/training.log'\"
 "
 
 if [[ "$BACKGROUND" == "true" ]]; then
     log_info "Starting training in background mode..."
-    ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no "ubuntu@$INSTANCE_IP" bash <<< "$REMOTE_SCRIPT_BG"
+    ssh -i "$SSH_KEY_PATH" $SSH_OPTS "$SSH_USER@$INSTANCE_IP" bash <<< "$REMOTE_SCRIPT_BG"
     log_info "Training started in background on $INSTANCE_IP"
-    log_info "Check progress: ssh -i $SSH_KEY_PATH ubuntu@$INSTANCE_IP 'tail -f ~/variance-min-classification/training.log'"
+    log_info "Check progress: ssh -i $SSH_KEY_PATH ${SSH_PORT:+-p $SSH_PORT} $SSH_USER@$INSTANCE_IP 'tail -f ~/variance-min-classification/training.log'"
 else
     log_info "Starting training (foreground mode)..."
-    ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no "ubuntu@$INSTANCE_IP" bash <<< "$REMOTE_SCRIPT"
+    ssh -i "$SSH_KEY_PATH" $SSH_OPTS "$SSH_USER@$INSTANCE_IP" bash <<< "$REMOTE_SCRIPT"
 fi
