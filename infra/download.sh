@@ -1,5 +1,5 @@
 #!/bin/bash
-# lambda_download.sh - Download training logs and metrics from Lambda Labs instance
+# download.sh - Download training logs and metrics from a remote instance via SSH
 #
 # Downloads training artifacts with structured paths:
 #   remote: ~/output/{experiment_type}/{timestamp}/
@@ -8,10 +8,10 @@
 # Auto-runs appropriate plot scripts after download.
 #
 # Usage:
-#   ./lambda_download.sh <instance_ip>
+#   ./infra/download.sh <instance_ip>
 #
 # Examples:
-#   ./lambda_download.sh 192.222.54.255
+#   ./infra/download.sh 192.222.54.255
 
 set -euo pipefail
 

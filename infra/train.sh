@@ -1,21 +1,21 @@
 #!/bin/bash
-# lambda_train.sh - Run training on a Lambda Labs instance
+# train.sh - Run training on a remote GPU instance via SSH
 #
 # Prerequisites:
-#   - Instance running (use lambda_launch.sh first)
+#   - Instance running with SSH access
 #   - HF_TOKEN environment variable set (for gated models like Llama)
-#   - LAMBDA_SSH_KEY_PATH environment variable set
+#   - LAMBDA_SSH_KEY_PATH environment variable set (path to SSH private key)
 #
 # Usage:
-#   ./lambda_train.sh <instance_ip> [--background] [--module <module>] [--learning-rate <lr>] [--warmup-steps <steps>]
+#   ./infra/train.sh <instance_ip> [--background] [--module <module>] [--learning-rate <lr>] [--warmup-steps <steps>]
 #
 # Examples:
-#   ./lambda_train.sh 192.222.54.255
-#   ./lambda_train.sh 192.222.54.255 --background
-#   ./lambda_train.sh 192.222.54.255 --learning-rate 3e-5
-#   ./lambda_train.sh 192.222.54.255 --background --learning-rate 3e-4
-#   ./lambda_train.sh 192.222.54.255 --learning-rate 3e-5 --warmup-steps 50
-#   ./lambda_train.sh 192.222.54.255 --module jl.double_descent.resnet18.resnet18_main
+#   ./infra/train.sh 192.222.54.255
+#   ./infra/train.sh 192.222.54.255 --background
+#   ./infra/train.sh 192.222.54.255 --learning-rate 3e-5
+#   ./infra/train.sh 192.222.54.255 --background --learning-rate 3e-4
+#   ./infra/train.sh 192.222.54.255 --learning-rate 3e-5 --warmup-steps 50
+#   ./infra/train.sh 192.222.54.255 --module jl.double_descent.resnet18.resnet18_main
 
 set -euo pipefail
 

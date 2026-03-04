@@ -1,15 +1,15 @@
 #!/bin/bash
-# lambda_upload.sh - Upload local training artifacts to a Lambda Labs instance
+# upload.sh - Upload local training artifacts to a remote instance via SSH
 #
 # Mirrors the local data path to the remote output path:
 #   local:  ./data/{experiment_type}/{timestamp}/
 #   remote: ~/variance-min-classification/output/{experiment_type}/{timestamp}/
 #
 # Usage:
-#   ./infra/lambda_upload.sh <instance_ip> <local_folder>
+#   ./infra/upload.sh <instance_ip> <local_folder>
 #
 # Examples:
-#   ./infra/lambda_upload.sh 192.222.54.255 ./data/transformer_variance/03-01-1010
+#   ./infra/upload.sh 192.222.54.255 ./data/transformer_variance/03-01-1010
 
 set -euo pipefail
 

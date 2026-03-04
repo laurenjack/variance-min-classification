@@ -346,7 +346,7 @@ Single command runs the full experiment:
 
 ```bash
 # Provision 8-GPU instance, then run once:
-./infra/lambda_train.sh <ip> --module jl.double_descent.transformer.transformer_main
+./infra/train.sh <ip> --module jl.double_descent.transformer.transformer_main
 ```
 
 The script automatically:
@@ -358,7 +358,7 @@ The script automatically:
 ### 4.2 Downloading Results
 
 ```bash
-./infra/lambda_download.sh <ip>
+./infra/download.sh <ip>
 ```
 
 Downloads all metrics and model files to `data/transformer/MM-DD-HHmm/` and auto-generates plots.
@@ -460,7 +460,7 @@ The 160K training samples are shuffled with a fixed seed, then partitioned into 
 
 ```bash
 # On Lambda Labs 8-GPU instance
-./infra/lambda_train.sh <ip> --module jl.double_descent.transformer.transformer_main --variance
+./infra/train.sh <ip> --module jl.double_descent.transformer.transformer_main --variance
 ```
 
 ### Output Structure
@@ -509,27 +509,37 @@ Where CE is the cross entropy, KL is KL-divergence and the expectation is across
 The first term can be thought of as bias (albeit with an irreducible component to it) the second term
 as the variance.
 
-Given our multiple training runs, at each d_model we can calculate the "variance" term (the second term) empirically. We don't know p_i of course, using the actual labels would exclude a lot of the variation. A good metric we can use instead is KL(E(q)||q). Even though our estimator is most likely biased, this will serve as a good "variance" metric.
+Given our multiple training runs, at each d_model we can calculate the "variance" term (the second term) empirically. We compute two variance-related metrics:
+
+1. **Jensen Gap** (exact variance term): E[sum_i p_i * log(q_bar_i / q_j_i)]. Since p is one-hot on the true label y, this simplifies to E[log(q_bar[y] / q_j[y])], averaged over models and test tokens. This is the exact second term of the decomposition, so test_loss = bias + jensen_gap.
+
+2. **KL(E(q)||q)** (variance proxy): E[sum_i q_bar_i * log(q_bar_i / q_j_i)]. Same as Jensen Gap but with q_bar_i weighting instead of p_i. Serves as a proxy that doesn't depend on the true labels.
 
 #### Plot
 
-Single figure with dual y-axes, d_model on x-axis:
-- **Left y-axis**: Mean test loss (averaged across the 8 splits)
-- **Right y-axis**: KL(E(q)||q) averaged over each model and each test token
+Single figure with shared y-axis, d_model on x-axis, four lines:
+- **Mean test loss** (averaged across the 8 splits)
+- **Jensen Gap** (exact variance term using true labels)
+- **Implied bias** = test_loss - jensen_gap (the CE(p, E[q]) term)
+- **KL(E(q)||q)** (variance proxy)
 
-#### KL Computation
+All quantities are on the same scale (nats) and share a single y-axis.
+
+#### Computation
 
 For each d_model:
 1. Run all 8 split-models on the test set, collect per-token softmax distributions q_1, ..., q_8
 2. Compute q_bar = (1/8) * sum_j(q_j) — the mean distribution at each token position
-3. For each model j, compute KL(q_bar || q_j) = sum_i q_bar_i * log(q_bar_i / q_j_i) per token
-4. Average KL over all 8 models and all test tokens
+3. For each model j:
+   - **KL**: sum_i q_bar_i * log(q_bar_i / q_j_i) per token
+   - **Jensen Gap**: log(q_bar[y] / q_j[y]) per token (where y is the true target token)
+4. Average both metrics over all 8 models and all test tokens
 
 #### Implementation
 
 Four new files:
 
-1. **`infra/lambda_upload.sh`** — Upload a local model run folder to the remote instance
+1. **`infra/upload.sh`** — Upload a local model run folder to the remote instance
    - Takes an IP and a local folder path as arguments
    - Uploads to the mirrored remote path (e.g., local `./data/transformer_variance/03-01-1010/` → remote `~/variance-min-classification/output/transformer_variance/03-01-1010/`)
 
@@ -548,15 +558,15 @@ Four new files:
    - For each d_model, loads all 8 split-models
    - Model architecture inferred from filename (`d_model` from name, all other params from `TDDConfig` defaults)
    - Runs forward pass on the full test set, collects per-token softmax distributions
-   - Computes q_bar and KL(q_bar || q_j) per d_model
+   - Computes q_bar, KL(q_bar || q_j), and Jensen Gap per d_model
    - Computes mean test loss across the 8 splits (using same label-smoothed CE criterion as training)
-   - Outputs `evaluation.jsonl` alongside the model files: one line per d_model with `{"d_model": N, "mean_test_loss": X, "mean_kl": Y}`
+   - Outputs `evaluation.jsonl` alongside the model files: one line per d_model with `{"d_model": N, "mean_test_loss": X, "mean_kl": Y, "mean_jensen_gap": Z}`
    - Usage: `python -m jl.double_descent.transformer.evaluate --model-path ./output/transformer_variance/03-01-1010 --data-path ./data/iwslt14.tokenized.de-en`
 
 4. **`jl/double_descent/transformer/plot_evaluation.py`** — Plotting script that runs locally
    - Reads the evaluation JSONL output
-   - Produces a single figure with dual y-axes: mean test loss (left, blue) and mean KL divergence (right, red) vs d_model
-   - Clean lines only (no scatter points)
+   - Produces a single figure with shared y-axis: mean test loss, Jensen Gap, implied bias, and KL divergence vs d_model
+   - All quantities on the same scale (nats), clean lines only
    - Usage: `python -m jl.double_descent.transformer.plot_evaluation ./data/transformer_variance/03-01-1010/evaluation.jsonl --output-dir ./data`
 
 
