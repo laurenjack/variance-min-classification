@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
-"""Plot variance evaluation results: bias-variance and confidence metrics vs d_model.
+"""Plot variance evaluation results: bias-variance decomposition vs d_model.
 
-Produces three separate figures:
-  1. Bias-variance decomposition: test loss, Jensen Gap, implied bias
-  2. Mean confidence (probability of predicted token)
-  3. Mean log confidence
+Produces a single figure showing test loss, Jensen Gap (variance), and implied bias.
 
 Usage:
     python -m jl.double_descent.transformer.plot_evaluation \
@@ -39,11 +36,11 @@ def load_evaluation(eval_path: str) -> List[Dict]:
 
 
 def plot_evaluation(eval_path: str, output_dir: str) -> None:
-    """Plot bias-variance and confidence metrics vs d_model on separate figures.
+    """Plot bias-variance decomposition vs d_model.
 
     Args:
         eval_path: Path to evaluation.jsonl file.
-        output_dir: Directory to save plots.
+        output_dir: Directory to save plot.
     """
     results = load_evaluation(eval_path)
 
@@ -51,12 +48,9 @@ def plot_evaluation(eval_path: str, output_dir: str) -> None:
     test_losses = [r["mean_test_loss"] for r in results]
     jensen_gaps = [r["mean_jensen_gap"] for r in results]
     implied_bias = [tl - jg for tl, jg in zip(test_losses, jensen_gaps)]
-    confidences = [r["mean_confidence"] for r in results]
-    log_confidences = [r["mean_log_confidence"] for r in results]
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    # Figure 1: Bias-variance decomposition
     fig, ax = plt.subplots(figsize=(8, 5), dpi=150)
     ax.plot(d_models, test_losses, "-", color="tab:blue", lw=2, label="Mean Test Loss")
     ax.plot(d_models, jensen_gaps, "-", color="tab:orange", lw=2, label="Jensen Gap (variance)")
@@ -68,37 +62,10 @@ def plot_evaluation(eval_path: str, output_dir: str) -> None:
     ax.legend()
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
-    loss_path = Path(output_dir) / "bias_variance.png"
-    plt.savefig(loss_path, bbox_inches="tight")
+    output_path = Path(output_dir) / "bias_variance.png"
+    plt.savefig(output_path, bbox_inches="tight")
     plt.close()
-    print(f"Saved plot to {loss_path}")
-
-    # Figure 2: Mean confidence
-    fig, ax = plt.subplots(figsize=(8, 5), dpi=150)
-    ax.plot(d_models, confidences, "-", color="tab:green", lw=2)
-    ax.set_xlabel("Transformer embedding dimension (d_model)")
-    ax.set_ylabel("Mean Confidence (probability)")
-    ax.set_title("Mean Confidence vs d_model")
-    ax.set_ylim(bottom=0, top=1)
-    ax.grid(True, alpha=0.3)
-    plt.tight_layout()
-    conf_path = Path(output_dir) / "mean_confidence.png"
-    plt.savefig(conf_path, bbox_inches="tight")
-    plt.close()
-    print(f"Saved plot to {conf_path}")
-
-    # Figure 3: Mean log confidence
-    fig, ax = plt.subplots(figsize=(8, 5), dpi=150)
-    ax.plot(d_models, log_confidences, "-", color="tab:orange", lw=2)
-    ax.set_xlabel("Transformer embedding dimension (d_model)")
-    ax.set_ylabel("Mean Log Confidence (nats)")
-    ax.set_title("Mean Log Confidence vs d_model")
-    ax.grid(True, alpha=0.3)
-    plt.tight_layout()
-    log_conf_path = Path(output_dir) / "mean_log_confidence.png"
-    plt.savefig(log_conf_path, bbox_inches="tight")
-    plt.close()
-    print(f"Saved plot to {log_conf_path}")
+    print(f"Saved plot to {output_path}")
 
 
 def main():

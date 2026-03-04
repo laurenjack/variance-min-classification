@@ -4,8 +4,6 @@ Loads all variance-mode models (model_d*_split*.pt), runs them on the test set,
 and computes:
   - Mean test loss across splits
   - Jensen Gap: E[log(q_bar[y] / q_j[y])] - the variance term in bias-variance decomposition
-  - Mean confidence: average probability of the predicted (most likely) token
-  - Mean log confidence: average log probability of the predicted token
 
 Output: evaluation.jsonl written alongside the model files.
 
@@ -93,13 +91,12 @@ def evaluate_d_model(
     config: TDDConfig,
     device: torch.device,
 ) -> Dict:
-    """Compute mean test loss, Jensen Gap, and confidence metrics for one d_model.
+    """Compute mean test loss and Jensen Gap for one d_model.
 
     For each test batch:
       1. Forward pass all models, collect softmax distributions
       2. Compute q_bar = mean distribution across models
       3. Compute Jensen Gap: log(q_bar[y] / q_j[y]) for each model
-      4. Compute confidence metrics (max probability per token)
     """
     num_models = len(model_paths)
     logger.info(f"d_model={d_model}: loading {num_models} models")
@@ -122,8 +119,6 @@ def evaluate_d_model(
     )
 
     total_loss_per_model = [0.0] * num_models
-    total_confidence_per_model = [0.0] * num_models
-    total_log_confidence_per_model = [0.0] * num_models
     total_jensen_gap = 0.0
     total_tokens = 0
 
@@ -149,12 +144,6 @@ def evaluate_d_model(
 
                 probs = F.softmax(logits, dim=-1)  # [B, T, V]
                 all_probs.append(probs)
-
-                max_probs = probs.max(dim=-1).values  # [B, T]
-                log_max_probs = torch.log(max_probs + 1e-10)  # [B, T]
-
-                total_confidence_per_model[j] += (max_probs * mask).sum().item()
-                total_log_confidence_per_model[j] += (log_max_probs * mask).sum().item()
 
             # Compute Jensen Gap: log(q_bar[y] / q_j[y])
             all_probs_t = torch.stack(all_probs, dim=0)  # [M, B, T, V]
@@ -183,28 +172,16 @@ def evaluate_d_model(
         else 0.0
     )
     mean_jensen_gap = total_jensen_gap / total_tokens if total_tokens > 0 else 0.0
-    mean_confidence = (
-        sum(total_confidence_per_model) / (num_models * total_tokens)
-        if total_tokens > 0
-        else 0.0
-    )
-    mean_log_confidence = (
-        sum(total_log_confidence_per_model) / (num_models * total_tokens)
-        if total_tokens > 0
-        else 0.0
-    )
 
     logger.info(
         f"d_model={d_model}: mean_test_loss={mean_test_loss:.4f}, "
-        f"mean_jensen_gap={mean_jensen_gap:.6f}, mean_confidence={mean_confidence:.6f}"
+        f"mean_jensen_gap={mean_jensen_gap:.6f}"
     )
 
     return {
         "d_model": d_model,
         "mean_test_loss": round(mean_test_loss, 6),
         "mean_jensen_gap": round(mean_jensen_gap, 6),
-        "mean_confidence": round(mean_confidence, 6),
-        "mean_log_confidence": round(mean_log_confidence, 6),
         "num_models": num_models,
         "total_tokens": total_tokens,
     }

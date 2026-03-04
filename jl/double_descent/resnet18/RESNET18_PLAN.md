@@ -7,7 +7,7 @@ Reproduce the ResNet18 double-descent curve from Nakkiran et al. (2019) Figure 1
 - Train/test error AND loss vs model width (to show error and loss can be at odds)
 
 ## Approach
-Train 8 models in parallel on an 8-GPU instance using `torch.multiprocessing`. Each GPU trains one model with a different k value, incrementing by 2. Default k=18. On 8 GPUs with default k-start=18, trains k=18,20,22,24,26,28,30,32.
+Train N models in parallel on N GPUs using `torch.multiprocessing`. Each GPU trains one model with a different k value, incrementing by 8. Default k=72. On 8 GPUs with default k-start=72, trains k=72,80,88,96,104,112,120,128.
 
 ---
 
@@ -91,8 +91,8 @@ def main():
     # Spawn 8 training processes
     mp.set_start_method('spawn')
     processes = []
-    for gpu_id in range(8):
-        k = args.k_start + 2 * gpu_id  # Increment by 2
+    for gpu_id in range(num_gpus):
+        k = args.k_start + 8 * gpu_id  # Increment by 8
         p = mp.Process(
             target=train_single_model,
             args=(gpu_id, k, config, args.output_path, args.data_path)
@@ -143,20 +143,20 @@ Training outputs are organized by timestamp in `output/resnet18/MM-DD-HHmm/`:
 
 ```
 output/resnet18/03-01-1010/
-├── metrics_k18.jsonl
-├── metrics_k20.jsonl
+├── metrics_k72.jsonl
+├── metrics_k80.jsonl
 ├── ...
-├── metrics_k32.jsonl
-├── model_k18.pt
-├── model_k20.pt
+├── metrics_k128.jsonl
+├── model_k72.pt
+├── model_k80.pt
 ├── ...
-└── model_k32.pt
+└── model_k128.pt
 ```
 
 **Metrics format (JSONL):**
 ```json
-{"epoch": 1, "k": 18, "train_error": 0.85, "test_error": 0.87, "train_loss": 2.31, "test_loss": 2.35}
-{"epoch": 2, "k": 18, "train_error": 0.82, "test_error": 0.84, "train_loss": 2.12, "test_loss": 2.18}
+{"epoch": 1, "k": 72, "train_error": 0.85, "test_error": 0.87, "train_loss": 2.31, "test_loss": 2.35}
+{"epoch": 2, "k": 72, "train_error": 0.82, "test_error": 0.84, "train_loss": 2.12, "test_loss": 2.18}
 ...
 ```
 
@@ -175,11 +175,11 @@ output/resnet18/03-01-1010/
 Manually provision an 8-GPU instance (8x V100, 8x A100, or 8x H100), then:
 
 ```bash
-# Default: k-start=18, trains k=18,20,22,24,26,28,30,32 on 8 GPUs
+# Default: k-start=72, trains k=72,80,88,96,104,112,120,128 on 8 GPUs
 ./infra/train.sh <ip> --module jl.double_descent.resnet18.resnet18_main
 
-# Or specify a different starting k (increments by 2 per GPU)
-./infra/train.sh <ip> --module jl.double_descent.resnet18.resnet18_main --k-start 34
+# Or specify a different starting k (increments by 8 per GPU)
+./infra/train.sh <ip> --module jl.double_descent.resnet18.resnet18_main --k-start 8
 ```
 
 ### 3.2 Downloading Results
@@ -195,19 +195,19 @@ Downloads all metrics and model files to `data/resnet18/MM-DD-HHmm/` and auto-ge
 ## Phase 4: Testing Strategy
 
 ### 4.1 Local Smoke Test (if 8 GPUs available)
-- k = 18,20,22,24,26,28,30,32 (default, incrementing by 2)
+- k = 72,80,88,96,104,112,120,128 (default, incrementing by 8)
 - 10 epochs
 - Verify parallel training works, metrics files created
 
 ### 4.2 8-GPU Initial Run
-- k = 18,20,22,24,26,28,30,32
-- 500 epochs
+- k = 72,80,88,96,104,112,120,128
+- 800 epochs
 - Monitor GPU utilization, training speed
 
 ### 4.3 Full Run
-- Default run: k-start=18, produces k=18,20,22,24,26,28,30,32
-- 500 epochs
-- Produces metrics_k18.jsonl through metrics_k32.jsonl
+- Default run: k-start=72, produces k=72,80,88,96,104,112,120,128
+- 800 epochs
+- Produces metrics_k72.jsonl through metrics_k128.jsonl
 
 ---
 
@@ -223,10 +223,10 @@ Plots final-epoch results for a range of k values (reproduces Figure 1):
 
 ```bash
 # Output saved to same directory as metrics
-python -m jl.double_descent.resnet18.plot_vary_k ./data/resnet18/03-01-1010 --min-k 18 --max-k 32
+python -m jl.double_descent.resnet18.plot_vary_k ./data/resnet18/03-01-1010 --min-k 72 --max-k 128
 ```
 
-Output: `data/resnet18/03-01-1010/resnet18_vary_k_18_to_32.png`
+Output: `data/resnet18/03-01-1010/resnet18_vary_k_72_to_128.png`
 
 ### `plot_single_k.py` - Training curves for single k
 Plots epoch-wise training for a specific k value:
@@ -235,7 +235,7 @@ Plots epoch-wise training for a specific k value:
   - Bottom: Train/Test loss vs epoch
 
 ```bash
-python -m jl.double_descent.resnet18.plot_single_k ./data/resnet18/03-01-1010 --k 18
+python -m jl.double_descent.resnet18.plot_single_k ./data/resnet18/03-01-1010 --k 72
 ```
 
 ---
@@ -258,16 +258,16 @@ python -m jl.double_descent.resnet18.plot_single_k ./data/resnet18/03-01-1010 --
 | Aspect | Paper | Our Implementation |
 |--------|-------|-------------------|
 | Trials | 5 | 1 |
-| Training | Sequential per k | 8 models parallel on 8 GPUs |
+| Training | Sequential per k | N models parallel on N GPUs |
 | BatchNorm | Standard | Standard |
-| Epochs | 4000 | 500 |
-| Width range | 1-64 | Default k=18,20,...,32 (increment by 2) |
+| Epochs | 4000 | 800 |
+| Width range | 1-64 | Default k=72,80,...,128 (increment by 8) |
 
 ---
 
 ## Hardware Requirements
 
-- **8 GPUs required** - script will fail with clear error if fewer available
-- Recommended: 8x V100 (16GB), 8x A100, or 8x H100 on Lambda Labs
+- **At least 1 GPU required** - uses all available GPUs automatically
+- Recommended: 8x V100 (16GB), 8x A100, or 8x H100 on Lambda Labs or RunPod
 - Each GPU trains one model independently
-- Memory per GPU: ~2-4GB for k≤64 (ResNet18 is small)
+- Memory per GPU: ~2-4GB for k≤64, larger models need more
