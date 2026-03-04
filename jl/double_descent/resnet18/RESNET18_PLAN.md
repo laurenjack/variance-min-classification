@@ -176,16 +176,16 @@ Manually provision an 8-GPU instance (8x V100, 8x A100, or 8x H100), then:
 
 ```bash
 # Default: k-start=18, trains k=18,20,22,24,26,28,30,32 on 8 GPUs
-./infra/lambda_train.sh <ip> --module jl.double_descent.resnet18.resnet18_main
+./infra/train.sh <ip> --module jl.double_descent.resnet18.resnet18_main
 
 # Or specify a different starting k (increments by 2 per GPU)
-./infra/lambda_train.sh <ip> --module jl.double_descent.resnet18.resnet18_main --k-start 34
+./infra/train.sh <ip> --module jl.double_descent.resnet18.resnet18_main --k-start 34
 ```
 
 ### 3.2 Downloading Results
 
 ```bash
-./infra/lambda_download.sh <ip>
+./infra/download.sh <ip>
 ```
 
 Downloads all metrics and model files to `data/resnet18/MM-DD-HHmm/` and auto-generates plots.

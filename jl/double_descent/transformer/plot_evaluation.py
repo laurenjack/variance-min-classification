@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Plot variance evaluation results: mean test loss and KL divergence vs d_model.
+"""Plot variance evaluation results: bias-variance decomposition vs d_model.
 
-Produces a single figure with dual y-axes:
-  - Left (blue): Mean test loss across 8 training splits
-  - Right (red): KL(q_bar || q_j) averaged over models and test tokens
+Produces a single figure with shared y-axis showing four lines:
+  - Mean test loss across 8 training splits
+  - Jensen Gap (exact variance term using true labels)
+  - Implied bias = test_loss - jensen_gap
+  - KL(q_bar || q_j) (variance proxy)
 
 Usage:
     python -m jl.double_descent.transformer.plot_evaluation \
@@ -23,8 +25,7 @@ def load_evaluation(eval_path: str) -> List[Dict]:
     """Load evaluation results from JSONL file.
 
     Returns:
-        List of dicts sorted by d_model, each with keys:
-        d_model, mean_test_loss, mean_kl, num_models, total_tokens.
+        List of dicts sorted by d_model.
     """
     results = []
     with open(eval_path, "r") as f:
@@ -39,7 +40,7 @@ def load_evaluation(eval_path: str) -> List[Dict]:
 
 
 def plot_evaluation(eval_path: str, output_dir: str) -> None:
-    """Plot mean test loss and KL divergence vs d_model with dual y-axes.
+    """Plot bias-variance decomposition vs d_model on a shared y-axis.
 
     Args:
         eval_path: Path to evaluation.jsonl file.
@@ -50,29 +51,24 @@ def plot_evaluation(eval_path: str, output_dir: str) -> None:
     d_models = [r["d_model"] for r in results]
     test_losses = [r["mean_test_loss"] for r in results]
     kl_values = [r["mean_kl"] for r in results]
+    jensen_gaps = [r["mean_jensen_gap"] for r in results]
+    implied_bias = [tl - jg for tl, jg in zip(test_losses, jensen_gaps)]
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    fig, ax1 = plt.subplots(figsize=(10, 6), dpi=150)
+    fig, ax = plt.subplots(figsize=(10, 6), dpi=150)
 
-    color_loss = "tab:blue"
-    ax1.set_xlabel("Transformer embedding dimension (d_model)")
-    ax1.set_ylabel("Mean Test Loss", color=color_loss)
-    ax1.plot(d_models, test_losses, "-o", color=color_loss, lw=2, label="Mean Test Loss")
-    ax1.tick_params(axis="y", labelcolor=color_loss)
-    ax1.grid(True, alpha=0.3)
+    ax.plot(d_models, test_losses, "-o", color="tab:blue", lw=2, label="Mean Test Loss")
+    ax.plot(d_models, jensen_gaps, "-s", color="tab:orange", lw=2, label="Jensen Gap (variance)")
+    ax.plot(d_models, implied_bias, "-^", color="tab:green", lw=2, label="Implied Bias")
+    ax.plot(d_models, kl_values, "-d", color="tab:red", lw=2, label="KL(q̄ ∥ q) (variance proxy)")
 
-    ax2 = ax1.twinx()
-    color_kl = "tab:red"
-    ax2.set_ylabel("KL(q̄ ∥ q)", color=color_kl)
-    ax2.plot(d_models, kl_values, "-s", color=color_kl, lw=2, label="KL(q̄ ∥ q)")
-    ax2.tick_params(axis="y", labelcolor=color_kl)
-
-    lines_1, labels_1 = ax1.get_legend_handles_labels()
-    lines_2, labels_2 = ax2.get_legend_handles_labels()
-    ax1.legend(lines_1 + lines_2, labels_1 + labels_2, loc="upper right")
-
-    ax1.set_title("Variance Analysis: Bias-Variance Decomposition across d_model")
+    ax.set_xlabel("Transformer embedding dimension (d_model)")
+    ax.set_ylabel("Cross-Entropy / KL Divergence (nats)")
+    ax.set_title("Bias-Variance Decomposition across d_model")
+    ax.set_ylim(bottom=0)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     output_path = Path(output_dir) / "variance_evaluation.png"
@@ -83,7 +79,7 @@ def plot_evaluation(eval_path: str, output_dir: str) -> None:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Plot variance evaluation: mean test loss and KL divergence vs d_model"
+        description="Plot variance evaluation: bias-variance decomposition vs d_model"
     )
     parser.add_argument(
         "eval_path",
