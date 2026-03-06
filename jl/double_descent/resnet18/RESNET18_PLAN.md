@@ -7,7 +7,19 @@ Reproduce the ResNet18 double-descent curve from Nakkiran et al. (2019) Figure 1
 - Train/test error AND loss vs model width (to show error and loss can be at odds)
 
 ## Approach
-Train N models in parallel on N GPUs using `torch.multiprocessing`. Each GPU trains one model with a different k value, incrementing by 8. Default k=72. On 8 GPUs with default k-start=72, trains k=72,80,88,96,104,112,120,128.
+
+**Requires exactly 8 GPUs.** Two experiment modes:
+
+### Default Mode (Double Descent)
+Trains 8 models per batch with k values incrementing by 4:
+- Default k-start=4: trains k=4, 8, 12, 16, 20, 24, 28, 32
+
+### Variance Mode (`--variance` flag)
+Trains 64 models to analyze variance across different training data:
+- 16 k values: 4, 8, 12, 16, ..., 64 (increment by 4)
+- 4 disjoint training splits (12.5K samples each from 50K)
+- 15% label noise applied independently to each split
+- 8 batches total (2 k values × 4 splits per batch)
 
 ---
 
@@ -16,13 +28,16 @@ Train N models in parallel on N GPUs using `torch.multiprocessing`. Each GPU tra
 ```
 jl/double_descent/resnet18/
 ├── __init__.py
-├── resnet18_config.py   # DDConfig dataclass
-├── resnet18_data.py     # CIFAR-10 with label noise
-├── resnet18_main.py     # Entry point (spawns 8 processes)
-├── resnet18k.py         # Standard PreActResNet18
-├── trainer.py           # Single-model training function
-├── plot.py              # Visualization (5 plots)
-└── RESNET18_PLAN.md     # This plan file
+├── resnet18_config.py     # DDConfig dataclass
+├── resnet18_data.py       # CIFAR-10 with label noise + disjoint splits
+├── resnet18_main.py       # Entry point (requires 8 GPUs, --variance flag)
+├── resnet18k.py           # Standard PreActResNet18
+├── trainer.py             # Single-model training function
+├── plot_vary_k.py         # Final metrics plot across k values
+├── plot_single_k.py       # Training curves for single k
+├── evaluate.py            # Variance evaluation (Jensen Gap with Bessel's correction)
+├── plot_evaluation.py     # Bias-variance decomposition plot
+└── RESNET18_PLAN.md       # This plan file
 ```
 
 ---
@@ -34,11 +49,15 @@ jl/double_descent/resnet18/
 ```python
 @dataclass
 class DDConfig:
+    # Width parameter
+    k_start: int = 4  # Starting k value, trains k, k+4, k+8, ..., k+4*(N-1)
+
     # Training
-    epochs: int = 500
+    epochs: int = 800
     batch_size: int = 128
-    learning_rate: float = 0.0001
-    optimizer: str = "adam"
+    learning_rate: float = 0.001
+    optimizer: str = "adam_w"
+    cosine_decay_epoch: int = 100  # Cosine decay LR from this epoch
 
     # Data
     label_noise: float = 0.15
@@ -76,33 +95,31 @@ Each of the 8 processes loads data independently from the pre-downloaded files.
 
 ### 2.4 Multi-GPU Training (`resnet18_main.py`)
 
+Requires exactly 8 GPUs. Two modes:
+
+**Default mode:** Trains 8 models with k incrementing by 4.
+
+**Variance mode (`--variance`):** Trains 2 k values × 4 splits = 8 models per batch.
+
 ```python
+# Hardcoded experiment parameters
+REQUIRED_GPUS = 8
+K_INCREMENT = 4
+
+# Variance experiment parameters
+VARIANCE_K_VALUES = list(range(4, 68, 4))  # [4, 8, 12, ..., 64] - 16 values
+VARIANCE_NUM_SPLITS = 4  # 4 disjoint training sets of 12.5K each
+
 def main():
-    # Parse args: --k-start, --output-path, --data-path, etc.
-
-    # Check GPU count
+    # Require exactly 8 GPUs
     num_gpus = torch.cuda.device_count()
-    if num_gpus < 8:
-        raise RuntimeError(f"Requires 8 GPUs, found {num_gpus}")
+    if num_gpus != REQUIRED_GPUS:
+        raise RuntimeError(f"Requires exactly 8 GPUs, found {num_gpus}")
 
-    # Download data once before spawning
-    download_cifar10(args.data_path)
-
-    # Spawn 8 training processes
-    mp.set_start_method('spawn')
-    processes = []
-    for gpu_id in range(num_gpus):
-        k = args.k_start + 8 * gpu_id  # Increment by 8
-        p = mp.Process(
-            target=train_single_model,
-            args=(gpu_id, k, config, args.output_path, args.data_path)
-        )
-        p.start()
-        processes.append(p)
-
-    # Wait for all to complete
-    for p in processes:
-        p.join()
+    if args.variance:
+        run_variance(args, config)  # 8 batches: 2 k × 4 splits
+    else:
+        run_default(args, config)   # 1 batch: 8 k values
 ```
 
 ### 2.5 Single Model Trainer (`trainer.py`)
@@ -139,25 +156,40 @@ def train_single_model(gpu_id: int, k: int, config: DDConfig, output_path: str, 
 
 ### 2.6 Output Structure
 
-Training outputs are organized by timestamp in `output/resnet18/MM-DD-HHmm/`:
+**Default mode** outputs to `output/resnet18/MM-DD-HHmm/`:
 
 ```
 output/resnet18/03-01-1010/
-├── metrics_k72.jsonl
-├── metrics_k80.jsonl
+├── metrics_k4.jsonl
+├── metrics_k8.jsonl
 ├── ...
-├── metrics_k128.jsonl
-├── model_k72.pt
-├── model_k80.pt
+├── metrics_k32.jsonl
+├── model_k4.pt
+├── model_k8.pt
 ├── ...
-└── model_k128.pt
+└── model_k32.pt
+```
+
+**Variance mode** outputs to `output/resnet18_variance/MM-DD-HHmm/`:
+
+```
+output/resnet18_variance/03-01-1010/
+├── metrics_k4_split0.jsonl
+├── metrics_k4_split1.jsonl
+├── metrics_k4_split2.jsonl
+├── metrics_k4_split3.jsonl
+├── ...
+├── metrics_k64_split3.jsonl
+├── model_k4_split0.pt
+├── ...
+├── model_k64_split3.pt
+└── evaluation.jsonl  # After running evaluate.py
 ```
 
 **Metrics format (JSONL):**
 ```json
-{"epoch": 1, "k": 72, "train_error": 0.85, "test_error": 0.87, "train_loss": 2.31, "test_loss": 2.35}
-{"epoch": 2, "k": 72, "train_error": 0.82, "test_error": 0.84, "train_loss": 2.12, "test_loss": 2.18}
-...
+{"epoch": 1, "k": 4, "train_error": 0.85, "test_error": 0.87, "train_loss": 2.31, "test_loss": 2.35}
+{"epoch": 1, "k": 4, "split_id": 0, "train_error": 0.85, ...}  # Variance mode
 ```
 
 **Four metrics per epoch:**
@@ -175,11 +207,14 @@ output/resnet18/03-01-1010/
 Manually provision an 8-GPU instance (8x V100, 8x A100, or 8x H100), then:
 
 ```bash
-# Default: k-start=72, trains k=72,80,88,96,104,112,120,128 on 8 GPUs
+# Default mode: k-start=4, trains k=4,8,12,16,20,24,28,32 on 8 GPUs
 ./infra/train.sh <ip> --module jl.double_descent.resnet18.resnet18_main
 
-# Or specify a different starting k (increments by 8 per GPU)
-./infra/train.sh <ip> --module jl.double_descent.resnet18.resnet18_main --k-start 8
+# Specify a different starting k (increments by 4 per GPU)
+./infra/train.sh <ip> --module jl.double_descent.resnet18.resnet18_main --k-start 36
+
+# Variance mode: 16 k values × 4 splits = 64 models
+./infra/train.sh <ip> --module jl.double_descent.resnet18.resnet18_main --variance
 ```
 
 ### 3.2 Downloading Results
@@ -205,9 +240,69 @@ Downloads all metrics and model files to `data/resnet18/MM-DD-HHmm/` and auto-ge
 - Monitor GPU utilization, training speed
 
 ### 4.3 Full Run
-- Default run: k-start=72, produces k=72,80,88,96,104,112,120,128
+- Default run: k-start=4, produces k=4,8,12,16,20,24,28,32
 - 800 epochs
-- Produces metrics_k72.jsonl through metrics_k128.jsonl
+- Produces metrics_k4.jsonl through metrics_k32.jsonl
+
+### 4.4 Variance Run
+- Variance mode: 16 k values × 4 splits = 64 models
+- 8 batches (2 k per batch × 4 splits)
+- 800 epochs per model
+- Produces metrics_k4_split0.jsonl through metrics_k64_split3.jsonl
+
+---
+
+## Variance Experiment Details
+
+### Data Split Strategy
+
+The 50K training samples are shuffled with a fixed seed, then partitioned into 4 disjoint 12.5K chunks:
+- Split 0: indices 0-12499
+- Split 1: indices 12500-24999
+- Split 2: indices 25000-37499
+- Split 3: indices 37500-49999
+
+15% label noise is applied independently to each split after partitioning.
+
+### Execution Order
+
+| Batch | k values | Splits |
+|-------|----------|--------|
+| 1     | 4, 8     | 0, 1, 2, 3 each |
+| 2     | 12, 16   | 0, 1, 2, 3 each |
+| 3     | 20, 24   | 0, 1, 2, 3 each |
+| 4     | 28, 32   | 0, 1, 2, 3 each |
+| 5     | 36, 40   | 0, 1, 2, 3 each |
+| 6     | 44, 48   | 0, 1, 2, 3 each |
+| 7     | 52, 56   | 0, 1, 2, 3 each |
+| 8     | 60, 64   | 0, 1, 2, 3 each |
+
+### Evaluation
+
+After training, run evaluation on a GPU instance:
+
+```bash
+python -m jl.double_descent.resnet18.evaluate \
+    --model-path ./output/resnet18_variance/03-01-1010 \
+    --data-path ./data
+```
+
+This computes for each k:
+- **Mean test loss**: Cross-entropy loss averaged across the 4 training splits
+- **Jensen Gap**: E[log(q_bar[y] / q_j[y])] with Bessel's correction (n-1=3)
+- **Implied Bias**: test_loss - jensen_gap
+
+Output: `evaluation.jsonl` alongside the model files.
+
+### Plotting
+
+```bash
+python -m jl.double_descent.resnet18.plot_evaluation \
+    ./output/resnet18_variance/03-01-1010/evaluation.jsonl \
+    --output-dir ./data
+```
+
+Produces `bias_variance.png` showing test loss, Jensen Gap, and implied bias vs k.
 
 ---
 
@@ -257,17 +352,18 @@ python -m jl.double_descent.resnet18.plot_single_k ./data/resnet18/03-01-1010 --
 
 | Aspect | Paper | Our Implementation |
 |--------|-------|-------------------|
-| Trials | 5 | 1 |
-| Training | Sequential per k | N models parallel on N GPUs |
+| Trials | 5 | 1 (default) or 4 (variance) |
+| Training | Sequential per k | 8 models parallel on 8 GPUs |
 | BatchNorm | Standard | Standard |
 | Epochs | 4000 | 800 |
-| Width range | 1-64 | Default k=72,80,...,128 (increment by 8) |
+| Width range | 1-64 | Default k=4,8,...,32 (increment by 4) |
+| k increment | 1 | 4 |
 
 ---
 
 ## Hardware Requirements
 
-- **At least 1 GPU required** - uses all available GPUs automatically
+- **Exactly 8 GPUs required** - script fails fast otherwise
 - Recommended: 8x V100 (16GB), 8x A100, or 8x H100 on Lambda Labs or RunPod
 - Each GPU trains one model independently
 - Memory per GPU: ~2-4GB for k≤64, larger models need more
