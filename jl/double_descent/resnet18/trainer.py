@@ -13,7 +13,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 
 from jl.double_descent.resnet18.resnet18_config import DDConfig
-from jl.double_descent.resnet18.resnet18_data import load_cifar10_with_noise
+from jl.double_descent.resnet18.resnet18_data import load_cifar10_split, load_cifar10_with_noise
 from jl.double_descent.resnet18.resnet18k import make_resnet18k
 
 
@@ -93,6 +93,8 @@ def train_single_model(
     config: DDConfig,
     output_path: str,
     data_path: str,
+    split_id: Optional[int] = None,
+    num_splits: Optional[int] = None,
 ) -> None:
     """Train a single ResNet18 with width k on the specified GPU.
 
@@ -104,18 +106,36 @@ def train_single_model(
         config: Training configuration.
         output_path: Directory to save metrics.
         data_path: Path to CIFAR-10 data.
+        split_id: For variance mode, which disjoint split to use (0 to num_splits-1).
+        num_splits: For variance mode, total number of disjoint splits.
     """
     device = torch.device(f"cuda:{gpu_id}")
 
-    print(f"[GPU {gpu_id}] Training k={k} on {device}")
+    # Determine if this is variance mode
+    variance_mode = split_id is not None and num_splits is not None
+
+    if variance_mode:
+        print(f"[GPU {gpu_id}] Training k={k}, split={split_id} on {device}")
+    else:
+        print(f"[GPU {gpu_id}] Training k={k} on {device}")
 
     # Load data (each process loads independently)
-    train_loader, test_loader = load_cifar10_with_noise(
-        noise_prob=config.label_noise,
-        batch_size=config.batch_size,
-        data_augmentation=config.data_augmentation,
-        data_dir=data_path,
-    )
+    if variance_mode:
+        train_loader, test_loader = load_cifar10_split(
+            split_id=split_id,
+            num_splits=num_splits,
+            noise_prob=config.label_noise,
+            batch_size=config.batch_size,
+            data_augmentation=config.data_augmentation,
+            data_dir=data_path,
+        )
+    else:
+        train_loader, test_loader = load_cifar10_with_noise(
+            noise_prob=config.label_noise,
+            batch_size=config.batch_size,
+            data_augmentation=config.data_augmentation,
+            data_dir=data_path,
+        )
 
     # Create model
     model = make_resnet18k(k=k, num_classes=10).to(device)
@@ -136,9 +156,12 @@ def train_single_model(
         )
         print(f"[GPU {gpu_id}] Cosine decay from epoch {config.cosine_decay_epoch} to {config.epochs} (to 0)")
 
-    # Metrics file for this k value
+    # Metrics file path depends on mode
     os.makedirs(output_path, exist_ok=True)
-    metrics_path = Path(output_path) / f"metrics_k{k}.jsonl"
+    if variance_mode:
+        metrics_path = Path(output_path) / f"metrics_k{k}_split{split_id}.jsonl"
+    else:
+        metrics_path = Path(output_path) / f"metrics_k{k}.jsonl"
 
     # Clear metrics file
     with open(metrics_path, 'w') as f:
@@ -193,19 +216,26 @@ def train_single_model(
             "train_loss": train_loss,
             "test_loss": test_loss,
         }
+        if variance_mode:
+            metrics["split_id"] = split_id
         with open(metrics_path, 'a') as f:
             f.write(json.dumps(metrics) + "\n")
 
         # Print progress
         if (epoch + 1) % config.log_interval == 0 or epoch == 0:
+            split_str = f", split={split_id}" if variance_mode else ""
             print(
-                f"[GPU {gpu_id}] k={k} Epoch {epoch + 1:4d}/{config.epochs} | "
+                f"[GPU {gpu_id}] k={k}{split_str} Epoch {epoch + 1:4d}/{config.epochs} | "
                 f"train_err={train_error:.4f} test_err={test_error:.4f} | "
                 f"train_loss={train_loss:.4f} test_loss={test_loss:.4f} | "
                 f"{epoch_time:.1f}s"
             )
 
     # Save final model
-    model_path = Path(output_path) / f"model_k{k}.pt"
+    if variance_mode:
+        model_path = Path(output_path) / f"model_k{k}_split{split_id}.pt"
+    else:
+        model_path = Path(output_path) / f"model_k{k}.pt"
     torch.save(model.state_dict(), model_path)
-    print(f"[GPU {gpu_id}] k={k} training complete! Model saved to {model_path}")
+    split_str = f", split={split_id}" if variance_mode else ""
+    print(f"[GPU {gpu_id}] k={k}{split_str} training complete! Model saved to {model_path}")
