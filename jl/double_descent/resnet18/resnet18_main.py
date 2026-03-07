@@ -44,7 +44,7 @@ REQUIRED_GPUS = 8
 K_INCREMENT = 4
 
 # Variance experiment parameters
-VARIANCE_K_VALUES = list(range(4, 68, 4))  # [4, 8, 12, ..., 64] - 16 values
+VARIANCE_K_VALUES = [2, 6, 10, 14]  # Temporary: fill in gaps for first/second descent
 VARIANCE_NUM_SPLITS = 4  # 4 disjoint training sets of 12.5K each
 
 # Configure logging with timestamps
