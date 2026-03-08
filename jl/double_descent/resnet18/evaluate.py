@@ -9,21 +9,34 @@ Uses Bessel's correction (n-1) for unbiased variance estimation with 4 models.
 
 Output: evaluation.jsonl written alongside the model files.
 
+With --temperature-scaling: fits a scalar temperature T per k value on one randomly
+chosen model's logits (L-BFGS on test set NLL), then recomputes the full decomposition
+with softmax(logits/T). Results go to temperature-scaled/evaluation.jsonl.
+
 Usage:
     python -m jl.double_descent.resnet18.evaluate \
         --model-path ./output/resnet18_variance/03-01-1010 \
         --data-path ./data
+
+    python -m jl.double_descent.resnet18.evaluate \
+        --model-path ./output/resnet18_variance/03-01-1010 \
+        --data-path ./data --temperature-scaling
 """
 
 import argparse
 import json
 import logging
+import os
+import random
 import re
+import tempfile
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List
 
 import torch
+import torch.multiprocessing as mp
+import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
@@ -150,6 +163,90 @@ def evaluate_k(
     }
 
 
+def fit_temperature(model, test_loader, device):
+    """Fit scalar temperature T via L-BFGS to minimize NLL on test set.
+
+    Collects all logits first (10K x 10 for CIFAR-10, trivially small),
+    then optimizes T on CPU.
+    """
+    all_logits = []
+    all_labels = []
+    model.eval()
+    with torch.no_grad():
+        for images, labels in test_loader:
+            logits = model(images.to(device))
+            all_logits.append(logits.cpu())
+            all_labels.append(labels)
+
+    all_logits = torch.cat(all_logits)
+    all_labels = torch.cat(all_labels)
+
+    temperature = nn.Parameter(torch.ones(1))
+    optimizer = torch.optim.LBFGS([temperature], lr=0.01, max_iter=50)
+
+    def closure():
+        optimizer.zero_grad()
+        loss = F.cross_entropy(all_logits / temperature, all_labels)
+        loss.backward()
+        return loss
+
+    optimizer.step(closure)
+    return temperature.item()
+
+
+def _ts_eval_worker(gpu_id, model_path_str, k, temperature, data_path, output_file):
+    """Worker process: evaluate one model with temperature scaling.
+
+    Loads model on assigned GPU, runs forward pass with temperature T,
+    saves q_j[y] (probability of correct class) and loss to output_file.
+    """
+    device = torch.device(f"cuda:{gpu_id}")
+
+    model = make_resnet18k(k=k, num_classes=10).to(device)
+    model.load_state_dict(
+        torch.load(model_path_str, map_location=device, weights_only=True)
+    )
+    model.eval()
+
+    normalize = transforms.Normalize(
+        mean=[0.4914, 0.4822, 0.4465],
+        std=[0.2023, 0.1994, 0.2010],
+    )
+    test_dataset = NoisyCIFAR10(
+        root=data_path,
+        train=False,
+        noise_prob=0.0,
+        transform=transforms.Compose([transforms.ToTensor(), normalize]),
+    )
+    test_loader = DataLoader(
+        test_dataset, batch_size=EVAL_BATCH_SIZE, shuffle=False,
+        num_workers=2, pin_memory=True,
+    )
+
+    all_q_j_y = []
+    total_loss = 0.0
+    total_samples = 0
+
+    with torch.no_grad():
+        for images, labels in test_loader:
+            images, labels = images.to(device), labels.to(device)
+            logits = model(images)
+
+            loss = F.cross_entropy(logits / temperature, labels, reduction='sum')
+            total_loss += loss.item()
+
+            probs = F.softmax(logits / temperature, dim=-1)
+            q_j_y = probs.gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
+            all_q_j_y.append(q_j_y.cpu())
+            total_samples += labels.size(0)
+
+    torch.save({
+        'q_j_y': torch.cat(all_q_j_y),
+        'total_loss': torch.tensor(total_loss),
+        'total_samples': torch.tensor(total_samples),
+    }, output_file)
+
+
 def main():
     logging.basicConfig(
         level=logging.INFO,
@@ -171,6 +268,11 @@ def main():
         type=str,
         default="./data",
         help="Directory containing CIFAR-10 data",
+    )
+    parser.add_argument(
+        "--temperature-scaling",
+        action="store_true",
+        help="Fit per-k temperature and recompute bias-variance decomposition",
     )
     args = parser.parse_args()
 
@@ -211,16 +313,112 @@ def main():
     )
     logger.info(f"Test set: {len(test_dataset)} samples")
 
-    output_path = Path(args.model_path) / "evaluation.jsonl"
-    if output_path.exists():
-        output_path.unlink()
+    if args.temperature_scaling:
+        mp.set_start_method('spawn', force=True)
 
-    for k, model_paths in grouped.items():
-        result = evaluate_k(model_paths, k, test_loader, device)
-        with open(output_path, "a") as f:
-            f.write(json.dumps(result) + "\n")
+        ts_output = Path(args.model_path) / "temperature-scaled"
+        ts_output.mkdir(parents=True, exist_ok=True)
+        ts_eval_file = ts_output / "evaluation.jsonl"
+        if ts_eval_file.exists():
+            ts_eval_file.unlink()
 
-    logger.info(f"Results written to {output_path}")
+        k_values = sorted(grouped.keys())
+        splits_per_k = len(grouped[k_values[0]])
+        k_per_batch = max(1, torch.cuda.device_count() // splits_per_k)
+
+        for batch_start in range(0, len(k_values), k_per_batch):
+            batch_k = k_values[batch_start:batch_start + k_per_batch]
+
+            # Fit temperature for each k (sequential, fast)
+            temperatures = {}
+            for k in batch_k:
+                rng = random.Random(k)
+                calib_idx = rng.randrange(len(grouped[k]))
+                model = load_model(grouped[k][calib_idx], k, device)
+                temperatures[k] = fit_temperature(model, test_loader, device)
+                del model
+                torch.cuda.empty_cache()
+                logger.info(f"k={k}: fitted T={temperatures[k]:.4f}")
+
+            # Spawn parallel workers across GPUs
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                processes = []
+                gpu_id = 0
+                for k in batch_k:
+                    for split_idx, model_path in enumerate(grouped[k]):
+                        out_f = os.path.join(tmp_dir, f"k{k}_s{split_idx}.pt")
+                        p = mp.Process(
+                            target=_ts_eval_worker,
+                            args=(gpu_id, str(model_path), k,
+                                  temperatures[k], args.data_path, out_f),
+                        )
+                        p.start()
+                        processes.append(p)
+                        gpu_id += 1
+
+                for p in processes:
+                    p.join()
+
+                # Compute decomposition for each k
+                for k in batch_k:
+                    num_models = len(grouped[k])
+                    all_q_j_y = []
+                    total_loss_sum = 0.0
+                    total_samples = 0
+
+                    for split_idx in range(num_models):
+                        data = torch.load(
+                            os.path.join(tmp_dir, f"k{k}_s{split_idx}.pt"),
+                            weights_only=True,
+                        )
+                        all_q_j_y.append(data['q_j_y'])
+                        total_loss_sum += data['total_loss'].item()
+                        total_samples = data['total_samples'].item()
+
+                    q_j_y = torch.stack(all_q_j_y)  # [M, N]
+                    q_bar_y = q_j_y.mean(dim=0)  # [N]
+
+                    log_q_bar_y = torch.log(q_bar_y + 1e-10)
+                    total_jensen = 0.0
+                    for j in range(num_models):
+                        log_q_j_y = torch.log(q_j_y[j] + 1e-10)
+                        total_jensen += (log_q_bar_y - log_q_j_y).sum().item()
+
+                    # Bessel's correction (n-1)
+                    mean_jensen_gap = total_jensen / ((num_models - 1) * total_samples)
+                    mean_test_loss = total_loss_sum / (num_models * total_samples)
+
+                    result = {
+                        "k": k,
+                        "mean_test_loss": round(mean_test_loss, 6),
+                        "mean_jensen_gap": round(mean_jensen_gap, 6),
+                        "temperature": round(temperatures[k], 6),
+                        "num_models": num_models,
+                        "total_samples": total_samples,
+                    }
+
+                    logger.info(
+                        f"k={k}: T={temperatures[k]:.4f}, "
+                        f"mean_test_loss={mean_test_loss:.4f}, "
+                        f"mean_jensen_gap={mean_jensen_gap:.6f}"
+                    )
+
+                    with open(ts_eval_file, "a") as fh:
+                        fh.write(json.dumps(result) + "\n")
+
+        logger.info(f"Temperature-scaled results: {ts_eval_file}")
+
+    else:
+        output_path = Path(args.model_path) / "evaluation.jsonl"
+        if output_path.exists():
+            output_path.unlink()
+
+        for k, model_paths in grouped.items():
+            result = evaluate_k(model_paths, k, test_loader, device)
+            with open(output_path, "a") as fh:
+                fh.write(json.dumps(result) + "\n")
+
+        logger.info(f"Results written to {output_path}")
 
 
 if __name__ == "__main__":
