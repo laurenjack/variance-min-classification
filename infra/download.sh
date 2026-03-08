@@ -183,6 +183,13 @@ for EXPERIMENT_TYPE in resnet18 resnet18_variance transformer transformer_varian
                 else
                     log_info "No evaluation.jsonl in $TIMESTAMP_DIR (run evaluate first)"
                 fi
+                if [[ -f "$TIMESTAMP_DIR/temperature-scaled/evaluation.jsonl" ]]; then
+                    python -m jl.double_descent.resnet18.plot_evaluation \
+                        "$TIMESTAMP_DIR/temperature-scaled/evaluation.jsonl" \
+                        --output-dir "$TIMESTAMP_DIR/temperature-scaled" \
+                        --temperature-scaled || \
+                        log_warn "Failed to plot resnet18_variance (temperature-scaled)"
+                fi
                 ;;
             transformer)
                 python -m jl.double_descent.transformer.plot_vary_d_model "$TIMESTAMP_DIR" \
@@ -196,6 +203,13 @@ for EXPERIMENT_TYPE in resnet18 resnet18_variance transformer transformer_varian
                         log_warn "Failed to plot transformer_variance"
                 else
                     log_info "No evaluation.jsonl in $TIMESTAMP_DIR (run evaluate first)"
+                fi
+                if [[ -f "$TIMESTAMP_DIR/temperature-scaled/evaluation.jsonl" ]]; then
+                    python -m jl.double_descent.transformer.plot_evaluation \
+                        "$TIMESTAMP_DIR/temperature-scaled/evaluation.jsonl" \
+                        --output-dir "$TIMESTAMP_DIR/temperature-scaled" \
+                        --temperature-scaled || \
+                        log_warn "Failed to plot transformer_variance (temperature-scaled)"
                 fi
                 ;;
             reward_model)

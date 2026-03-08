@@ -35,12 +35,13 @@ def load_evaluation(eval_path: str) -> List[Dict]:
     return sorted(results, key=lambda r: r["d_model"])
 
 
-def plot_evaluation(eval_path: str, output_dir: str) -> None:
+def plot_evaluation(eval_path: str, output_dir: str, temperature_scaled: bool = False) -> None:
     """Plot bias-variance decomposition vs d_model.
 
     Args:
         eval_path: Path to evaluation.jsonl file.
         output_dir: Directory to save plot.
+        temperature_scaled: If True, append "(Temperature Scaled)" to plot title.
     """
     results = load_evaluation(eval_path)
 
@@ -51,13 +52,17 @@ def plot_evaluation(eval_path: str, output_dir: str) -> None:
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
+    title = "Bias-Variance Decomposition vs d_model"
+    if temperature_scaled:
+        title += " (Temperature Scaled)"
+
     fig, ax = plt.subplots(figsize=(8, 5), dpi=150)
     ax.plot(d_models, test_losses, "-", color="tab:blue", lw=2, label="Mean Test Loss")
     ax.plot(d_models, jensen_gaps, "-", color="tab:orange", lw=2, label="Jensen Gap (variance)")
     ax.plot(d_models, implied_bias, "-", color="tab:green", lw=2, label="Implied Bias")
     ax.set_xlabel("Transformer embedding dimension (d_model)")
     ax.set_ylabel("Cross-Entropy (nats)")
-    ax.set_title("Bias-Variance Decomposition vs d_model")
+    ax.set_title(title)
     ax.set_ylim(bottom=0)
     ax.legend()
     ax.grid(True, alpha=0.3)
@@ -83,10 +88,15 @@ def main():
         default=None,
         help="Directory to save plot (default: same directory as eval_path)",
     )
+    parser.add_argument(
+        "--temperature-scaled",
+        action="store_true",
+        help="Label plot as temperature-scaled results",
+    )
     args = parser.parse_args()
 
     output_dir = args.output_dir if args.output_dir else str(Path(args.eval_path).parent)
-    plot_evaluation(args.eval_path, output_dir)
+    plot_evaluation(args.eval_path, output_dir, temperature_scaled=args.temperature_scaled)
 
 
 if __name__ == "__main__":

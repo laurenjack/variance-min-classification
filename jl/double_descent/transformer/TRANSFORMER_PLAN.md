@@ -596,6 +596,28 @@ Four new files:
    - Produces a single figure: bias-variance decomposition (test loss, Jensen Gap, implied bias) vs d_model
    - Usage: `python -m jl.double_descent.transformer.plot_evaluation ./data/transformer_variance/03-01-1010/evaluation.jsonl --output-dir ./data`
 
+#### Temperature Scaling
+
+Optional post-hoc calibration to demonstrate that simple calibration cannot recover first-descent loss:
+
+```bash
+python -m jl.double_descent.transformer.evaluate \
+    --model-path ./output/transformer_variance/03-01-1010 \
+    --data-path ./data/iwslt14.tokenized.de-en --temperature-scaling
+```
+
+This fits a scalar temperature T per d_model using L-BFGS on one randomly chosen model's test NLL (batch-wise to avoid storing full logits), then recomputes the full bias-variance decomposition with `softmax(logits/T)` across all models. Forward passes are parallelized across 8 GPUs (one model per GPU).
+
+Output: `temperature-scaled/evaluation.jsonl` in the model directory (same schema plus a `"temperature"` field).
+
+Plotting temperature-scaled results:
+
+```bash
+python -m jl.double_descent.transformer.plot_evaluation \
+    ./data/transformer_variance/03-01-1010/temperature-scaled/evaluation.jsonl \
+    --output-dir ./data --temperature-scaled
+```
+
 
 ## Key Differences from Paper
 
