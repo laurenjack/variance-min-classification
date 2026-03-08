@@ -152,7 +152,11 @@ TIMESTAMP=$(date +"%m-%d-%H%M")
 if [[ "$MODULE" == "jl.reward_model.reward_main" ]]; then
     EXPERIMENT_TYPE="reward_model"
 elif [[ "$MODULE" == "jl.double_descent.resnet18.resnet18_main" ]]; then
-    EXPERIMENT_TYPE="resnet18"
+    if [[ -n "$VARIANCE" ]]; then
+        EXPERIMENT_TYPE="resnet18_variance"
+    else
+        EXPERIMENT_TYPE="resnet18"
+    fi
 elif [[ "$MODULE" == "jl.double_descent.transformer.transformer_main" ]]; then
     if [[ -n "$VARIANCE" ]]; then
         EXPERIMENT_TYPE="transformer_variance"
