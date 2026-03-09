@@ -190,6 +190,11 @@ for EXPERIMENT_TYPE in resnet18 resnet18_variance transformer transformer_varian
                         --temperature-scaled || \
                         log_warn "Failed to plot resnet18_variance (temperature-scaled)"
                 fi
+                if [[ -f "$TIMESTAMP_DIR/ece.jsonl" ]]; then
+                    python -m jl.double_descent.resnet18.plot_ece \
+                        "$TIMESTAMP_DIR/ece.jsonl" --output-dir "$TIMESTAMP_DIR" || \
+                        log_warn "Failed to plot resnet18_variance ECE"
+                fi
                 ;;
             transformer)
                 python -m jl.double_descent.transformer.plot_vary_d_model "$TIMESTAMP_DIR" \
@@ -210,6 +215,11 @@ for EXPERIMENT_TYPE in resnet18 resnet18_variance transformer transformer_varian
                         --output-dir "$TIMESTAMP_DIR/temperature-scaled" \
                         --temperature-scaled || \
                         log_warn "Failed to plot transformer_variance (temperature-scaled)"
+                fi
+                if [[ -f "$TIMESTAMP_DIR/ece.jsonl" ]]; then
+                    python -m jl.double_descent.transformer.plot_ece \
+                        "$TIMESTAMP_DIR/ece.jsonl" --output-dir "$TIMESTAMP_DIR" || \
+                        log_warn "Failed to plot transformer_variance ECE"
                 fi
                 ;;
             reward_model)
