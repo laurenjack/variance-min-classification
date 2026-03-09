@@ -2,29 +2,22 @@
 
 ## Goal
 Reproduce the Transformer double-descent curve from Nakkiran et al. (2019) Figure 3:
-- 6-layer encoder-decoder Transformer with varying embedding dimension d_model (8-384)
+- 6-layer encoder-decoder Transformer with varying embedding dimension d_model (8-192)
 - IWSLT'14 German-to-English translation
-- Train/test loss, accuracy, AND BLEU vs model width
-- **Both 4K and 18K training samples** (overlaid on same plot)
+- Train/test cross-entropy loss, test accuracy, and test BLEU vs model width
+- **36K training samples**
 
 ---
 
 ## Approach
 
-**Three experiment modes**, all requiring exactly 8 GPUs:
+**Two experiment modes**, all requiring exactly 8 GPUs:
 
 ### Default Mode (Double Descent)
-Trains 48 models to reproduce the double descent curve:
+Trains 24 models to reproduce the double descent curve:
 - 24 d_model values: 8, 16, 24, ..., 192
-- 2 sample sizes: 18K first, then 4K
-- 6 batches total (3 per sample size), each training 8 models in parallel
-
-### Long Double Descent Mode (`--long-double-descent` flag)
-Extends the curve to larger models:
-- 24 d_model values: 384, 376, 368, ..., 200 (largest first to detect OOM early)
-- 18K samples only
-- 3 batches total, 8 models in parallel
-- Combined with default mode, produces full 8-384 range plot
+- 36K training samples
+- 3 batches total, each training 8 models in parallel
 
 ### Variance Mode (`--variance` flag)
 Trains 48 models to analyze variance across different training data:
@@ -114,14 +107,17 @@ class TDDConfig:
     d_ff_multiplier: int = 4        # d_ff = d_ff_multiplier * d_model
     # Note: dropout hardcoded to 0.0 in model (per paper)
 
-    # Training (from paper: 80K steps)
+    # Training (80K steps)
     max_steps: int = 80000          # Gradient steps
     max_tokens: int = 4096          # Tokens per batch (max-tokens batching)
     warmup_steps: int = 4000        # LR warmup steps
-    optimizer: str = "adam_w"       # AdamW with Vaswani params (beta1=0.9, beta2=0.98, eps=1e-9)
+    learning_rate: float = 3e-4     # Peak learning rate after warmup
+    optimizer: str = "adam_w"       # AdamW with beta1=0.9, beta2=0.98, eps=1e-9
+
+    # LR Schedule: Linear warmup for warmup_steps, then cosine decay to 0
 
     # Regularization
-    label_smoothing: Optional[float] = 0.1  # None to disable
+    label_smoothing: Optional[float] = None  # Disabled
 
     # Data
     subsample_seed: int = 42        # Fixed seed for reproducibility
@@ -210,8 +206,8 @@ Entry point for Transformer Double Descent training.
 
 Runs the FULL experiment automatically:
 - Requires exactly 8 GPUs (fails fast otherwise)
-- Trains all 48 models: 24 d_model values x 2 sample sizes
-- 6 batches total, 8 models per batch
+- Trains 24 models: 24 d_model values x 1 sample size (36K)
+- 3 batches total, 8 models per batch
 
 Usage:
     python -m jl.double_descent.transformer.transformer_main \
@@ -220,7 +216,7 @@ Usage:
 """
 
 # Hardcoded experiment parameters
-TRAIN_SAMPLES = [18000, 4000]  # 18K first, then 4K
+TRAIN_SAMPLES = [36000]  # 36K samples
 D_MODEL_VALUES = list(range(8, 200, 8))  # [8, 16, 24, ..., 192] - 24 values
 REQUIRED_GPUS = 8
 
@@ -237,47 +233,43 @@ def main():
             f"but found {num_gpus}. Please run on an 8-GPU instance."
         )
 
+    train_samples = TRAIN_SAMPLES[0]
+    samples_k = train_samples // 1000
+
     logger.info("Transformer Double Descent - Full Experiment")
     logger.info(f"d_model values: {D_MODEL_VALUES}")
-    logger.info(f"Train samples: {TRAIN_SAMPLES}")
-    logger.info(f"Total models: {len(D_MODEL_VALUES) * len(TRAIN_SAMPLES)} = 48")
-    logger.info(f"Batches: {len(D_MODEL_VALUES) // REQUIRED_GPUS * len(TRAIN_SAMPLES)} = 6")
+    logger.info(f"Train samples: {train_samples}")
+    logger.info(f"Total models: {len(D_MODEL_VALUES)}")
+    logger.info(f"Batches: {len(D_MODEL_VALUES) // REQUIRED_GPUS}")
 
-    # Outer loop: sample sizes (18K first, then 4K)
-    for train_samples in TRAIN_SAMPLES:
-        samples_k = train_samples // 1000
-        logger.info(f"\n{'='*60}")
-        logger.info(f"Starting {samples_k}K sample runs")
-        logger.info(f"{'='*60}")
+    # Loop over d_model batches (3 batches of 8)
+    for batch_idx in range(0, len(D_MODEL_VALUES), REQUIRED_GPUS):
+        batch_d_models = D_MODEL_VALUES[batch_idx:batch_idx + REQUIRED_GPUS]
+        batch_num = batch_idx // REQUIRED_GPUS + 1
 
-        # Inner loop: d_model batches (3 batches of 8)
-        for batch_idx in range(0, len(D_MODEL_VALUES), REQUIRED_GPUS):
-            batch_d_models = D_MODEL_VALUES[batch_idx:batch_idx + REQUIRED_GPUS]
-            batch_num = batch_idx // REQUIRED_GPUS + 1
+        logger.info(f"\n[{samples_k}K] Batch {batch_num}/3: d_model = {batch_d_models}")
 
-            logger.info(f"\n[{samples_k}K] Batch {batch_num}/3: d_model = {batch_d_models}")
+        # Spawn 8 training processes
+        mp.set_start_method('spawn', force=True)
+        processes = []
+        for gpu_id, d_model in enumerate(batch_d_models):
+            p = mp.Process(
+                target=train_single_model,
+                args=(gpu_id, d_model, train_samples, config,
+                      args.output_path, args.data_path)
+            )
+            p.start()
+            processes.append(p)
 
-            # Spawn 8 training processes
-            mp.set_start_method('spawn', force=True)
-            processes = []
-            for gpu_id, d_model in enumerate(batch_d_models):
-                p = mp.Process(
-                    target=train_single_model,
-                    args=(gpu_id, d_model, train_samples, config,
-                          args.output_path, args.data_path)
-                )
-                p.start()
-                processes.append(p)
+        # Wait for batch to complete
+        for p in processes:
+            p.join()
 
-            # Wait for batch to complete
-            for p in processes:
-                p.join()
-
-            logger.info(f"[{samples_k}K] Batch {batch_num}/3 complete")
+        logger.info(f"[{samples_k}K] Batch {batch_num}/3 complete")
 
     logger.info("\n" + "="*60)
     logger.info("Full experiment complete!")
-    logger.info(f"Metrics files: {args.output_path}/metrics_d*_*k.jsonl")
+    logger.info(f"Metrics files: {args.output_path}/metrics_d*_{samples_k}k.jsonl")
 ```
 
 ### 3.5 Single Model Trainer (`trainer.py`)
@@ -321,27 +313,25 @@ Training outputs are organized by timestamp in `output/transformer/MM-DD-HHmm/`:
 
 ```
 output/transformer/03-01-1010/
-├── metrics_d8_18k.jsonl
-├── metrics_d8_4k.jsonl
+├── metrics_d8_36k.jsonl
+├── metrics_d16_36k.jsonl
 ├── ...
-├── metrics_d192_18k.jsonl
-├── metrics_d192_4k.jsonl
-├── model_d8_18k.pt
-├── model_d8_4k.pt
+├── metrics_d192_36k.jsonl
+├── model_d8_36k.pt
+├── model_d16_36k.pt
 ├── ...
-├── model_d192_18k.pt
-└── model_d192_4k.pt
+└── model_d192_36k.pt
 ```
 
 **Metrics format (JSONL):**
 ```json
-{"step": 100, "d_model": 64, "train_samples": 18000, "train_loss": 8.5, "train_acc": 0.05, "valid_loss": 8.7, "valid_acc": 0.04, "lr": 0.0001}
-{"step": 200, "d_model": 64, "train_samples": 18000, "train_loss": 7.2, "train_acc": 0.12, "valid_loss": 7.5, "valid_acc": 0.10, "lr": 0.0002}
+{"step": 100, "d_model": 64, "train_samples": 36000, "train_loss": 8.5, "train_acc": 0.05, "valid_loss": 8.7, "valid_acc": 0.04, "lr": 0.0001}
+{"step": 200, "d_model": 64, "train_samples": 36000, "train_loss": 7.2, "train_acc": 0.12, "valid_loss": 7.5, "valid_acc": 0.10, "lr": 0.0002}
 ...
-{"step": 80000, "d_model": 64, "train_samples": 18000, "train_loss": 2.1, "train_acc": 0.65, "valid_loss": 3.2, "valid_acc": 0.48, "lr": 0.00003, "train_bleu": 45.2, "test_bleu": 28.5, "test_loss": 3.3, "test_acc": 0.47}
+{"step": 80000, "d_model": 64, "train_samples": 36000, "train_loss": 2.1, "train_acc": 0.65, "valid_loss": 3.2, "valid_acc": 0.48, "lr": 0.00003, "train_bleu": 45.2, "test_bleu": 28.5, "test_loss": 3.3, "test_acc": 0.47}
 ```
 
-**Total output files:** 96 (48 metrics + 48 models)
+**Total output files:** 48 (24 metrics + 24 models)
 
 ---
 
@@ -356,21 +346,8 @@ output/transformer/03-01-1010/
 
 The script automatically:
 1. Checks for exactly 8 GPUs (fails fast otherwise)
-2. Runs 18K samples: batches for d_model 8-64, 72-128, 136-192
-3. Runs 4K samples: batches for d_model 8-64, 72-128, 136-192
-4. Produces 48 metrics files total
-
-**Long double descent (d_model 384-200, extends the curve):**
-```bash
-./infra/train.sh <ip> --module jl.double_descent.transformer.transformer_main --long-double-descent
-```
-
-The script:
-1. Runs d_model 384, 376, ..., 200 (largest first to detect OOM)
-2. 18K samples only, 24 models, 3 batches
-3. Produces 24 additional metrics files (same naming convention)
-
-**Note:** Run long-double-descent AFTER the default experiment, using the same output folder. The plot function will auto-discover all files and produce a combined 8-384 range plot.
+2. Runs 36K samples: 3 batches for d_model 8-64, 72-128, 136-192
+3. Produces 24 metrics files total
 
 ### 4.2 Downloading Results
 
@@ -388,11 +365,11 @@ Plots are auto-generated by `download.sh` and saved alongside metrics in the run
 
 ### `plot_vary_d_model.py` - Final metrics across d_model values (MAIN PLOT)
 
-Auto-loads ALL metrics files and overlays 4K and 18K curves:
+Auto-loads ALL metrics files and dynamically discovers sample sizes:
 - Single figure with 3 subplots:
-  - Top: Test loss vs d_model (4K and 18K overlaid)
-  - Middle: Test accuracy vs d_model (4K and 18K overlaid)
-  - Bottom: Test BLEU vs d_model (4K and 18K overlaid)
+  - Top: Train and test cross-entropy loss vs d_model
+  - Middle: Test accuracy vs d_model
+  - Bottom: Test BLEU vs d_model
 
 ```bash
 # Output saved to same directory as metrics
@@ -437,21 +414,9 @@ python -m jl.double_descent.transformer.transformer_main \
     --data-path ./data/iwslt14.tokenized.de-en
 ```
 
-**Expected runtime:** ~6-8 hours total (48 models × ~8 minutes each)
+**Expected runtime:** ~3-4 hours total (24 models in 3 batches)
 
-**Output:** 48 files: `metrics_d{8-192}_{4k,18k}.jsonl`
-
-**Long double descent (extends curve to larger models):**
-```bash
-python -m jl.double_descent.transformer.transformer_main \
-    --long-double-descent \
-    --output-path ./output \
-    --data-path ./data/iwslt14.tokenized.de-en
-```
-
-**Expected runtime:** ~3-4 hours (24 models × ~8 minutes each, larger models take longer)
-
-**Output:** 24 files: `metrics_d{200-384}_18k.jsonl`
+**Output:** 24 files: `metrics_d{8-192}_36k.jsonl`
 
 ---
 
@@ -459,22 +424,9 @@ python -m jl.double_descent.transformer.transformer_main \
 
 | Batch | Sample Size | d_model Values |
 |-------|-------------|----------------|
-| 1     | 18K         | 8, 16, 24, 32, 40, 48, 56, 64 |
-| 2     | 18K         | 72, 80, 88, 96, 104, 112, 120, 128 |
-| 3     | 18K         | 136, 144, 152, 160, 168, 176, 184, 192 |
-| 4     | 4K          | 8, 16, 24, 32, 40, 48, 56, 64 |
-| 5     | 4K          | 72, 80, 88, 96, 104, 112, 120, 128 |
-| 6     | 4K          | 136, 144, 152, 160, 168, 176, 184, 192 |
-
-### Long Double Descent Execution Order (`--long-double-descent`)
-
-| Batch | Sample Size | d_model Values |
-|-------|-------------|----------------|
-| 1     | 18K         | 384, 376, 368, 360, 352, 344, 336, 328 |
-| 2     | 18K         | 320, 312, 304, 296, 288, 280, 272, 264 |
-| 3     | 18K         | 256, 248, 240, 232, 224, 216, 208, 200 |
-
-**Note:** Runs largest models first to detect OOM early.
+| 1     | 36K         | 8, 16, 24, 32, 40, 48, 56, 64 |
+| 2     | 36K         | 72, 80, 88, 96, 104, 112, 120, 128 |
+| 3     | 36K         | 136, 144, 152, 160, 168, 176, 184, 192 |
 
 ---
 
@@ -647,9 +599,12 @@ Produces `ece.png` showing per-token ECE vs d_model.
 
 | Aspect | Paper | Our Implementation |
 |--------|-------|-------------------|
-| Optimizer | Adam | AdamW (same hyperparams) |
+| Optimizer | Adam | AdamW (beta1=0.9, beta2=0.98, eps=1e-9) |
+| LR Schedule | Vaswani (inverse sqrt) | Warmup + cosine decay to 0 |
+| Learning Rate | Scaled by d_model | Fixed 3e-4 peak |
+| Label Smoothing | 0.1 | Disabled |
 | Trials | Unknown | 1 (double descent) or 8 (variance) |
-| Sample sizes | 4K and 18K | Both (overlaid on same plot) |
+| Sample sizes | 4K and 18K | 36K |
 | Framework | fairseq | Custom PyTorch |
 | BLEU frequency | Unknown | End of training only |
 
@@ -661,7 +616,7 @@ Produces `ece.png` showing per-token ECE vs d_model.
 - **Training**: **Exactly 8 GPUs required** (script fails fast otherwise)
 - **Memory**: ~2-8GB per GPU depending on d_model
 - **Instance type**: 8x Nvidia GPUs from Lambda Labs
-- **Estimated time**: 6-8 hours for full experiment
+- **Estimated time**: ~3-4 hours for full experiment (24 models in 3 batches)
 
 ---
 

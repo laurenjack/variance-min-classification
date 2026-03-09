@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Plot final metrics across varying d_model values, overlaying 4K and 18K samples.
+"""Plot final metrics across varying d_model values.
+
+Dynamically discovers all sample sizes present in the metrics directory and
+overlays them on the same plot. Shows both train and test cross-entropy loss,
+but only test accuracy and BLEU.
 
 Usage:
     python -m jl.double_descent.transformer.plot_vary_d_model ./data/transformer/03-01-1010
@@ -20,11 +24,13 @@ import matplotlib.pyplot as plt
 def load_all_metrics(metrics_dir: str) -> Dict[str, List[Dict]]:
     """Load metrics from all metrics_d*_*k.jsonl files, grouped by sample size.
 
+    Dynamically discovers all sample sizes present in the directory.
+
     Args:
         metrics_dir: Directory containing metrics_d*_*k.jsonl files.
 
     Returns:
-        Dict with keys '4k' and '18k', each containing list of metrics dicts.
+        Dict with sample size keys (e.g., '4k', '18k', '36k'), each containing list of metrics dicts.
     """
     path = Path(metrics_dir)
     pattern = str(path / "metrics_d*_*k.jsonl")
@@ -33,8 +39,8 @@ def load_all_metrics(metrics_dir: str) -> Dict[str, List[Dict]]:
     if not files:
         raise FileNotFoundError(f"No metrics_d*_*k.jsonl files found in {path}")
 
-    # Group by sample size
-    metrics_by_samples = {'4k': [], '18k': []}
+    # Dynamically discover sample sizes and group metrics
+    metrics_by_samples: Dict[str, List[Dict]] = {}
 
     for file_path in files:
         # Extract sample size from filename (metrics_d64_18k.jsonl -> 18k)
@@ -45,7 +51,7 @@ def load_all_metrics(metrics_dir: str) -> Dict[str, List[Dict]]:
         samples_k = match.group(1)
 
         if samples_k not in metrics_by_samples:
-            continue
+            metrics_by_samples[samples_k] = []
 
         with open(file_path, 'r') as f:
             for line in f:
@@ -53,9 +59,11 @@ def load_all_metrics(metrics_dir: str) -> Dict[str, List[Dict]]:
                     metrics_by_samples[samples_k].append(json.loads(line))
 
     # Check we have data
+    if not metrics_by_samples:
+        raise FileNotFoundError(f"No valid metrics files found in {path}")
+
     for k, v in metrics_by_samples.items():
-        if not v:
-            print(f"Warning: No metrics found for {k} samples")
+        print(f"Found {len(v)} metric entries for {k} samples")
 
     return metrics_by_samples
 
@@ -95,12 +103,14 @@ def plot_vary_d_model(
     metrics_dir: str,
     output_dir: str,
 ) -> None:
-    """Plot final loss, accuracy, and BLEU vs d_model with 4K and 18K overlaid.
+    """Plot final loss, accuracy, and BLEU vs d_model.
 
     Creates a single figure with 3 subplots:
-    - Top: Test loss vs d_model (4K and 18K overlaid)
-    - Middle: Test accuracy vs d_model (4K and 18K overlaid)
-    - Bottom: Test BLEU vs d_model (4K and 18K overlaid)
+    - Top: Train and test cross-entropy loss vs d_model
+    - Middle: Test accuracy vs d_model
+    - Bottom: Test BLEU vs d_model
+
+    If multiple sample sizes are present, they are overlaid on the same plot.
 
     Args:
         metrics_dir: Directory containing metrics_d*_*k.jsonl files.
@@ -121,33 +131,44 @@ def plot_vary_d_model(
 
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12), dpi=150, sharex=True)
 
-    # Colors for each sample size
-    colors = {'4k': 'red', '18k': 'blue'}
-    labels = {'4k': '4K samples', '18k': '18K samples'}
+    # Color palette for different sample sizes
+    color_palette = ['blue', 'red', 'green', 'orange', 'purple', 'brown']
+    sample_sizes = sorted(data_by_samples.keys(), key=lambda x: int(x.rstrip('k')))
 
-    # Loss plot (test only)
-    for samples_k, data in data_by_samples.items():
-        ax1.plot(data['d_model_values'], data['test_loss'], '-o', color=colors[samples_k],
-                 lw=2, label=labels[samples_k])
-    ax1.set_ylabel('Test Cross-Entropy Loss')
+    # Loss plot (train and test)
+    for i, samples_k in enumerate(sample_sizes):
+        data = data_by_samples[samples_k]
+        color = color_palette[i % len(color_palette)]
+        label_suffix = f" ({samples_k.upper()} samples)" if len(sample_sizes) > 1 else ""
+        ax1.plot(data['d_model_values'], data['train_loss'], '--o', color=color,
+                 lw=2, alpha=0.7, label=f'Train{label_suffix}')
+        ax1.plot(data['d_model_values'], data['test_loss'], '-o', color=color,
+                 lw=2, label=f'Test{label_suffix}')
+    ax1.set_ylabel('Cross-Entropy Loss')
     ax1.set_title('Transformer Double Descent: IWSLT14 de-en')
     ax1.set_ylim(bottom=0)
     ax1.legend(loc='upper right')
     ax1.grid(True, alpha=0.3)
 
     # Accuracy plot (test only)
-    for samples_k, data in data_by_samples.items():
-        ax2.plot(data['d_model_values'], data['test_acc'], '-o', color=colors[samples_k],
-                 lw=2, label=labels[samples_k])
+    for i, samples_k in enumerate(sample_sizes):
+        data = data_by_samples[samples_k]
+        color = color_palette[i % len(color_palette)]
+        label = f'{samples_k.upper()} samples' if len(sample_sizes) > 1 else 'Test'
+        ax2.plot(data['d_model_values'], data['test_acc'], '-o', color=color,
+                 lw=2, label=label)
     ax2.set_ylabel('Test Token-level Accuracy')
     ax2.set_ylim(0, 1)
     ax2.legend(loc='lower right')
     ax2.grid(True, alpha=0.3)
 
     # BLEU plot (test only)
-    for samples_k, data in data_by_samples.items():
-        ax3.plot(data['d_model_values'], data['test_bleu'], '-o', color=colors[samples_k],
-                 lw=2, label=labels[samples_k])
+    for i, samples_k in enumerate(sample_sizes):
+        data = data_by_samples[samples_k]
+        color = color_palette[i % len(color_palette)]
+        label = f'{samples_k.upper()} samples' if len(sample_sizes) > 1 else 'Test'
+        ax3.plot(data['d_model_values'], data['test_bleu'], '-o', color=color,
+                 lw=2, label=label)
     ax3.set_xlabel('Transformer embedding dimension (d_model)')
     ax3.set_ylabel('Test BLEU Score')
     ax3.set_ylim(bottom=0)
@@ -163,7 +184,7 @@ def plot_vary_d_model(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Plot Transformer double descent: final metrics vs d_model (4K and 18K overlaid)"
+        description="Plot Transformer double descent: final metrics vs d_model"
     )
     parser.add_argument(
         "metrics_dir",

@@ -7,7 +7,7 @@
 #   - SSH_KEY_PATH environment variable set (path to SSH private key)
 #
 # Usage:
-#   ./infra/train.sh <instance_ip> [--user <user>] [--port <port>] [--background] [--module <module>] [--learning-rate <lr>] [--warmup-steps <steps>] [--variance] [--long-double-descent]
+#   ./infra/train.sh <instance_ip> [--user <user>] [--port <port>] [--background] [--module <module>] [--learning-rate <lr>] [--warmup-steps <steps>] [--variance]
 #
 # Examples:
 #   ./infra/train.sh 192.222.54.255
@@ -15,7 +15,7 @@
 #   ./infra/train.sh 192.222.54.255 --user root --port 22005  # RunPod
 #   ./infra/train.sh 192.222.54.255 --learning-rate 3e-5
 #   ./infra/train.sh 192.222.54.255 --module jl.double_descent.resnet18.resnet18_main
-#   ./infra/train.sh 192.222.54.255 --module jl.double_descent.transformer.transformer_main --long-double-descent
+#   ./infra/train.sh 192.222.54.255 --module jl.double_descent.transformer.transformer_main --variance
 
 set -euo pipefail
 
@@ -49,7 +49,6 @@ WARMUP_STEPS=""
 K_START=""
 COSINE_DECAY_EPOCH=""
 VARIANCE=""
-LONG_DOUBLE_DESCENT=""
 MODULE="jl.reward_model.reward_main"
 SSH_USER="ubuntu"
 SSH_PORT=""
@@ -85,10 +84,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --variance)
             VARIANCE="true"
-            shift
-            ;;
-        --long-double-descent)
-            LONG_DOUBLE_DESCENT="true"
             shift
             ;;
         --module)
@@ -140,10 +135,6 @@ fi
 if [[ -n "$VARIANCE" ]]; then
     EXTRA_FLAGS="$EXTRA_FLAGS --variance"
     log_info "Using variance mode"
-fi
-if [[ -n "$LONG_DOUBLE_DESCENT" ]]; then
-    EXTRA_FLAGS="$EXTRA_FLAGS --long-double-descent"
-    log_info "Using long double descent mode"
 fi
 log_info "Using module: $MODULE"
 
