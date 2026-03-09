@@ -21,12 +21,12 @@ class TDDConfig:
     # Training (from paper: 80K steps)
     max_steps: int = 80000  # Gradient steps
     max_tokens: int = 4096  # Tokens per batch (max-tokens batching)
-    warmup_steps: Optional[int] = 4000  # LR warmup steps (None = constant LR)
-    learning_rate: float = 1e-4  # Learning rate (used when warmup_steps=None)
-    optimizer: str = "adam_w"  # AdamW with Vaswani params (beta1=0.9, beta2=0.98, eps=1e-9)
+    warmup_steps: int = 4000  # LR warmup steps
+    learning_rate: float = 3e-4  # Peak learning rate after warmup
+    optimizer: str = "adam_w"  # AdamW with beta1=0.9, beta2=0.98, eps=1e-9
 
     # Regularization
-    label_smoothing: Optional[float] = 0.1  # None to disable
+    label_smoothing: Optional[float] = None  # None to disable
 
     # Data
     subsample_seed: int = 674931  # Fixed seed for reproducibility

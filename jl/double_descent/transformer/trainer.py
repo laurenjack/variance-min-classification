@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 import os
 import time
 from functools import partial
@@ -177,30 +178,25 @@ def train_single_model(
     num_params = count_parameters(model)
     process_logger.info(f"Model parameters: {num_params:,}")
 
-    # Optimizer with Vaswani hyperparameters (hardcoded)
-    if config.warmup_steps is not None:
-        # Vaswani LR schedule: lr scaled by scheduler
-        optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=1.0,  # Scaled by scheduler
-            betas=(0.9, 0.98),
-            eps=1e-9,
-        )
+    # Optimizer with warmup + cosine decay schedule
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=config.learning_rate,
+        betas=(0.9, 0.98),
+        eps=1e-9,
+    )
 
-        def lr_lambda(step: int) -> float:
-            step = max(step, 1)
-            return (d_model ** -0.5) * min(step ** -0.5, step * config.warmup_steps ** -1.5)
+    def lr_lambda(step: int) -> float:
+        """Linear warmup for warmup_steps, then cosine decay to 0."""
+        if step < config.warmup_steps:
+            # Linear warmup: 0 -> 1
+            return step / config.warmup_steps
+        else:
+            # Cosine decay from 1 -> 0
+            progress = (step - config.warmup_steps) / (config.max_steps - config.warmup_steps)
+            return 0.5 * (1 + math.cos(math.pi * progress))
 
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-    else:
-        # Constant learning rate (no warmup)
-        optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=config.learning_rate,
-            betas=(0.9, 0.98),
-            eps=1e-9,
-        )
-        scheduler = None
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
     # Loss function with optional label smoothing
     criterion = nn.CrossEntropyLoss(
@@ -300,6 +296,7 @@ def train_single_model(
     # Final evaluation
     process_logger.info(f"[d_model={d_model}, {output_suffix}] Running final evaluation...")
 
+    train_loss, train_acc = evaluate(model, train_dataset, vocab, device, criterion)
     valid_loss, valid_acc = evaluate(model, valid_dataset, vocab, device, criterion)
     test_loss, test_acc = evaluate(model, test_dataset, vocab, device, criterion)
 
@@ -315,15 +312,15 @@ def train_single_model(
         "d_model": d_model,
         "train_samples": train_samples,
         "split_id": split_id,
-        "train_loss": 0.0,  # Not meaningful at end
-        "train_acc": 0.0,  # Not meaningful at end
+        "train_loss": train_loss,
+        "train_acc": train_acc,
         "valid_loss": valid_loss,
         "valid_acc": valid_acc,
         "test_loss": test_loss,
         "test_acc": test_acc,
         "train_bleu": train_bleu,
         "test_bleu": test_bleu,
-        "lr": scheduler.get_last_lr()[0] if scheduler else config.learning_rate,
+        "lr": scheduler.get_last_lr()[0],
     }
     log_metrics(output_path, d_model, output_suffix, final_metrics)
 

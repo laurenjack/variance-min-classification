@@ -5,20 +5,14 @@ Reproduces Figure 3 from Nakkiran et al. (2019) "Deep Double Descent":
 6-layer encoder-decoder Transformer with varying embedding dimension d_model
 trained on IWSLT'14 German-to-English translation.
 
-Three modes:
+Two modes:
 
 1. DEFAULT MODE (no flags):
-   - Trains all 48 models: 24 d_model values x 2 sample sizes (18K, 4K)
+   - Trains 24 models: 24 d_model values x 1 sample size (36K)
    - d_model: 8, 16, 24, ..., 192
-   - 6 batches total, 8 models per batch
+   - 3 batches total, 8 models per batch
 
-2. LONG DOUBLE DESCENT MODE (--long-double-descent):
-   - Extends the curve to larger models: d_model 384 down to 200
-   - 18K samples only, 24 models total, 3 batches
-   - Runs largest models first to detect OOM early
-   - Combined with default mode, produces full 8-384 range plot
-
-3. VARIANCE MODE (--variance):
+2. VARIANCE MODE (--variance):
    - Trains 48 models for variance analysis: 6 d_model values x 8 disjoint splits
    - d_model: 32, 64, 96, 128, 160, 192
    - Each split is a disjoint 18K subset from the 160K training data
@@ -27,12 +21,6 @@ Three modes:
 Usage:
     # Default double descent experiment (d_model 8-192)
     python -m jl.double_descent.transformer.transformer_main \\
-        --output-path ./output \\
-        --data-path ./data/iwslt14.tokenized.de-en
-
-    # Long double descent experiment (d_model 384-200, extends the curve)
-    python -m jl.double_descent.transformer.transformer_main \\
-        --long-double-descent \\
         --output-path ./output \\
         --data-path ./data/iwslt14.tokenized.de-en
 
@@ -63,14 +51,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Hardcoded experiment parameters
-TRAIN_SAMPLES = [18000, 4000]  # 18K first, then 4K
+TRAIN_SAMPLES = [36000]  # 36K samples
 D_MODEL_VALUES = list(range(8, 200, 8))  # [8, 16, 24, ..., 192] - 24 values
 REQUIRED_GPUS = 8
-
-# Long double descent experiment parameters (extends to larger models)
-# Starts with largest to detect OOM early, 18K samples only
-LONG_DD_D_MODEL_VALUES = list(range(384, 192, -8))  # [384, 376, ..., 200] - 24 values
-LONG_DD_TRAIN_SAMPLES = 18000
 
 # Variance experiment parameters
 VARIANCE_D_MODEL_VALUES = list(range(32, 224, 32))  # [32, 64, 96, 128, 160, 192] - 6 values
@@ -100,64 +83,60 @@ def parse_args():
         action="store_true",
         help="Run variance experiment (6 d_model x 8 disjoint splits) instead of double descent"
     )
-    parser.add_argument(
-        "--long-double-descent",
-        action="store_true",
-        help="Run long double descent (d_model 384 down to 200, 18K samples only) to extend the curve"
-    )
     return parser.parse_args()
 
 
 def run_double_descent(args, config):
-    """Run the default double descent experiment (24 d_model x 2 sample sizes)."""
+    """Run the default double descent experiment (24 d_model values, 36K samples)."""
     total_start = time.time()
+
+    train_samples = TRAIN_SAMPLES[0]
+    samples_k = train_samples // 1000
+    num_batches = len(D_MODEL_VALUES) // REQUIRED_GPUS
 
     logger.info("Transformer Double Descent - Full Experiment")
     logger.info(f"d_model values: {D_MODEL_VALUES}")
-    logger.info(f"Train samples: {TRAIN_SAMPLES}")
-    logger.info(f"Total models: {len(D_MODEL_VALUES) * len(TRAIN_SAMPLES)} = 48")
-    logger.info(f"Batches: {len(D_MODEL_VALUES) // REQUIRED_GPUS * len(TRAIN_SAMPLES)} = 6")
+    logger.info(f"Train samples: {train_samples}")
+    logger.info(f"Total models: {len(D_MODEL_VALUES)}")
+    logger.info(f"Batches: {num_batches}")
     logger.info(f"Max steps: {config.max_steps}, Max tokens/batch: {config.max_tokens}")
 
-    # Outer loop: sample sizes (18K first, then 4K)
-    for train_samples in TRAIN_SAMPLES:
-        samples_k = train_samples // 1000
-        logger.info(f"\n{'='*60}")
-        logger.info(f"Starting {samples_k}K sample runs")
-        logger.info(f"{'='*60}")
+    logger.info(f"\n{'='*60}")
+    logger.info(f"Starting {samples_k}K sample runs")
+    logger.info(f"{'='*60}")
 
-        # Inner loop: d_model batches (3 batches of 8)
-        for batch_idx in range(0, len(D_MODEL_VALUES), REQUIRED_GPUS):
-            batch_d_models = D_MODEL_VALUES[batch_idx:batch_idx + REQUIRED_GPUS]
-            batch_num = batch_idx // REQUIRED_GPUS + 1
+    # Loop over d_model batches (3 batches of 8)
+    for batch_idx in range(0, len(D_MODEL_VALUES), REQUIRED_GPUS):
+        batch_d_models = D_MODEL_VALUES[batch_idx:batch_idx + REQUIRED_GPUS]
+        batch_num = batch_idx // REQUIRED_GPUS + 1
 
-            logger.info(f"\n[{samples_k}K] Batch {batch_num}/3: d_model = {batch_d_models}")
+        logger.info(f"\n[{samples_k}K] Batch {batch_num}/{num_batches}: d_model = {batch_d_models}")
 
-            # Set multiprocessing start method (only needed once, but force=True handles it)
-            mp.set_start_method('spawn', force=True)
+        # Set multiprocessing start method (only needed once, but force=True handles it)
+        mp.set_start_method('spawn', force=True)
 
-            # Spawn 8 training processes
-            processes = []
-            for gpu_id, d_model in enumerate(batch_d_models):
-                p = mp.Process(
-                    target=train_single_model,
-                    args=(gpu_id, d_model, train_samples, config,
-                          args.output_path, args.data_path)
-                )
-                p.start()
-                processes.append(p)
+        # Spawn 8 training processes
+        processes = []
+        for gpu_id, d_model in enumerate(batch_d_models):
+            p = mp.Process(
+                target=train_single_model,
+                args=(gpu_id, d_model, train_samples, config,
+                      args.output_path, args.data_path)
+            )
+            p.start()
+            processes.append(p)
 
-            # Wait for batch to complete
-            for p in processes:
-                p.join()
+        # Wait for batch to complete
+        for p in processes:
+            p.join()
 
-            logger.info(f"[{samples_k}K] Batch {batch_num}/3 complete")
+        logger.info(f"[{samples_k}K] Batch {batch_num}/{num_batches} complete")
 
     total_time = time.time() - total_start
     logger.info("\n" + "=" * 60)
     logger.info("Full experiment complete!")
     logger.info(f"Total time: {total_time:.2f}s ({total_time/3600:.2f}h)")
-    logger.info(f"Metrics files: {args.output_path}/metrics_d*_*k.jsonl")
+    logger.info(f"Metrics files: {args.output_path}/metrics_d*_{samples_k}k.jsonl")
 
 
 def run_variance(args, config):
@@ -207,61 +186,6 @@ def run_variance(args, config):
     logger.info(f"Metrics files: {args.output_path}/metrics_d*_split*.jsonl")
 
 
-def run_long_double_descent(args, config):
-    """Run long double descent experiment (d_model 384 to 200, 18K samples only).
-
-    This extends the standard double descent curve to larger models.
-    Runs largest models first to detect OOM early.
-    """
-    total_start = time.time()
-
-    logger.info("Transformer Long Double Descent Experiment")
-    logger.info(f"d_model values: {LONG_DD_D_MODEL_VALUES}")
-    logger.info(f"Train samples: {LONG_DD_TRAIN_SAMPLES} (18K only)")
-    logger.info(f"Total models: {len(LONG_DD_D_MODEL_VALUES)}")
-    logger.info(f"Batches: {len(LONG_DD_D_MODEL_VALUES) // REQUIRED_GPUS}")
-    logger.info(f"Max steps: {config.max_steps}, Max tokens/batch: {config.max_tokens}")
-    logger.info("Note: Running largest models first to detect OOM early")
-
-    samples_k = LONG_DD_TRAIN_SAMPLES // 1000
-
-    # Process in batches of 8 (largest first)
-    for batch_idx in range(0, len(LONG_DD_D_MODEL_VALUES), REQUIRED_GPUS):
-        batch_d_models = LONG_DD_D_MODEL_VALUES[batch_idx:batch_idx + REQUIRED_GPUS]
-        batch_num = batch_idx // REQUIRED_GPUS + 1
-        total_batches = len(LONG_DD_D_MODEL_VALUES) // REQUIRED_GPUS
-
-        logger.info(f"\n{'='*60}")
-        logger.info(f"Batch {batch_num}/{total_batches}: d_model = {batch_d_models}")
-        logger.info(f"{'='*60}")
-
-        # Set multiprocessing start method
-        mp.set_start_method('spawn', force=True)
-
-        # Spawn 8 training processes
-        processes = []
-        for gpu_id, d_model in enumerate(batch_d_models):
-            p = mp.Process(
-                target=train_single_model,
-                args=(gpu_id, d_model, LONG_DD_TRAIN_SAMPLES, config,
-                      args.output_path, args.data_path)
-            )
-            p.start()
-            processes.append(p)
-
-        # Wait for batch to complete
-        for p in processes:
-            p.join()
-
-        logger.info(f"Batch {batch_num}/{total_batches} complete")
-
-    total_time = time.time() - total_start
-    logger.info("\n" + "=" * 60)
-    logger.info("Long double descent experiment complete!")
-    logger.info(f"Total time: {total_time:.2f}s ({total_time/3600:.2f}h)")
-    logger.info(f"Metrics files: {args.output_path}/metrics_d*_{samples_k}k.jsonl")
-
-
 def main():
     args = parse_args()
     config = TDDConfig()
@@ -289,12 +213,8 @@ def main():
         )
 
     # Run appropriate experiment
-    if args.variance and args.long_double_descent:
-        raise ValueError("Cannot run both --variance and --long-double-descent simultaneously")
-    elif args.variance:
+    if args.variance:
         run_variance(args, config)
-    elif args.long_double_descent:
-        run_long_double_descent(args, config)
     else:
         run_double_descent(args, config)
 
