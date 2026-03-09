@@ -618,6 +618,30 @@ python -m jl.double_descent.transformer.plot_evaluation \
     --output-dir ./data --temperature-scaled
 ```
 
+#### Expected Calibration Error (ECE)
+
+Compute per-token ECE (M=20 equal-width bins) using only split 0 models on the test set:
+
+```bash
+python -m jl.double_descent.transformer.evaluate \
+    --model-path ./output/transformer_variance/03-01-1010 \
+    --data-path ./data/iwslt14.tokenized.de-en --ece
+```
+
+One model per d_model, parallelized across all available GPUs. Each non-pad token is one prediction; confidence is max(softmax over vocab).
+
+Output: `ece.jsonl` alongside the model files (one line per d_model with `{"d_model": N, "ece": X, "num_tokens": Y}`).
+
+Plotting ECE results:
+
+```bash
+python -m jl.double_descent.transformer.plot_ece \
+    ./data/transformer_variance/03-01-1010/ece.jsonl \
+    --output-dir ./data
+```
+
+Produces `ece.png` showing per-token ECE vs d_model.
+
 
 ## Key Differences from Paper
 

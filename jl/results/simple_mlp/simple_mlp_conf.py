@@ -48,7 +48,7 @@ def run_experiment(width_range: list[int], num_runs: int, graph_config: Optional
     x_val, y_val, center_indices = problem.generate_dataset(
         model_config.n_val,
         shuffle=True,
-        clean_mode=False
+        clean_mode=True
     )
     validation_set = (x_val.to(device), y_val.to(device), center_indices.to(device))
 

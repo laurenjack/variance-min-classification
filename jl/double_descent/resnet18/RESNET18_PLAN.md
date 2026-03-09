@@ -308,6 +308,20 @@ This fits a scalar temperature T per k value using L-BFGS on one randomly chosen
 
 Output: `temperature-scaled/evaluation.jsonl` in the model directory (same schema plus a `"temperature"` field).
 
+### Expected Calibration Error (ECE)
+
+Compute ECE (M=20 equal-width bins) using only split 0 models on the test set:
+
+```bash
+python -m jl.double_descent.resnet18.evaluate \
+    --model-path ./output/resnet18_variance/03-01-1010 \
+    --data-path ./data --ece
+```
+
+One model per k, parallelized across all available GPUs. For each prediction the confidence is max(softmax), binned into 20 equal-width intervals.
+
+Output: `ece.jsonl` alongside the model files (one line per k with `{"k": N, "ece": X, "num_samples": Y}`).
+
 ### Plotting
 
 ```bash
@@ -327,6 +341,16 @@ python -m jl.double_descent.resnet18.plot_evaluation \
 ```
 
 Produces `bias_variance.png` with "(Temperature Scaled)" in the title.
+
+For ECE results:
+
+```bash
+python -m jl.double_descent.resnet18.plot_ece \
+    ./output/resnet18_variance/03-01-1010/ece.jsonl \
+    --output-dir ./data
+```
+
+Produces `ece.png` showing ECE vs k.
 
 ---
 
