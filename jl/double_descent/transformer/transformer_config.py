@@ -26,7 +26,7 @@ class TDDConfig:
     optimizer: str = "adam_w"  # AdamW with beta1=0.9, beta2=0.98, eps=1e-9
 
     # Regularization
-    label_smoothing: Optional[float] = 0.1  # Label smoothing factor
+    label_smoothing: Optional[float] = None  # Label smoothing factor
 
     # Data
     subsample_seed: int = 674931  # Fixed seed for reproducibility
