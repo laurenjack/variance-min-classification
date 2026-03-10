@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 
 # Hardcoded experiment parameters
 TRAIN_SAMPLES = [36000]  # 36K samples
-D_MODEL_VALUES = list(range(8, 200, 8))  # [8, 16, 24, ..., 192] - 24 values
+D_MODEL_VALUES = list(range(204, 396, 8))  # [204, 212, 220, ..., 388] - 24 values
 REQUIRED_GPUS = 8
 
 # Variance experiment parameters
