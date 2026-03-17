@@ -1,0 +1,305 @@
+"""Evaluation for ResNet18 main (non-variance) training runs.
+
+Computes test metrics and ECE on saved models, consolidates with train metrics
+from existing metrics_k*.jsonl files, and writes to evaluation.jsonl.
+
+Dual-use:
+  - Called from trainer.py at end of training
+  - Standalone: discovers model_k*.pt files and evaluates all
+
+Usage:
+    python -m jl.double_descent.resnet18.evaluation \
+        --model-path ./output/resnet18/03-01-1010 \
+        --data-path ./data
+"""
+
+import argparse
+import json
+import logging
+import re
+from pathlib import Path
+from typing import Dict, List
+
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+import torchvision.transforms as transforms
+
+from jl.double_descent.resnet18.resnet18_data import NoisyCIFAR10
+from jl.double_descent.resnet18.resnet18k import make_resnet18k
+
+logger = logging.getLogger(__name__)
+
+EVAL_BATCH_SIZE = 256
+ECE_NUM_BINS = 20
+
+
+def compute_ece(confidences: torch.Tensor, correct: torch.Tensor, num_bins: int = ECE_NUM_BINS) -> float:
+    """Compute Expected Calibration Error with equal-width bins.
+
+    Args:
+        confidences: Tensor of max softmax probabilities per prediction.
+        correct: Boolean tensor of whether each prediction was correct.
+        num_bins: Number of equal-width bins in [0, 1].
+
+    Returns:
+        ECE as a float.
+    """
+    bin_boundaries = torch.linspace(0, 1, num_bins + 1)
+    n = len(confidences)
+    ece = 0.0
+    for i in range(num_bins):
+        lo, hi = bin_boundaries[i].item(), bin_boundaries[i + 1].item()
+        mask = (confidences > lo) & (confidences <= hi)
+        if i == 0:
+            mask = mask | (confidences == lo)
+        n_bin = mask.sum().item()
+        if n_bin > 0:
+            avg_confidence = confidences[mask].mean().item()
+            avg_accuracy = correct[mask].float().mean().item()
+            ece += (n_bin / n) * abs(avg_accuracy - avg_confidence)
+    return ece
+
+
+def read_final_train_metrics(metrics_path: Path) -> Dict[str, float]:
+    """Read final train metrics from metrics_k*.jsonl file.
+
+    Args:
+        metrics_path: Path to the metrics JSONL file.
+
+    Returns:
+        Dict with train_loss and train_error from the last epoch.
+
+    Raises:
+        FileNotFoundError: If metrics file doesn't exist.
+        ValueError: If metrics file is empty or missing required fields.
+    """
+    if not metrics_path.exists():
+        raise FileNotFoundError(f"Metrics file not found: {metrics_path}")
+
+    last_line = None
+    with open(metrics_path, 'r') as f:
+        for line in f:
+            if line.strip():
+                last_line = line
+
+    if last_line is None:
+        raise ValueError(f"Metrics file is empty: {metrics_path}")
+
+    metrics = json.loads(last_line)
+
+    if 'train_loss' not in metrics or 'train_error' not in metrics:
+        raise ValueError(f"Metrics file missing train_loss or train_error: {metrics_path}")
+
+    return {
+        'train_loss': metrics['train_loss'],
+        'train_error': metrics['train_error'],
+    }
+
+
+def compute_final_metrics(
+    model: torch.nn.Module,
+    test_loader: DataLoader,
+    metrics_path: Path,
+    output_path: Path,
+    k: int,
+    device: torch.device,
+) -> Dict:
+    """Compute final metrics for a trained model.
+
+    1. Runs forward pass on test set to compute test_loss, test_error, ECE
+    2. Reads final train_loss, train_error from metrics_path
+    3. Appends one JSON line to output_path/evaluation.jsonl
+
+    Args:
+        model: Trained model (already on device, in eval mode).
+        test_loader: DataLoader for test set.
+        metrics_path: Path to metrics_k{k}.jsonl file.
+        output_path: Directory to write evaluation.jsonl.
+        k: Width parameter k.
+        device: Device model is on.
+
+    Returns:
+        Dict of computed metrics.
+    """
+    model.eval()
+
+    total_loss = 0.0
+    total_correct = 0
+    total_samples = 0
+    all_confidences = []
+    all_correct = []
+
+    with torch.no_grad():
+        for images, labels in test_loader:
+            images = images.to(device)
+            labels = labels.to(device)
+            batch_size = images.size(0)
+
+            logits = model(images)
+
+            # Compute loss
+            loss = F.cross_entropy(logits, labels, reduction='sum')
+            total_loss += loss.item()
+
+            # Compute accuracy
+            probs = F.softmax(logits, dim=-1)
+            max_probs, predictions = probs.max(dim=-1)
+            correct = predictions == labels
+
+            total_correct += correct.sum().item()
+            total_samples += batch_size
+
+            # Collect ECE inputs
+            all_confidences.append(max_probs.cpu())
+            all_correct.append(correct.cpu())
+
+    test_loss = total_loss / total_samples
+    test_error = 1.0 - (total_correct / total_samples)
+
+    # Compute ECE
+    confidences = torch.cat(all_confidences)
+    correct = torch.cat(all_correct)
+    ece = compute_ece(confidences, correct)
+
+    # Read train metrics from metrics file
+    train_metrics = read_final_train_metrics(metrics_path)
+
+    result = {
+        'k': k,
+        'test_loss': round(test_loss, 6),
+        'test_error': round(test_error, 6),
+        'train_loss': round(train_metrics['train_loss'], 6),
+        'train_error': round(train_metrics['train_error'], 6),
+        'ece': round(ece, 6),
+    }
+
+    # Append to evaluation.jsonl
+    eval_file = output_path / 'evaluation.jsonl'
+    with open(eval_file, 'a') as f:
+        f.write(json.dumps(result) + '\n')
+
+    logger.info(
+        f"k={k}: test_loss={test_loss:.4f}, test_error={test_error:.4f}, "
+        f"ece={ece:.6f}"
+    )
+
+    return result
+
+
+def discover_models(model_dir: str) -> Dict[int, Path]:
+    """Discover main (non-variance) model files.
+
+    Returns:
+        Dict mapping k -> model file Path.
+    """
+    path = Path(model_dir)
+    # Match model_k*.pt but NOT model_k*_split*.pt
+    model_files = sorted(path.glob("model_k*.pt"))
+
+    models: Dict[int, Path] = {}
+    for f in model_files:
+        # Skip variance models (have _split in name)
+        if '_split' in f.name:
+            continue
+        match = re.match(r"model_k(\d+)\.pt", f.name)
+        if match:
+            k = int(match.group(1))
+            models[k] = f
+
+    return dict(sorted(models.items()))
+
+
+def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    parser = argparse.ArgumentParser(
+        description="Evaluate ResNet18 main training runs"
+    )
+    parser.add_argument(
+        "--model-path",
+        type=str,
+        required=True,
+        help="Directory containing model_k*.pt and metrics_k*.jsonl files",
+    )
+    parser.add_argument(
+        "--data-path",
+        type=str,
+        default="./data",
+        help="Directory containing CIFAR-10 data",
+    )
+    args = parser.parse_args()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"Using device: {device}")
+
+    # Discover models
+    models = discover_models(args.model_path)
+    if not models:
+        raise FileNotFoundError(
+            f"No model_k*.pt files found in {args.model_path}"
+        )
+    logger.info(f"Found models for k values: {list(models.keys())}")
+
+    # Load test set
+    normalize = transforms.Normalize(
+        mean=[0.4914, 0.4822, 0.4465],
+        std=[0.2023, 0.1994, 0.2010],
+    )
+    test_transform = transforms.Compose([
+        transforms.ToTensor(),
+        normalize,
+    ])
+    test_dataset = NoisyCIFAR10(
+        root=args.data_path,
+        train=False,
+        noise_prob=0.0,
+        transform=test_transform,
+    )
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=EVAL_BATCH_SIZE,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True,
+    )
+    logger.info(f"Test set: {len(test_dataset)} samples")
+
+    # Clear existing evaluation file (overwrite mode)
+    output_path = Path(args.model_path)
+    eval_file = output_path / 'evaluation.jsonl'
+    if eval_file.exists():
+        eval_file.unlink()
+
+    # Evaluate each model
+    for k, model_path in models.items():
+        logger.info(f"Evaluating k={k}...")
+
+        # Load model
+        model = make_resnet18k(k=k, num_classes=10).to(device)
+        model.load_state_dict(
+            torch.load(model_path, map_location=device, weights_only=True)
+        )
+        model.eval()
+
+        # Get metrics file path
+        metrics_path = output_path / f"metrics_k{k}.jsonl"
+
+        # Compute and save metrics
+        compute_final_metrics(
+            model, test_loader, metrics_path, output_path, k, device
+        )
+
+        # Clean up
+        del model
+        torch.cuda.empty_cache()
+
+    logger.info(f"Evaluation complete. Results written to {eval_file}")
+
+
+if __name__ == "__main__":
+    main()

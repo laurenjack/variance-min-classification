@@ -329,6 +329,16 @@ def train_single_model(
     torch.save(model.state_dict(), model_path)
     process_logger.info(f"[d_model={d_model}, {output_suffix}] Model saved to {model_path}")
 
+    # Compute and save final evaluation metrics (main runs only)
+    if split_id is None:
+        from jl.double_descent.transformer.evaluation import compute_final_metrics
+        metrics_path = Path(output_path) / f"metrics_d{d_model}_{output_suffix}.jsonl"
+        eval_output = Path(output_path)
+        compute_final_metrics(
+            model, test_dataset, vocab, metrics_path, eval_output,
+            d_model, train_samples, device
+        )
+
     total_time = time.time() - train_start
     process_logger.info(
         f"[d_model={d_model}, {output_suffix}] Training complete! "

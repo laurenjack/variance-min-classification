@@ -13,22 +13,14 @@ With --temperature-scaling: fits a scalar temperature T per k value on one rando
 chosen model's logits (L-BFGS on test set NLL), then recomputes the full decomposition
 with softmax(logits/T). Results go to temperature-scaled/evaluation.jsonl.
 
-With --ece: computes Expected Calibration Error (M=20 bins) using only split 0 models
-on the test set. One model per k, parallelized across GPUs.
-Output: ece.jsonl alongside the model files.
-
 Usage:
-    python -m jl.double_descent.resnet18.evaluate \
+    python -m jl.double_descent.resnet18.variance_evaluation \
         --model-path ./output/resnet18_variance/03-01-1010 \
         --data-path ./data
 
-    python -m jl.double_descent.resnet18.evaluate \
+    python -m jl.double_descent.resnet18.variance_evaluation \
         --model-path ./output/resnet18_variance/03-01-1010 \
         --data-path ./data --temperature-scaling
-
-    python -m jl.double_descent.resnet18.evaluate \
-        --model-path ./output/resnet18_variance/03-01-1010 \
-        --data-path ./data --ece
 """
 
 import argparse
@@ -55,34 +47,6 @@ import torchvision.transforms as transforms
 logger = logging.getLogger(__name__)
 
 EVAL_BATCH_SIZE = 256
-ECE_NUM_BINS = 20
-
-
-def compute_ece(confidences, correct, num_bins=ECE_NUM_BINS):
-    """Compute Expected Calibration Error with equal-width bins.
-
-    Args:
-        confidences: Tensor of max softmax probabilities per prediction.
-        correct: Boolean tensor of whether each prediction was correct.
-        num_bins: Number of equal-width bins in [0, 1].
-
-    Returns:
-        ECE as a float.
-    """
-    bin_boundaries = torch.linspace(0, 1, num_bins + 1)
-    n = len(confidences)
-    ece = 0.0
-    for i in range(num_bins):
-        lo, hi = bin_boundaries[i].item(), bin_boundaries[i + 1].item()
-        mask = (confidences > lo) & (confidences <= hi)
-        if i == 0:
-            mask = mask | (confidences == lo)
-        n_bin = mask.sum().item()
-        if n_bin > 0:
-            avg_confidence = confidences[mask].mean().item()
-            avg_accuracy = correct[mask].float().mean().item()
-            ece += (n_bin / n) * abs(avg_accuracy - avg_confidence)
-    return ece
 
 
 def discover_models(model_dir: str) -> Dict[int, List[Path]]:
@@ -283,53 +247,6 @@ def _ts_eval_worker(gpu_id, model_path_str, k, temperature, data_path, output_fi
     }, output_file)
 
 
-def _ece_worker(gpu_id, model_path_str, k, data_path, output_file):
-    """Worker process: compute ECE inputs for one model.
-
-    Loads model on assigned GPU, runs forward pass on test set,
-    saves per-sample confidences and correctness to output_file.
-    """
-    device = torch.device(f"cuda:{gpu_id}")
-
-    model = make_resnet18k(k=k, num_classes=10).to(device)
-    model.load_state_dict(
-        torch.load(model_path_str, map_location=device, weights_only=True)
-    )
-    model.eval()
-
-    normalize = transforms.Normalize(
-        mean=[0.4914, 0.4822, 0.4465],
-        std=[0.2023, 0.1994, 0.2010],
-    )
-    test_dataset = NoisyCIFAR10(
-        root=data_path,
-        train=False,
-        noise_prob=0.0,
-        transform=transforms.Compose([transforms.ToTensor(), normalize]),
-    )
-    test_loader = DataLoader(
-        test_dataset, batch_size=EVAL_BATCH_SIZE, shuffle=False,
-        num_workers=2, pin_memory=True,
-    )
-
-    all_confidences = []
-    all_correct = []
-
-    with torch.no_grad():
-        for images, labels in test_loader:
-            images, labels = images.to(device), labels.to(device)
-            logits = model(images)
-            probs = F.softmax(logits, dim=-1)
-            max_probs, predictions = probs.max(dim=-1)
-            all_confidences.append(max_probs.cpu())
-            all_correct.append((predictions == labels).cpu())
-
-    torch.save({
-        'confidences': torch.cat(all_confidences),
-        'correct': torch.cat(all_correct),
-    }, output_file)
-
-
 def main():
     logging.basicConfig(
         level=logging.INFO,
@@ -357,15 +274,7 @@ def main():
         action="store_true",
         help="Fit per-k temperature and recompute bias-variance decomposition",
     )
-    parser.add_argument(
-        "--ece",
-        action="store_true",
-        help="Compute Expected Calibration Error using split 0 models",
-    )
     args = parser.parse_args()
-
-    if args.temperature_scaling and args.ece:
-        parser.error("--temperature-scaling and --ece are mutually exclusive")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
@@ -404,53 +313,7 @@ def main():
     )
     logger.info(f"Test set: {len(test_dataset)} samples")
 
-    if args.ece:
-        mp.set_start_method('spawn', force=True)
-
-        ece_file = Path(args.model_path) / "ece.jsonl"
-        if ece_file.exists():
-            ece_file.unlink()
-
-        k_values = sorted(grouped.keys())
-        num_gpus = max(1, torch.cuda.device_count())
-
-        for batch_start in range(0, len(k_values), num_gpus):
-            batch_k = k_values[batch_start:batch_start + num_gpus]
-            logger.info(f"ECE batch: k={batch_k}")
-
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                processes = []
-                for gpu_id, k in enumerate(batch_k):
-                    split0 = [p for p in grouped[k] if '_split0.pt' in p.name][0]
-                    out_f = os.path.join(tmp_dir, f"k{k}.pt")
-                    p = mp.Process(
-                        target=_ece_worker,
-                        args=(gpu_id, str(split0), k, args.data_path, out_f),
-                    )
-                    p.start()
-                    processes.append(p)
-
-                for p in processes:
-                    p.join()
-
-                for k in batch_k:
-                    data = torch.load(
-                        os.path.join(tmp_dir, f"k{k}.pt"),
-                        weights_only=True,
-                    )
-                    ece = compute_ece(data['confidences'], data['correct'])
-                    result = {
-                        "k": k,
-                        "ece": round(ece, 6),
-                        "num_samples": len(data['confidences']),
-                    }
-                    logger.info(f"k={k}: ECE={ece:.6f}")
-                    with open(ece_file, "a") as fh:
-                        fh.write(json.dumps(result) + "\n")
-
-        logger.info(f"ECE results: {ece_file}")
-
-    elif args.temperature_scaling:
+    if args.temperature_scaling:
         mp.set_start_method('spawn', force=True)
 
         ts_output = Path(args.model_path) / "temperature-scaled"
