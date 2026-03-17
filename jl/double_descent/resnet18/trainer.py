@@ -239,3 +239,9 @@ def train_single_model(
     torch.save(model.state_dict(), model_path)
     split_str = f", split={split_id}" if variance_mode else ""
     print(f"[GPU {gpu_id}] k={k}{split_str} training complete! Model saved to {model_path}")
+
+    # Compute and save final evaluation metrics (main runs only)
+    if not variance_mode:
+        from jl.double_descent.resnet18.evaluation import compute_final_metrics
+        eval_output = Path(output_path)
+        compute_final_metrics(model, test_loader, metrics_path, eval_output, k, device)

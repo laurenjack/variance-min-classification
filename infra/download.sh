@@ -164,62 +164,53 @@ for EXPERIMENT_TYPE in resnet18 resnet18_variance transformer transformer_varian
 
         case $EXPERIMENT_TYPE in
             resnet18)
-                # Find k range from files
-                K_VALUES=$(ls "$TIMESTAMP_DIR"/metrics_k*.jsonl 2>/dev/null | \
-                    sed 's/.*metrics_k\([0-9]*\)\.jsonl/\1/' | sort -n)
-                if [[ -n "$K_VALUES" ]]; then
-                    MIN_K=$(echo "$K_VALUES" | head -1)
-                    MAX_K=$(echo "$K_VALUES" | tail -1)
-                    python -m jl.double_descent.resnet18.plot_vary_k "$TIMESTAMP_DIR" \
-                        --min-k "$MIN_K" --max-k "$MAX_K" --output-dir "$TIMESTAMP_DIR" || \
+                if [[ -f "$TIMESTAMP_DIR/evaluation.jsonl" ]]; then
+                    python -m jl.double_descent.resnet18.plot_evaluation \
+                        "$TIMESTAMP_DIR/evaluation.jsonl" --output-dir "$TIMESTAMP_DIR" || \
                         log_warn "Failed to plot resnet18"
+                else
+                    log_info "No evaluation.jsonl in $TIMESTAMP_DIR"
                 fi
                 ;;
             resnet18_variance)
                 if [[ -f "$TIMESTAMP_DIR/evaluation.jsonl" ]]; then
-                    python -m jl.double_descent.resnet18.plot_evaluation \
+                    python -m jl.double_descent.resnet18.plot_variance_evaluation \
                         "$TIMESTAMP_DIR/evaluation.jsonl" --output-dir "$TIMESTAMP_DIR" || \
                         log_warn "Failed to plot resnet18_variance"
                 else
-                    log_info "No evaluation.jsonl in $TIMESTAMP_DIR (run evaluate first)"
+                    log_info "No evaluation.jsonl in $TIMESTAMP_DIR (run variance_evaluation first)"
                 fi
                 if [[ -f "$TIMESTAMP_DIR/temperature-scaled/evaluation.jsonl" ]]; then
-                    python -m jl.double_descent.resnet18.plot_evaluation \
+                    python -m jl.double_descent.resnet18.plot_variance_evaluation \
                         "$TIMESTAMP_DIR/temperature-scaled/evaluation.jsonl" \
                         --output-dir "$TIMESTAMP_DIR/temperature-scaled" \
                         --temperature-scaled || \
                         log_warn "Failed to plot resnet18_variance (temperature-scaled)"
                 fi
-                if [[ -f "$TIMESTAMP_DIR/ece.jsonl" ]]; then
-                    python -m jl.double_descent.resnet18.plot_ece \
-                        "$TIMESTAMP_DIR/ece.jsonl" --output-dir "$TIMESTAMP_DIR" || \
-                        log_warn "Failed to plot resnet18_variance ECE"
-                fi
                 ;;
             transformer)
-                python -m jl.double_descent.transformer.plot_vary_d_model "$TIMESTAMP_DIR" \
-                    --output-dir "$TIMESTAMP_DIR" || \
-                    log_warn "Failed to plot transformer"
-                ;;
-            transformer_variance)
                 if [[ -f "$TIMESTAMP_DIR/evaluation.jsonl" ]]; then
                     python -m jl.double_descent.transformer.plot_evaluation \
                         "$TIMESTAMP_DIR/evaluation.jsonl" --output-dir "$TIMESTAMP_DIR" || \
+                        log_warn "Failed to plot transformer"
+                else
+                    log_info "No evaluation.jsonl in $TIMESTAMP_DIR"
+                fi
+                ;;
+            transformer_variance)
+                if [[ -f "$TIMESTAMP_DIR/evaluation.jsonl" ]]; then
+                    python -m jl.double_descent.transformer.plot_variance_evaluation \
+                        "$TIMESTAMP_DIR/evaluation.jsonl" --output-dir "$TIMESTAMP_DIR" || \
                         log_warn "Failed to plot transformer_variance"
                 else
-                    log_info "No evaluation.jsonl in $TIMESTAMP_DIR (run evaluate first)"
+                    log_info "No evaluation.jsonl in $TIMESTAMP_DIR (run variance_evaluation first)"
                 fi
                 if [[ -f "$TIMESTAMP_DIR/temperature-scaled/evaluation.jsonl" ]]; then
-                    python -m jl.double_descent.transformer.plot_evaluation \
+                    python -m jl.double_descent.transformer.plot_variance_evaluation \
                         "$TIMESTAMP_DIR/temperature-scaled/evaluation.jsonl" \
                         --output-dir "$TIMESTAMP_DIR/temperature-scaled" \
                         --temperature-scaled || \
                         log_warn "Failed to plot transformer_variance (temperature-scaled)"
-                fi
-                if [[ -f "$TIMESTAMP_DIR/ece.jsonl" ]]; then
-                    python -m jl.double_descent.transformer.plot_ece \
-                        "$TIMESTAMP_DIR/ece.jsonl" --output-dir "$TIMESTAMP_DIR" || \
-                        log_warn "Failed to plot transformer_variance ECE"
                 fi
                 ;;
             reward_model)
