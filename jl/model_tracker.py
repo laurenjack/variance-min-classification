@@ -19,6 +19,8 @@ class TrackerInterface:
 
 class BaseTracker(TrackerInterface):
     """Base class with shared functionality for all model trackers."""
+
+    MAX_WEIGHT = 100
     
     def __init__(self, c: Config):
         self.weight_tracker = c.weight_tracker  # 'accuracy', 'weight', or 'full_step'
@@ -27,6 +29,7 @@ class BaseTracker(TrackerInterface):
         self.train_acc_history = []
         self.val_loss_history = []
         self.train_loss_history = []
+        self._sample_indices = {}
     
     def _tracks_weights(self):
         """Return True if tracking weights or full steps."""
@@ -40,6 +43,20 @@ class BaseTracker(TrackerInterface):
             # 'full_step' mode tracks the optimizer step direction (Δw/lr), stored as param._step
             return param._step.detach().cpu().numpy().copy()
         return None
+
+    def _sample_if_needed(self, data, layer_idx):
+        """Flatten weight data and subsample to MAX_WEIGHT elements if too large.
+        
+        Uses fixed random indices per layer_idx so the same weights are tracked
+        across all training steps.
+        """
+        flat = data.flatten()
+        if flat.size <= self.MAX_WEIGHT:
+            return flat
+        if layer_idx not in self._sample_indices:
+            rng = np.random.default_rng(seed=layer_idx)
+            self._sample_indices[layer_idx] = rng.choice(flat.size, size=self.MAX_WEIGHT, replace=False)
+        return flat[self._sample_indices[layer_idx]]
 
     def _get_tracking_suffix(self):
         """Return suffix for titles based on tracking mode."""
@@ -101,10 +118,9 @@ class BaseTracker(TrackerInterface):
         for i in range(len(self.weight_history[0])):
             plt.figure()
             weight_array = np.array([step_weights[i] for step_weights in self.weight_history])
-            out_dim, in_dim = weight_array.shape[1], weight_array.shape[2]
-            for row in range(out_dim):
-                for col in range(in_dim):
-                    plt.plot(training_steps, weight_array[:, row, col])
+            # weight_array shape: (steps, num_elements) — flattened/sampled per layer
+            for j in range(weight_array.shape[1]):
+                plt.plot(training_steps, weight_array[:, j])
             plt.xlabel("Training Step")
             plt.ylabel(y_label)
             plt.title(titles[i] if i < len(titles) else f"Weight Matrix {i}")
@@ -126,15 +142,13 @@ class ResnetTracker(BaseTracker):
     def update(self, model, val_acc, train_acc=None, val_loss=None, train_loss=None):
         """Record weights/steps, norms, and metrics for a Resnet."""
         if self._tracks_weights():
-            # Track linear layer weights/steps
             linear_data = []
             for block in model.blocks:
-                linear_data.append(self._get_tensor_data(block.weight_in.weight))
-                linear_data.append(self._get_tensor_data(block.weight_out.weight))
-            linear_data.append(self._get_tensor_data(model.final_layer.weight))
+                linear_data.append(self._sample_if_needed(self._get_tensor_data(block.weight_in.weight), len(linear_data)))
+                linear_data.append(self._sample_if_needed(self._get_tensor_data(block.weight_out.weight), len(linear_data)))
+            linear_data.append(self._sample_if_needed(self._get_tensor_data(model.final_layer.weight), len(linear_data)))
             self.weight_history.append(linear_data)
             
-            # Track RMS norm weights/steps (only when learnable)
             if self.learnable_norm_parameters:
                 norm_data = []
                 for block in model.blocks:
@@ -214,15 +228,13 @@ class MLPTracker(BaseTracker):
     def update(self, model, val_acc, train_acc=None, val_loss=None, train_loss=None):
         """Record weights/steps, norms, and metrics for an MLP."""
         if self._tracks_weights():
-            # Track linear layer weights/steps
             linear_data = []
             for i in range(len(model.hidden_linear1)):
-                linear_data.append(self._get_tensor_data(model.hidden_linear1[i].weight))
-                linear_data.append(self._get_tensor_data(model.hidden_linear2[i].weight))
-            linear_data.append(self._get_tensor_data(model.final_layer.weight))
+                linear_data.append(self._sample_if_needed(self._get_tensor_data(model.hidden_linear1[i].weight), len(linear_data)))
+                linear_data.append(self._sample_if_needed(self._get_tensor_data(model.hidden_linear2[i].weight), len(linear_data)))
+            linear_data.append(self._sample_if_needed(self._get_tensor_data(model.final_layer.weight), len(linear_data)))
             self.weight_history.append(linear_data)
             
-            # Track RMS norm weights/steps (only when learnable)
             if self.learnable_norm_parameters:
                 norm_data = []
                 for norm in model.hidden_norms:
@@ -307,12 +319,11 @@ class MultiLinearTracker(BaseTracker):
     def update(self, model, val_acc, train_acc=None, val_loss=None, train_loss=None):
         """Record weights/steps and metrics for a MultiLinear model."""
         if self._tracks_weights():
-            # Track linear layer weights/steps only (skip RMSNorm layers which have constant weights)
             linear_data = []
             for layer in model.layers:
                 if isinstance(layer, nn.Linear):
-                    linear_data.append(self._get_tensor_data(layer.weight))
-            linear_data.append(self._get_tensor_data(model.final_layer.weight))
+                    linear_data.append(self._sample_if_needed(self._get_tensor_data(layer.weight), len(linear_data)))
+            linear_data.append(self._sample_if_needed(self._get_tensor_data(model.final_layer.weight), len(linear_data)))
             self.weight_history.append(linear_data)
         else:
             self.weight_history.append([])
@@ -348,7 +359,7 @@ class PolynomialTracker(BaseTracker):
     def update(self, model, val_acc, train_acc=None, val_loss=None, train_loss=None):
         """Record coefficient weights/steps and metrics for a KPolynomial model."""
         if self._tracks_weights():
-            coeff_data = self._get_tensor_data(model.coefficients)
+            coeff_data = self._sample_if_needed(self._get_tensor_data(model.coefficients), 0)
             self.weight_history.append(coeff_data)
         else:
             self.weight_history.append(None)
@@ -359,8 +370,8 @@ class PolynomialTracker(BaseTracker):
         """Return title for the polynomial coefficient matrix/step."""
         suffix = self._get_tracking_suffix()
         if self._tracks_weights() and self.weight_history and self.weight_history[0] is not None:
-            d, k = self.weight_history[0].shape
-            return [f"Polynomial Coefficients (d={d}, k={k}) {suffix}"]
+            n = self.weight_history[0].shape[0]
+            return [f"Polynomial Coefficients ({n} tracked) {suffix}"]
         return []
 
     def plot(self):
@@ -380,7 +391,7 @@ class PolynomialTracker(BaseTracker):
             valid_history = [w for w in self.weight_history if w is not None]
             if valid_history:
                 plt.figure()
-                frobenius_norms = [np.linalg.norm(w, 'fro') for w in valid_history]
+                frobenius_norms = [np.linalg.norm(w) for w in valid_history]
                 plt.plot(training_steps[:len(frobenius_norms)], frobenius_norms, color='green')
                 plt.xlabel("Training Step")
                 norm_label = "Full Step Frobenius Norm (Δw/lr)" if self.weight_tracker == 'full_step' else "Frobenius Norm"
@@ -391,17 +402,39 @@ class PolynomialTracker(BaseTracker):
 
 
 class SimpleMLPTracker(BaseTracker):
-    """Tracker for SimpleMLP that only supports accuracy tracking (no weight tracking)."""
+    """Tracker for SimpleMLP models."""
 
-    def __init__(self, c: Config):
+    def __init__(self, c: Config, num_layers: int = 0):
         super().__init__(c)
+        self.num_layers = num_layers
 
     def update(self, model, val_acc, train_acc=None, val_loss=None, train_loss=None):
-        """Record metrics only (SimpleMLP doesn't support weight tracking)."""
+        """Record weights/steps and metrics for a SimpleMLP model."""
+        if self._tracks_weights():
+            linear_data = []
+            if model.num_layers > 0:
+                for layer in model.hidden_layers:
+                    linear_data.append(self._sample_if_needed(self._get_tensor_data(layer.weight), len(linear_data)))
+            linear_data.append(self._sample_if_needed(self._get_tensor_data(model.final_layer.weight), len(linear_data)))
+            self.weight_history.append(linear_data)
+        else:
+            self.weight_history.append([])
+
         self._update_metrics(val_acc, train_acc, val_loss, train_loss)
 
+    def _get_weight_titles(self):
+        """Return titles for the linear layer weight/step matrices."""
+        titles = []
+        suffix = self._get_tracking_suffix()
+        if self._tracks_weights() and self.weight_history and self.weight_history[0]:
+            for i in range(self.num_layers):
+                titles.append(f"Hidden Layer {i + 1} {suffix}")
+            titles.append(f"Final Layer: Output {suffix}")
+        return titles
+
     def plot(self):
-        """Generate plots for accuracy and loss."""
+        """Generate plots for weight/step evolution (if tracked) and metrics."""
         training_steps = range(len(self.val_acc_history))
+        self._plot_weight_matrices(training_steps, self._get_weight_titles())
         self._plot_accuracy(training_steps)
         self._plot_loss(training_steps)

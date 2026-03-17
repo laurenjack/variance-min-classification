@@ -44,8 +44,8 @@ class Config:
                 raise ValueError("width_varyer must be None or 'h' for 'simple-mlp' model_type")
             if num_layers > 0 and h is None:
                 raise ValueError("h parameter is required for 'simple-mlp' when num_layers > 0")
-            if weight_tracker not in [None, 'accuracy']:
-                raise ValueError(f"simple-mlp only supports weight_tracker=None or 'accuracy', got '{weight_tracker}'")
+            if weight_tracker not in [None, 'accuracy', 'weight', 'full_step']:
+                raise ValueError(f"simple-mlp only supports weight_tracker=None, 'accuracy', 'weight', or 'full_step', got '{weight_tracker}'")
         
         # Validate k parameter based on model_type
         if model_type == 'k-polynomial':
