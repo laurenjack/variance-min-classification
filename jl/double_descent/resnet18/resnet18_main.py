@@ -5,13 +5,14 @@ Reproduces Figure 1 from Nakkiran et al. (2019) "Deep Double Descent":
 ResNet18 with varying width parameter k trained on CIFAR-10 with 15% label noise.
 
 Requires exactly 8 GPUs. Trains 8 models in parallel using torch.multiprocessing.
-Each GPU trains one model with width k, k+4, k+8, ..., k+28.
 
 Two modes:
 
 1. DEFAULT MODE (no flags):
-   - Trains 8 models per batch with k values incrementing by 4
-   - Default k-start=4: trains k=4,8,12,16,20,24,28,32
+   - Trains 16 models across 2 batches (8 models per batch)
+   - k values: 4, 8, 12, ..., 64 (increment by 4)
+   - Batch 1: k=4,8,12,16,20,24,28,32
+   - Batch 2: k=36,40,44,48,52,56,60,64
 
 2. VARIANCE MODE (--variance):
    - Trains models for variance analysis: 16 k values x 4 disjoint splits
@@ -20,7 +21,7 @@ Two modes:
    - 8 batches total (2 k values x 4 splits per batch)
 
 Usage:
-    # Default mode (k=4,8,12,16,20,24,28,32 on 8 GPUs)
+    # Default mode (k=4-64 in 2 batches)
     python -m jl.double_descent.resnet18.resnet18_main --output-path ./output
 
     # Variance experiment
@@ -42,6 +43,7 @@ from jl.double_descent.resnet18.trainer import train_single_model
 # Hardcoded experiment parameters
 REQUIRED_GPUS = 8
 K_INCREMENT = 4
+NUM_BATCHES = 2  # Default mode runs 2 batches: k=4-32, then k=36-64
 
 # Variance experiment parameters
 VARIANCE_K_VALUES = [2, 6, 10, 14]  # Temporary: fill in gaps for first/second descent
@@ -123,14 +125,15 @@ def parse_args():
 
 
 def run_default(args, config):
-    """Run the default training mode (8 k values, one per GPU)."""
+    """Run the default training mode (2 batches of 8 k values each, k=4-64)."""
     total_start = time.time()
 
-    # Compute k values for this run (one k per GPU, incrementing by 4)
-    k_values = [config.k_start + K_INCREMENT * i for i in range(REQUIRED_GPUS)]
+    # Compute all k values across both batches
+    all_k_values = [config.k_start + K_INCREMENT * i for i in range(REQUIRED_GPUS * NUM_BATCHES)]
 
     logger.info("Deep Double Descent Training - Default Mode")
-    logger.info(f"Width values: k={k_values}")
+    logger.info(f"Width values: k={all_k_values}")
+    logger.info(f"Batches: {NUM_BATCHES} (8 models per batch)")
     logger.info(f"Epochs: {config.epochs}, Batch size: {config.batch_size}")
     logger.info(f"Learning rate: {config.learning_rate}")
     if config.cosine_decay_epoch is not None:
@@ -141,25 +144,37 @@ def run_default(args, config):
     # Set multiprocessing start method
     mp.set_start_method('spawn', force=True)
 
-    # Spawn training processes (one per GPU)
-    logger.info(f"Spawning {REQUIRED_GPUS} training processes...")
-    processes = []
-    for gpu_id in range(REQUIRED_GPUS):
-        k = k_values[gpu_id]
-        p = mp.Process(
-            target=train_single_model,
-            args=(gpu_id, k, config, args.output_path, args.data_path)
-        )
-        p.start()
-        processes.append(p)
-        logger.info(f"Started process for k={k} on GPU {gpu_id}")
+    # Run batches sequentially
+    for batch_idx in range(NUM_BATCHES):
+        batch_k_values = all_k_values[batch_idx * REQUIRED_GPUS:(batch_idx + 1) * REQUIRED_GPUS]
+        batch_num = batch_idx + 1
 
-    # Wait for all processes to complete
-    for i, p in enumerate(processes):
-        p.join()
-        logger.info(f"Process for k={k_values[i]} completed")
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Batch {batch_num}/{NUM_BATCHES}: k = {batch_k_values}")
+        logger.info(f"{'='*60}")
+
+        # Spawn training processes (one per GPU)
+        logger.info(f"Spawning {REQUIRED_GPUS} training processes...")
+        processes = []
+        for gpu_id in range(REQUIRED_GPUS):
+            k = batch_k_values[gpu_id]
+            p = mp.Process(
+                target=train_single_model,
+                args=(gpu_id, k, config, args.output_path, args.data_path)
+            )
+            p.start()
+            processes.append(p)
+            logger.info(f"Started process for k={k} on GPU {gpu_id}")
+
+        # Wait for all processes to complete
+        for i, p in enumerate(processes):
+            p.join()
+            logger.info(f"Process for k={batch_k_values[i]} completed")
+
+        logger.info(f"Batch {batch_num}/{NUM_BATCHES} complete")
 
     total_time = time.time() - total_start
+    logger.info("\n" + "=" * 60)
     logger.info(f"All training completed! Total time: {total_time:.2f}s ({total_time/3600:.2f}h)")
     logger.info(f"Metrics saved to {args.output_path}/metrics_k*.jsonl")
 

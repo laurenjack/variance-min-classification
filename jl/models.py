@@ -440,9 +440,9 @@ class SimpleMLP(nn.Module):
             self.final_layer = nn.Linear(c.h, output_dim, bias=False)
 
     def get_tracker(self, c: Config):
-        if c.weight_tracker == 'accuracy':
-            return SimpleMLPTracker(c)
-        return TrackerInterface()
+        if c.weight_tracker is None:
+            return TrackerInterface()
+        return SimpleMLPTracker(c, num_layers=self.num_layers)
 
     def forward(self, x, width_mask: Optional[torch.Tensor] = None):
         current = x
