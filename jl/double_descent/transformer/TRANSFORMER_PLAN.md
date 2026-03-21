@@ -20,10 +20,10 @@ Trains 24 models to reproduce the double descent curve:
 - 3 batches total, each training 8 models in parallel
 
 ### Variance Mode (`--variance` flag)
-Trains 48 models to analyze variance across different training data:
-- 6 d_model values: 32, 64, 96, 128, 160, 192
-- 8 disjoint 18K training splits (from shuffled 160K base data)
-- 6 batches total (one per d_model), training all 8 splits in parallel
+Trains 96 models to analyze variance across different training data:
+- 24 d_model values: 16, 32, 48, ..., 384
+- 4 disjoint 36K training splits (from shuffled 160K base data)
+- 12 batches total (2 d_model per batch × 4 splits = 8 GPUs per batch)
 
 No command-line arguments for d_model or train_samples - these are hardcoded.
 
@@ -439,18 +439,18 @@ A second experiment mode that trains multiple models per d_model value to analyz
 
 ### Overview
 
-- **6 d_model values**: 32, 64, 96, 128, 160, 192 (increments of 32)
-- **8 disjoint training splits**: Each split is 18K samples from the 160K base dataset
-- **48 total models**: 6 d_model × 8 splits
-- **6 batches**: One per d_model, training 8 models in parallel (one per GPU)
+- **24 d_model values**: 16, 32, 48, ..., 384 (increments of 16)
+- **4 disjoint training splits**: Each split is 36K samples from the 160K base dataset
+- **96 total models**: 24 d_model × 4 splits
+- **12 batches**: 2 d_model values per batch, each with 4 splits = 8 GPUs per batch
 
 ### Data Split Strategy
 
-The 160K training samples are shuffled with a fixed seed, then partitioned into 8 disjoint 18K chunks:
-- Split 0: indices 0-17999
-- Split 1: indices 18000-35999
-- ...
-- Split 7: indices 126000-143999
+The 160K training samples are shuffled with a fixed seed, then partitioned into 4 disjoint 36K chunks:
+- Split 0: indices 0-35999
+- Split 1: indices 36000-71999
+- Split 2: indices 72000-107999
+- Split 3: indices 108000-143999
 
 ### Running the Variance Experiment
 
@@ -463,31 +463,36 @@ The 160K training samples are shuffled with a fixed seed, then partitioned into 
 
 ```
 output/transformer_variance/03-01-1010/
+├── metrics_d16_split0.jsonl
+├── metrics_d16_split1.jsonl
+├── metrics_d16_split2.jsonl
+├── metrics_d16_split3.jsonl
 ├── metrics_d32_split0.jsonl
-├── metrics_d32_split1.jsonl
 ├── ...
-├── metrics_d32_split7.jsonl
-├── metrics_d64_split0.jsonl
+├── metrics_d384_split3.jsonl
+├── model_d16_split0.pt
 ├── ...
-├── metrics_d192_split7.jsonl
-├── model_d32_split0.pt
-├── model_d32_split1.pt
-├── ...
-└── model_d192_split7.pt
+└── model_d384_split3.pt
 ```
 
-**Total output files:** 96 (48 metrics + 48 models)
+**Total output files:** 192 (96 metrics + 96 models)
 
 ### Execution Order
 
-| Batch | d_model | Splits |
-|-------|---------|--------|
-| 1     | 32      | 0, 1, 2, 3, 4, 5, 6, 7 |
-| 2     | 64      | 0, 1, 2, 3, 4, 5, 6, 7 |
-| 3     | 96      | 0, 1, 2, 3, 4, 5, 6, 7 |
-| 4     | 128     | 0, 1, 2, 3, 4, 5, 6, 7 |
-| 5     | 160     | 0, 1, 2, 3, 4, 5, 6, 7 |
-| 6     | 192     | 0, 1, 2, 3, 4, 5, 6, 7 |
+| Batch | d_model values | Splits | GPUs |
+|-------|---------------|--------|------|
+| 1     | 16, 32        | 0-3 each | 0-3: d16, 4-7: d32 |
+| 2     | 48, 64        | 0-3 each | 0-3: d48, 4-7: d64 |
+| 3     | 80, 96        | 0-3 each | 0-3: d80, 4-7: d96 |
+| 4     | 112, 128      | 0-3 each | 0-3: d112, 4-7: d128 |
+| 5     | 144, 160      | 0-3 each | 0-3: d144, 4-7: d160 |
+| 6     | 176, 192      | 0-3 each | 0-3: d176, 4-7: d192 |
+| 7     | 208, 224      | 0-3 each | 0-3: d208, 4-7: d224 |
+| 8     | 240, 256      | 0-3 each | 0-3: d240, 4-7: d256 |
+| 9     | 272, 288      | 0-3 each | 0-3: d272, 4-7: d288 |
+| 10    | 304, 320      | 0-3 each | 0-3: d304, 4-7: d320 |
+| 11    | 336, 352      | 0-3 each | 0-3: d336, 4-7: d352 |
+| 12    | 368, 384      | 0-3 each | 0-3: d368, 4-7: d384 |
 
 ### Analyzing the Variance
 
@@ -500,7 +505,7 @@ Where the first term is bias and the second term (Jensen Gap) is variance.
 #### Metrics
 
 For each d_model:
-- **Mean test loss**: Cross-entropy loss averaged across the 8 training splits
+- **Mean test loss**: Cross-entropy loss averaged across the 4 training splits
 - **Jensen Gap**: E[log(q_bar[y] / q_j[y])] - the variance term
 - **Implied Bias**: test_loss - jensen_gap
 
@@ -514,10 +519,10 @@ Single figure with d_model on x-axis showing three lines:
 #### Computation
 
 For each d_model:
-1. Run all 8 split-models on the test set, collect per-token softmax distributions q_1, ..., q_8
-2. Compute q_bar = (1/8) * sum_j(q_j) — the mean distribution at each token position
+1. Run all 4 split-models on the test set, collect per-token softmax distributions q_1, ..., q_4
+2. Compute q_bar = (1/4) * sum_j(q_j) — the mean distribution at each token position
 3. For each model j, compute Jensen Gap: log(q_bar[y] / q_j[y]) per token
-4. Average all metrics over the 8 models and all test tokens
+4. Average all metrics over the 4 models and all test tokens
 
 #### Implementation
 
@@ -539,7 +544,7 @@ Four new files:
 
 3. **`jl/double_descent/transformer/variance_evaluation.py`** — Python module that runs on the remote GPU
    - Discovers all variance model files (`model_d*_split*.pt`) in the output directory
-   - For each d_model, loads all 8 split-models
+   - For each d_model, loads all 4 split-models
    - Model architecture inferred from filename (`d_model` from name, all other params from `TDDConfig` defaults)
    - Runs forward pass on the full test set, collects per-token softmax distributions
    - Computes mean test loss and Jensen Gap per d_model
@@ -582,8 +587,8 @@ python -m jl.double_descent.transformer.plot_variance_evaluation \
 | LR Schedule | Vaswani (inverse sqrt) | Warmup + cosine decay to 0 |
 | Learning Rate | Scaled by d_model | Fixed 3e-4 peak |
 | Label Smoothing | 0.1 | Disabled |
-| Trials | Unknown | 1 (double descent) or 8 (variance) |
-| Sample sizes | 4K and 18K | 36K |
+| Trials | Unknown | 1 (double descent) or 4 (variance) |
+| Sample sizes | 4K and 18K | 36K (default), 36K per split (variance) |
 | Framework | fairseq | Custom PyTorch |
 | BLEU frequency | Unknown | End of training only |
 

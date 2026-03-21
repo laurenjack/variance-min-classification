@@ -121,17 +121,19 @@ def train_single_model(
     output_path: str,
     data_path: str,
     split_id: int = None,
+    num_splits: int = 4,
 ) -> None:
     """Train a single Transformer with embedding dimension d_model.
 
     Args:
         gpu_id: GPU device ID (0-7).
         d_model: Embedding dimension.
-        train_samples: Number of training samples (4000 or 18000).
+        train_samples: Number of training samples.
         config: Training configuration.
         output_path: Directory to save metrics.
         data_path: Directory containing preprocessed IWSLT data.
-        split_id: If provided, use disjoint split for variance experiments (0-7).
+        split_id: If provided, use disjoint split for variance experiments.
+        num_splits: Number of disjoint splits for variance experiments.
     """
     device = torch.device(f"cuda:{gpu_id}")
 
@@ -152,7 +154,7 @@ def train_single_model(
         process_logger.info(f"Starting training for d_model={d_model}, split {split_id} on GPU {gpu_id}")
         # Load disjoint split for variance experiment
         train_dataset, valid_dataset, test_dataset, vocab = load_iwslt14_variance_split(
-            data_path, split_id, num_splits=8, samples_per_split=train_samples, subsample_seed=config.subsample_seed
+            data_path, split_id, num_splits=num_splits, samples_per_split=train_samples, subsample_seed=config.subsample_seed
         )
     else:
         samples_k = train_samples // 1000
