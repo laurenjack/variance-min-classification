@@ -7,3 +7,4 @@ __pycache__
 .env
 *.pdf
 CLAUDE.md
+temp_double_descent.pdf
