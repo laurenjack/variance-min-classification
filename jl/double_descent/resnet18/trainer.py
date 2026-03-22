@@ -137,6 +137,11 @@ def train_single_model(
             data_dir=data_path,
         )
 
+    # Fix initialization for variance mode: all splits for the same k
+    # get identical initial weights, so Jensen Gap measures only data variance.
+    if variance_mode:
+        torch.manual_seed(42)
+
     # Create model
     model = make_resnet18k(k=k, num_classes=10).to(device)
     num_params = sum(p.numel() for p in model.parameters())
