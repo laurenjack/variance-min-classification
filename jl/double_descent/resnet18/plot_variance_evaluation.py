@@ -48,24 +48,38 @@ def plot_evaluation(eval_path: str, output_dir: str, temperature_scaled: bool = 
     k_values = [r["k"] for r in results]
     test_losses = [r["mean_test_loss"] for r in results]
     jensen_gaps = [r["mean_jensen_gap"] for r in results]
-    implied_bias = [tl - jg for tl, jg in zip(test_losses, jensen_gaps)]
+    entropy_bias = [tl - jg for tl, jg in zip(test_losses, jensen_gaps)]
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    title = "Bias-Variance Decomposition vs k (ResNet18 on CIFAR-10)"
+    title = "Bias-Variance Decomposition (ResNet18 on CIFAR-10)"
     if temperature_scaled:
         title += " (Temperature Scaled)"
 
+    plt.rcParams.update({
+        'font.size': 12,
+        'axes.labelsize': 14,
+        'axes.titlesize': 15,
+        'legend.fontsize': 11,
+        'mathtext.fontset': 'cm',
+    })
+
     fig, ax = plt.subplots(figsize=(8, 5), dpi=150)
-    ax.plot(k_values, test_losses, "-o", color="tab:blue", lw=2, markersize=4, label="Mean Test Loss")
-    ax.plot(k_values, jensen_gaps, "-o", color="tab:orange", lw=2, markersize=4, label="Jensen Gap (variance)")
-    ax.plot(k_values, implied_bias, "-o", color="tab:green", lw=2, markersize=4, label="Implied Bias")
-    ax.set_xlabel("ResNet18 width parameter (k)")
+
+    ax.plot(k_values, test_losses, "-o", color="#1f77b4", lw=2, markersize=4, label="Test Loss")
+    ax.plot(k_values, jensen_gaps, "-s", color="#d62728", lw=2, markersize=4, label="Jensen Gap (variance)")
+    ax.plot(k_values, entropy_bias, "-^", color="#2ca02c", lw=2, markersize=4, label="Entropy + Bias")
+
+    ax.set_xlabel(r"Model Width ($k$)")
     ax.set_ylabel("Cross-Entropy Loss")
     ax.set_title(title)
     ax.set_ylim(bottom=0)
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    ax.legend(frameon=False)
+
     plt.tight_layout()
     output_path = Path(output_dir) / "bias_variance.png"
     plt.savefig(output_path, bbox_inches="tight")
