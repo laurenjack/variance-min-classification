@@ -121,7 +121,7 @@ def train_single_model(
     output_path: str,
     data_path: str,
     split_id: int = None,
-    num_splits: int = 4,
+    num_splits: int = 8,
 ) -> None:
     """Train a single Transformer with embedding dimension d_model.
 
@@ -166,11 +166,6 @@ def train_single_model(
 
     process_logger.info(f"Loaded data: {len(train_dataset)} train, {len(valid_dataset)} valid, {len(test_dataset)} test")
     process_logger.info(f"Vocabulary size: {len(vocab)}")
-
-    # Fix initialization for variance mode: all splits for the same d_model
-    # get identical initial weights, so Jensen Gap measures only data variance.
-    if split_id is not None:
-        torch.manual_seed(config.subsample_seed)
 
     # Create model
     model = TransformerModel(

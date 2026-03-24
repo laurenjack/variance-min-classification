@@ -13,10 +13,10 @@ Two modes:
    - 3 batches total, 8 models per batch
 
 2. VARIANCE MODE (--variance):
-   - Trains 96 models for variance analysis: 24 d_model values x 4 disjoint splits
-   - d_model: 16, 32, 48, ..., 384
-   - Each split is a disjoint 36K subset from the 160K training data
-   - 12 batches total (2 d_model x 4 splits per batch = 8 GPUs)
+   - Trains 96 models for variance analysis: 12 d_model values x 8 disjoint splits
+   - d_model: 16, 32, 48, ..., 192
+   - Each split is a disjoint 18K subset from the 160K training data
+   - 12 batches total (1 d_model x 8 splits per batch = 8 GPUs)
 
 Usage:
     # Default double descent experiment (d_model 8-192)
@@ -56,10 +56,10 @@ D_MODEL_VALUES = list(range(200, 392, 8))  # [200, 208, 216, ..., 384] - 24 valu
 REQUIRED_GPUS = 8
 
 # Variance experiment parameters
-VARIANCE_D_MODEL_VALUES = list(range(16, 400, 16))  # [16, 32, 48, ..., 384] - 24 values
-VARIANCE_SAMPLES_PER_SPLIT = 36000  # Each disjoint split has 36K samples
-VARIANCE_NUM_SPLITS = 4  # 4 disjoint training sets
-VARIANCE_D_MODELS_PER_BATCH = 2  # Train 2 d_model values per batch (2 * 4 splits = 8 GPUs)
+VARIANCE_D_MODEL_VALUES = list(range(16, 208, 16))  # [16, 32, 48, ..., 192] - 12 values
+VARIANCE_SAMPLES_PER_SPLIT = 18000  # Each disjoint split has 18K samples
+VARIANCE_NUM_SPLITS = 8  # 8 disjoint training sets
+VARIANCE_D_MODELS_PER_BATCH = 1  # Train 1 d_model value per batch (1 * 8 splits = 8 GPUs)
 
 
 def parse_args():
@@ -82,7 +82,7 @@ def parse_args():
     parser.add_argument(
         "--variance",
         action="store_true",
-        help="Run variance experiment (24 d_model x 4 disjoint splits) instead of double descent"
+        help="Run variance experiment (12 d_model x 8 disjoint splits) instead of double descent"
     )
     return parser.parse_args()
 
