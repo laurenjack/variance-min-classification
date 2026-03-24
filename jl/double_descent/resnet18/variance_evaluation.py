@@ -5,8 +5,6 @@ and computes:
   - Mean test loss across splits
   - Jensen Gap: E[log(q_bar[y] / q_j[y])] - the variance term in bias-variance decomposition
 
-Uses Bessel's correction (n-1) for unbiased variance estimation with 4 models.
-
 Output: evaluation.jsonl written alongside the model files.
 
 With --temperature-scaling: fits a scalar temperature T per k value on one randomly
@@ -26,6 +24,7 @@ Usage:
 import argparse
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -93,7 +92,6 @@ def evaluate_k(
       2. Compute q_bar = mean distribution across models
       3. Compute Jensen Gap: log(q_bar[y] / q_j[y]) for each model
 
-    Uses Bessel's correction (n-1) for unbiased variance estimation.
     """
     num_models = len(model_paths)
     logger.info(f"k={k}: loading {num_models} models")
@@ -110,33 +108,29 @@ def evaluate_k(
             labels = labels.to(device)
             batch_size = images.size(0)
 
-            all_probs = []
+            all_log_probs = []
             for j, model in enumerate(models):
                 logits = model(images)  # [B, 10]
 
                 loss = F.cross_entropy(logits, labels, reduction='sum')
                 total_loss_per_model[j] += loss.item()
 
-                probs = F.softmax(logits, dim=-1)  # [B, 10]
-                all_probs.append(probs)
+                log_probs = F.log_softmax(logits, dim=-1)  # [B, 10]
+                all_log_probs.append(log_probs)
 
-            # Compute Jensen Gap: log(q_bar[y] / q_j[y])
-            all_probs_t = torch.stack(all_probs, dim=0)  # [M, B, 10]
-            q_bar = all_probs_t.mean(dim=0)  # [B, 10]
-            log_q_bar = torch.log(q_bar + 1e-10)
+            # Compute Jensen Gap in log space: log(q_bar[y]) - log(q_j[y])
+            all_log_probs_t = torch.stack(all_log_probs, dim=0)  # [M, B, 10]
+            log_q_bar = torch.logsumexp(all_log_probs_t, dim=0) - math.log(num_models)  # [B, 10]
 
-            # Get log q_bar[y] for each sample
             log_q_bar_y = log_q_bar.gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)  # [B]
 
             batch_jensen = 0.0
             for j in range(num_models):
-                log_q_j = torch.log(all_probs_t[j] + 1e-10)
-                log_q_j_y = log_q_j.gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)  # [B]
+                log_q_j_y = all_log_probs_t[j].gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)  # [B]
                 jensen_per_sample = log_q_bar_y - log_q_j_y  # [B]
                 batch_jensen += jensen_per_sample.sum().item()
 
-            # Bessel's correction: divide by (n-1) instead of n for unbiased variance
-            total_jensen_gap += batch_jensen / (num_models - 1)
+            total_jensen_gap += batch_jensen / num_models
             total_samples += batch_size
 
     del models
@@ -223,7 +217,7 @@ def _ts_eval_worker(gpu_id, model_path_str, k, temperature, data_path, output_fi
         num_workers=2, pin_memory=True,
     )
 
-    all_q_j_y = []
+    all_log_q_j_y = []
     total_loss = 0.0
     total_samples = 0
 
@@ -235,13 +229,13 @@ def _ts_eval_worker(gpu_id, model_path_str, k, temperature, data_path, output_fi
             loss = F.cross_entropy(logits / temperature, labels, reduction='sum')
             total_loss += loss.item()
 
-            probs = F.softmax(logits / temperature, dim=-1)
-            q_j_y = probs.gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
-            all_q_j_y.append(q_j_y.cpu())
+            log_probs = F.log_softmax(logits / temperature, dim=-1)
+            log_q_j_y = log_probs.gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
+            all_log_q_j_y.append(log_q_j_y.cpu())
             total_samples += labels.size(0)
 
     torch.save({
-        'q_j_y': torch.cat(all_q_j_y),
+        'log_q_j_y': torch.cat(all_log_q_j_y),
         'total_loss': torch.tensor(total_loss),
         'total_samples': torch.tensor(total_samples),
     }, output_file)
@@ -371,21 +365,18 @@ def main():
                             os.path.join(tmp_dir, f"k{k}_s{split_idx}.pt"),
                             weights_only=True,
                         )
-                        all_q_j_y.append(data['q_j_y'])
+                        all_q_j_y.append(data['log_q_j_y'])
                         total_loss_sum += data['total_loss'].item()
                         total_samples = data['total_samples'].item()
 
-                    q_j_y = torch.stack(all_q_j_y)  # [M, N]
-                    q_bar_y = q_j_y.mean(dim=0)  # [N]
+                    log_q_j_y = torch.stack(all_q_j_y)  # [M, N]
+                    log_q_bar_y = torch.logsumexp(log_q_j_y, dim=0) - math.log(num_models)
 
-                    log_q_bar_y = torch.log(q_bar_y + 1e-10)
                     total_jensen = 0.0
                     for j in range(num_models):
-                        log_q_j_y = torch.log(q_j_y[j] + 1e-10)
-                        total_jensen += (log_q_bar_y - log_q_j_y).sum().item()
+                        total_jensen += (log_q_bar_y - log_q_j_y[j]).sum().item()
 
-                    # Bessel's correction (n-1)
-                    mean_jensen_gap = total_jensen / ((num_models - 1) * total_samples)
+                    mean_jensen_gap = total_jensen / (num_models * total_samples)
                     mean_test_loss = total_loss_sum / (num_models * total_samples)
 
                     result = {

@@ -36,7 +36,7 @@ jl/double_descent/resnet18/
 ├── evaluation.py          # Final metrics + ECE for main runs
 ├── plot_evaluation.py     # Main runs: error/loss/ECE vs k
 ├── plot_single_k.py       # Training curves for single k
-├── variance_evaluation.py # Variance mode: Jensen Gap with Bessel's correction
+├── variance_evaluation.py # Variance mode: Jensen Gap decomposition
 ├── plot_variance_evaluation.py  # Bias-variance decomposition plot
 └── RESNET18_PLAN.md       # This plan file
 ```
@@ -290,8 +290,8 @@ python -m jl.double_descent.resnet18.variance_evaluation \
 
 This computes for each k:
 - **Mean test loss**: Cross-entropy loss averaged across the 4 training splits
-- **Jensen Gap**: E[log(q_bar[y] / q_j[y])] with Bessel's correction (n-1=3)
-- **Implied Bias**: test_loss - jensen_gap
+- **Jensen Gap**: E[log(q_bar[y] / q_j[y])]
+- **Entropy + Bias**: test_loss - jensen_gap
 
 Output: `evaluation.jsonl` alongside the model files.
 

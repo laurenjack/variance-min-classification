@@ -25,6 +25,7 @@ Usage:
 import argparse
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -80,22 +81,22 @@ def _load_test_data(data_path):
     return test_dataset, loader, vocab
 
 
-def compute_decomposition(all_q_j_y, total_loss_sum, num_models, total_tokens):
-    """Compute mean test loss and Jensen Gap from per-model q_j[y] vectors.
+def compute_decomposition(all_log_q_j_y, total_loss_sum, num_models, total_tokens):
+    """Compute mean test loss and Jensen Gap from per-model log q_j[y] vectors.
 
-    No Bessel's correction (divides by n, not n-1).
+    Uses log-space arithmetic for numerical stability.
 
     Returns:
         Tuple of (mean_test_loss, mean_jensen_gap).
     """
-    q_j_y = torch.stack(all_q_j_y)
-    q_bar_y = q_j_y.mean(dim=0)
+    log_q_j_y = torch.stack(all_log_q_j_y)  # [M, N]
 
-    log_q_bar_y = torch.log(q_bar_y + 1e-10)
+    # log(q_bar(y)) = logsumexp(log_q_j(y), dim=0) - log(M)
+    log_q_bar_y = torch.logsumexp(log_q_j_y, dim=0) - math.log(num_models)
+
     total_jensen = 0.0
     for j in range(num_models):
-        log_q_j_y = torch.log(q_j_y[j] + 1e-10)
-        total_jensen += (log_q_bar_y - log_q_j_y).sum().item()
+        total_jensen += (log_q_bar_y - log_q_j_y[j]).sum().item()
 
     mean_jensen_gap = total_jensen / (num_models * total_tokens)
     mean_test_loss = total_loss_sum / (num_models * total_tokens)
@@ -153,10 +154,8 @@ def evaluate_d_model(
 ) -> Dict:
     """Compute mean test loss and Jensen Gap for one d_model.
 
-    For each test batch:
-      1. Forward pass all models, collect softmax distributions
-      2. Compute q_bar = mean distribution across models
-      3. Compute Jensen Gap: log(q_bar[y] / q_j[y]) for each model
+    Uses log-space arithmetic throughout for numerical stability:
+    log_softmax instead of log(softmax + eps), and logsumexp for q_bar.
     """
     num_models = len(model_paths)
     logger.info(f"d_model={d_model}: loading {num_models} models")
@@ -182,13 +181,16 @@ def evaluate_d_model(
     total_jensen_gap = 0.0
     total_tokens = 0
 
+    # DEBUG: track smallest log q_j(y|x) values to check numerical range
+    smallest_log_q_values = []
+
     with torch.no_grad():
         for src, tgt in loader:
             src = src.to(device)
             tgt = tgt.to(device)
             tgt_input, target, mask, num_tokens = _prepare_batch(tgt, vocab.pad_idx)
 
-            all_probs = []
+            all_log_probs = []
             for j, model in enumerate(models):
                 logits = model(src, tgt_input)  # [B, T, V]
 
@@ -198,23 +200,29 @@ def evaluate_d_model(
                 )
                 total_loss_per_model[j] += loss.item() * num_tokens
 
-                probs = F.softmax(logits, dim=-1)  # [B, T, V]
-                all_probs.append(probs)
+                log_probs = F.log_softmax(logits, dim=-1)  # [B, T, V]
+                all_log_probs.append(log_probs)
 
-            # Compute Jensen Gap: log(q_bar[y] / q_j[y])
-            all_probs_t = torch.stack(all_probs, dim=0)  # [M, B, T, V]
-            q_bar = all_probs_t.mean(dim=0)  # [B, T, V]
-            log_q_bar = torch.log(q_bar + 1e-10)
+            # Stack log probs: [M, B, T, V]
+            all_log_probs_t = torch.stack(all_log_probs, dim=0)
+
+            # log(q_bar) = log(mean(exp(log_q_j))) = logsumexp - log(M)
+            log_q_bar = torch.logsumexp(all_log_probs_t, dim=0) - math.log(num_models)  # [B, T, V]
 
             target_idx = target.unsqueeze(-1)  # [B, T, 1]
             log_q_bar_y = log_q_bar.gather(dim=-1, index=target_idx).squeeze(-1)  # [B, T]
 
             batch_jensen = 0.0
             for j in range(num_models):
-                log_q_j = torch.log(all_probs_t[j] + 1e-10)
-                log_q_j_y = log_q_j.gather(dim=-1, index=target_idx).squeeze(-1)  # [B, T]
+                log_q_j_y = all_log_probs_t[j].gather(dim=-1, index=target_idx).squeeze(-1)  # [B, T]
                 jensen_per_token = log_q_bar_y - log_q_j_y  # [B, T]
                 batch_jensen += (jensen_per_token * mask).sum().item()
+
+                # DEBUG: collect smallest log q_j(y) values
+                masked_vals = log_q_j_y[mask]
+                if masked_vals.numel() > 0:
+                    k_small = min(10, masked_vals.numel())
+                    smallest_log_q_values.extend(masked_vals.topk(k_small, largest=False).values.tolist())
 
             total_jensen_gap += batch_jensen / num_models
             total_tokens += num_tokens
@@ -228,6 +236,15 @@ def evaluate_d_model(
         else 0.0
     )
     mean_jensen_gap = total_jensen_gap / total_tokens if total_tokens > 0 else 0.0
+
+    # DEBUG: print 10 smallest log q_j(y) values
+    smallest_log_q_values.sort()
+    top10 = smallest_log_q_values[:10]
+    logger.info(
+        f"d_model={d_model}: 10 smallest log q_j(y|x): "
+        f"{[f'{v:.2f}' for v in top10]} "
+        f"(probs: {[f'{math.exp(v):.2e}' for v in top10]})"
+    )
 
     logger.info(
         f"d_model={d_model}: mean_test_loss={mean_test_loss:.4f}, "
@@ -303,7 +320,7 @@ def _ts_eval_worker(gpu_id, model_path_str, d_model, temperature,
         label_smoothing=label_smoothing or 0.0,
     )
 
-    all_q_j_y = []
+    all_log_q_j_y = []
     total_loss = 0.0
     total_tokens = 0
 
@@ -320,13 +337,13 @@ def _ts_eval_worker(gpu_id, model_path_str, d_model, temperature,
             )
             total_loss += loss.item() * num_tokens
 
-            probs = F.softmax(logits / temperature, dim=-1)
-            q_j_y = probs.gather(dim=-1, index=target.unsqueeze(-1)).squeeze(-1)
-            all_q_j_y.append(q_j_y[mask].cpu())
+            log_probs = F.log_softmax(logits / temperature, dim=-1)
+            log_q_j_y = log_probs.gather(dim=-1, index=target.unsqueeze(-1)).squeeze(-1)
+            all_log_q_j_y.append(log_q_j_y[mask].cpu())
             total_tokens += num_tokens
 
     torch.save({
-        'q_j_y': torch.cat(all_q_j_y),
+        'log_q_j_y': torch.cat(all_log_q_j_y),
         'total_loss': torch.tensor(total_loss),
         'total_tokens': torch.tensor(total_tokens),
     }, output_file)
@@ -434,7 +451,7 @@ def main():
                     p.join()
 
                 # Collect worker results and compute decomposition
-                all_q_j_y = []
+                all_log_q_j_y = []
                 total_loss_sum = 0.0
                 total_tokens = 0
 
@@ -443,12 +460,12 @@ def main():
                         os.path.join(tmp_dir, f"d{d_model}_s{split_idx}.pt"),
                         weights_only=True,
                     )
-                    all_q_j_y.append(data['q_j_y'])
+                    all_log_q_j_y.append(data['log_q_j_y'])
                     total_loss_sum += data['total_loss'].item()
                     total_tokens = data['total_tokens'].item()
 
                 mean_test_loss, mean_jensen_gap = compute_decomposition(
-                    all_q_j_y, total_loss_sum, num_models, total_tokens,
+                    all_log_q_j_y, total_loss_sum, num_models, total_tokens,
                 )
 
                 result = {
