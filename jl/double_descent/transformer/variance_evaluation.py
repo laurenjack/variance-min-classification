@@ -144,106 +144,116 @@ def load_model(
     return model
 
 
-def evaluate_d_model(
-    model_paths: List[Path],
-    d_model: int,
-    test_dataset: TranslationDataset,
-    vocab: Vocab,
-    config: TDDConfig,
-    device: torch.device,
-) -> Dict:
-    """Compute mean test loss and Jensen Gap for one d_model.
+def _eval_worker(gpu_id, model_path_str, d_model, data_path, label_smoothing, output_file):
+    """Worker process: evaluate one transformer model on one GPU.
 
-    Uses log-space arithmetic throughout for numerical stability:
-    log_softmax instead of log(softmax + eps), and logsumexp for q_bar.
+    Saves log_q_j_y (per non-pad token), total loss, and total tokens to output_file.
+    Uses log_softmax for numerical stability.
     """
-    num_models = len(model_paths)
-    logger.info(f"d_model={d_model}: loading {num_models} models")
+    device = torch.device(f"cuda:{gpu_id}")
+    config = TDDConfig()
 
-    models = [
-        load_model(p, d_model, len(vocab), vocab.pad_idx, config, device)
-        for p in model_paths
-    ]
-
-    loader = DataLoader(
-        test_dataset,
-        batch_size=EVAL_BATCH_SIZE,
-        shuffle=False,
-        collate_fn=partial(collate_fn, pad_idx=vocab.pad_idx),
+    _, loader, vocab = _load_test_data(data_path)
+    model = load_model(
+        Path(model_path_str), d_model, len(vocab),
+        vocab.pad_idx, config, device,
     )
 
     criterion = nn.CrossEntropyLoss(
         ignore_index=vocab.pad_idx,
-        label_smoothing=config.label_smoothing or 0.0,
+        label_smoothing=label_smoothing or 0.0,
     )
 
-    total_loss_per_model = [0.0] * num_models
-    total_jensen_gap = 0.0
+    all_log_q_j_y = []
+    total_loss = 0.0
     total_tokens = 0
-
-    # DEBUG: track smallest log q_j(y|x) values to check numerical range
-    smallest_log_q_values = []
+    min_log_q = float('inf')
 
     with torch.no_grad():
         for src, tgt in loader:
-            src = src.to(device)
-            tgt = tgt.to(device)
+            src, tgt = src.to(device), tgt.to(device)
             tgt_input, target, mask, num_tokens = _prepare_batch(tgt, vocab.pad_idx)
 
-            all_log_probs = []
-            for j, model in enumerate(models):
-                logits = model(src, tgt_input)  # [B, T, V]
+            logits = model(src, tgt_input)
 
-                loss = criterion(
-                    logits.view(-1, logits.size(-1)),
-                    target.view(-1),
-                )
-                total_loss_per_model[j] += loss.item() * num_tokens
+            loss = criterion(
+                logits.view(-1, logits.size(-1)),
+                target.view(-1),
+            )
+            total_loss += loss.item() * num_tokens
 
-                log_probs = F.log_softmax(logits, dim=-1)  # [B, T, V]
-                all_log_probs.append(log_probs)
-
-            # Stack log probs: [M, B, T, V]
-            all_log_probs_t = torch.stack(all_log_probs, dim=0)
-
-            # log(q_bar) = log(mean(exp(log_q_j))) = logsumexp - log(M)
-            log_q_bar = torch.logsumexp(all_log_probs_t, dim=0) - math.log(num_models)  # [B, T, V]
-
-            target_idx = target.unsqueeze(-1)  # [B, T, 1]
-            log_q_bar_y = log_q_bar.gather(dim=-1, index=target_idx).squeeze(-1)  # [B, T]
-
-            batch_jensen = 0.0
-            for j in range(num_models):
-                log_q_j_y = all_log_probs_t[j].gather(dim=-1, index=target_idx).squeeze(-1)  # [B, T]
-                jensen_per_token = log_q_bar_y - log_q_j_y  # [B, T]
-                batch_jensen += (jensen_per_token * mask).sum().item()
-
-                # DEBUG: collect smallest log q_j(y) values
-                masked_vals = log_q_j_y[mask]
-                if masked_vals.numel() > 0:
-                    k_small = min(10, masked_vals.numel())
-                    smallest_log_q_values.extend(masked_vals.topk(k_small, largest=False).values.tolist())
-
-            total_jensen_gap += batch_jensen / num_models
+            log_probs = F.log_softmax(logits, dim=-1)
+            log_q_j_y = log_probs.gather(dim=-1, index=target.unsqueeze(-1)).squeeze(-1)
+            masked_vals = log_q_j_y[mask]
+            all_log_q_j_y.append(masked_vals.cpu())
+            if masked_vals.numel() > 0:
+                min_log_q = min(min_log_q, masked_vals.min().item())
             total_tokens += num_tokens
 
-    del models
-    torch.cuda.empty_cache()
+    torch.save({
+        'log_q_j_y': torch.cat(all_log_q_j_y),
+        'total_loss': torch.tensor(total_loss),
+        'total_tokens': torch.tensor(total_tokens),
+        'min_log_q': torch.tensor(min_log_q),
+    }, output_file)
 
-    mean_test_loss = (
-        sum(total_loss_per_model) / (num_models * total_tokens)
-        if total_tokens > 0
-        else 0.0
-    )
-    mean_jensen_gap = total_jensen_gap / total_tokens if total_tokens > 0 else 0.0
 
-    # DEBUG: print 10 smallest log q_j(y) values
-    smallest_log_q_values.sort()
-    top10 = smallest_log_q_values[:10]
+def evaluate_d_model_parallel(
+    model_paths: List[Path],
+    d_model: int,
+    data_path: str,
+    config: TDDConfig,
+    num_gpus: int,
+) -> Dict:
+    """Compute mean test loss and Jensen Gap for one d_model using parallel GPU workers.
+
+    Spawns one process per model (one per GPU), collects log_q_j_y results,
+    and computes the decomposition in log space.
+    """
+    num_models = len(model_paths)
+    logger.info(f"d_model={d_model}: evaluating {num_models} models on {num_gpus} GPUs")
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        processes = []
+        for split_idx, model_path in enumerate(model_paths):
+            gpu_id = split_idx % num_gpus
+            out_f = os.path.join(tmp_dir, f"d{d_model}_s{split_idx}.pt")
+            p = mp.Process(
+                target=_eval_worker,
+                args=(gpu_id, str(model_path), d_model,
+                      data_path, config.label_smoothing, out_f),
+            )
+            p.start()
+            processes.append(p)
+
+        for p in processes:
+            p.join()
+
+        # Collect results
+        all_log_q_j_y = []
+        total_loss_sum = 0.0
+        total_tokens = 0
+        min_log_qs = []
+
+        for split_idx in range(num_models):
+            data = torch.load(
+                os.path.join(tmp_dir, f"d{d_model}_s{split_idx}.pt"),
+                weights_only=True,
+            )
+            all_log_q_j_y.append(data['log_q_j_y'])
+            total_loss_sum += data['total_loss'].item()
+            total_tokens = data['total_tokens'].item()
+            min_log_qs.append(data['min_log_q'].item())
+
+        mean_test_loss, mean_jensen_gap = compute_decomposition(
+            all_log_q_j_y, total_loss_sum, num_models, total_tokens,
+        )
+
+    # DEBUG: print smallest log q values across all models
+    min_log_qs.sort()
     logger.info(
-        f"d_model={d_model}: 10 smallest log q_j(y|x): "
-        f"{[f'{v:.2f}' for v in top10]} "
-        f"(probs: {[f'{math.exp(v):.2e}' for v in top10]})"
+        f"d_model={d_model}: min log q_j(y|x) per model: "
+        f"{[f'{v:.2f}' for v in min_log_qs]}"
     )
 
     logger.info(
@@ -489,13 +499,16 @@ def main():
         logger.info(f"Temperature-scaled results: {ts_eval_file}")
 
     else:
+        mp.set_start_method('spawn', force=True)
+        num_gpus = torch.cuda.device_count()
+
         output_path = Path(args.model_path) / "evaluation.jsonl"
         if output_path.exists():
             output_path.unlink()
 
         for d_model, model_paths in grouped.items():
-            result = evaluate_d_model(
-                model_paths, d_model, test_dataset, vocab, config, device
+            result = evaluate_d_model_parallel(
+                model_paths, d_model, args.data_path, config, num_gpus
             )
             with open(output_path, "a") as fh:
                 fh.write(json.dumps(result) + "\n")
