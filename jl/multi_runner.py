@@ -1,4 +1,5 @@
 from typing import Tuple, List, Optional
+import copy
 import math
 
 import torch
@@ -119,12 +120,20 @@ def _build_models(c: Config, width_range: list[int], num_runs: int, device: torc
     num_widths = len(width_range)
     model_lists = []
 
-    for _ in range(num_widths):
-        models = []
-        for _ in range(num_runs):
-            model = create_model(c).to(device)
-            models.append(model)
-        model_lists.append(models)
+    if c.shared_init:
+        # One template per run, deepcopied across all widths so every width
+        # variant starts from the same initialisation (Appendix Y scheme).
+        templates = [create_model(c).to(device) for _ in range(num_runs)]
+        for _ in range(num_widths):
+            models = [copy.deepcopy(templates[r]) for r in range(num_runs)]
+            model_lists.append(models)
+    else:
+        for _ in range(num_widths):
+            models = []
+            for _ in range(num_runs):
+                model = create_model(c).to(device)
+                models.append(model)
+            model_lists.append(models)
     return model_lists
 
 

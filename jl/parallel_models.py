@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 from typing import Optional
 
-from jl.models import RMSNorm, ResidualBlock, Resnet, MLP, SimpleMLP
+from jl.models import RMSNorm, ResidualBlock, Resnet, MLP, SimpleMLP, get_activation_fn
 from jl.config import Config
 from jl.feature_experiments.dropout import DropoutModules
 
@@ -34,17 +34,19 @@ class MaskedRMSNorm(RMSNorm):
 
 
 class ResidualBlockH(nn.Module):
-    def __init__(self, d, h, is_norm=True, learnable_norm_parameters=True):
+    def __init__(self, d, h, is_norm=True, learnable_norm_parameters=True, activation_fn=None):
         """
         ResidualBlockH that handles width_mask for the h parameter.
-        
+
         d: Dimension of the residual stream.
         h: Hidden dimension for the block.
         is_norm: Whether to apply RMSNorm (default True).
         learnable_norm_parameters: Whether RMSNorm weights are learnable.
+        activation_fn: Activation function (default F.relu).
         """
         super(ResidualBlockH, self).__init__()
         self.is_norm = is_norm
+        self.activation_fn = activation_fn if activation_fn is not None else F.relu
         if is_norm:
             self.rms_norm = RMSNorm(d, learnable_norm_parameters=learnable_norm_parameters)
         else:
@@ -57,29 +59,31 @@ class ResidualBlockH(nn.Module):
         if self.is_norm:
             x = self.rms_norm(x)
         hidden = self.weight_in(x)
-        hidden = F.relu(hidden)
-        
+        hidden = self.activation_fn(hidden)
+
         # Apply width_mask to hidden layer if provided
         if width_mask is not None:
             hidden = hidden * width_mask.unsqueeze(0)  # Broadcast across batch dimension
-            
+
         out = self.weight_out(hidden)
         return out
 
 
 class ResidualBlockDModel(nn.Module):
-    def __init__(self, d, h, is_norm=True, learnable_norm_parameters=True):
+    def __init__(self, d, h, is_norm=True, learnable_norm_parameters=True, activation_fn=None):
         """
         Special ResidualBlock for ResnetDModel that can handle d_model width masking.
-        
+
         d: Maximum dimension of the residual stream.
         h: Hidden dimension for the block.
         is_norm: Whether to apply RMSNorm (default True).
         learnable_norm_parameters: Whether RMSNorm weights are learnable.
+        activation_fn: Activation function (default F.relu).
         """
         super(ResidualBlockDModel, self).__init__()
         # Use MaskedRMSNorm to compute RMS over active d_model* only
         self.is_norm = is_norm
+        self.activation_fn = activation_fn if activation_fn is not None else F.relu
         if is_norm:
             self.masked_rms_norm = MaskedRMSNorm(d, learnable_norm_parameters=learnable_norm_parameters)
         else:
@@ -96,7 +100,7 @@ class ResidualBlockDModel(nn.Module):
             x_normed = x
 
         hidden = self.weight_in(x_normed)
-        hidden = F.relu(hidden)
+        hidden = self.activation_fn(hidden)
         out = self.weight_out(hidden)
         
         # Apply masking to output as well
@@ -125,7 +129,8 @@ class ResnetDModel(Resnet):
         self.input_dim = c.d
         self.d_model = c.d if c.d_model is None else c.d_model
         self.num_class = c.num_class
-        
+        self.activation_fn = get_activation_fn(c.activation)
+
         # Determine output dimension: 1 for binary, num_class for multi-class
         output_dim = 1 if c.num_class == 2 else c.num_class
 
@@ -134,7 +139,7 @@ class ResnetDModel(Resnet):
 
         # Use special ResidualBlockDModel that can handle d_model masking
         self.blocks = nn.ModuleList([
-            ResidualBlockDModel(self.d_model, c.h, is_norm=c.is_norm, learnable_norm_parameters=c.learnable_norm_parameters)
+            ResidualBlockDModel(self.d_model, c.h, is_norm=c.is_norm, learnable_norm_parameters=c.learnable_norm_parameters, activation_fn=self.activation_fn)
             for _ in range(c.num_layers)
         ])
         
@@ -200,6 +205,7 @@ class MLPH(nn.Module):
         self.num_layers = c.num_layers
         self.is_norm = c.is_norm
         self.num_class = c.num_class
+        self.activation_fn = get_activation_fn(c.activation)
         
         # Determine output dimension: 1 for binary, num_class for multi-class
         output_dim = 1 if c.num_class == 2 else c.num_class
@@ -252,8 +258,8 @@ class MLPH(nn.Module):
             current = current * width_mask.unsqueeze(0)
         if self.is_norm:
             current = self.input_norm(current, mask=width_mask)
-        current = F.relu(current)
-        
+        current = self.activation_fn(current)
+
         # Hidden layers with masking
         for i, (hidden_layer, hidden_norm) in enumerate(zip(self.hidden_layers, self.hidden_norms)):
             current = hidden_layer(current)
@@ -261,7 +267,7 @@ class MLPH(nn.Module):
                 current = current * width_mask.unsqueeze(0)
             if self.is_norm:
                 current = hidden_norm(current, mask=width_mask)
-            current = F.relu(current)
+            current = self.activation_fn(current)
             current = self.dropouts[i](current)
         
         # Apply final layer normalization with mask
@@ -292,6 +298,7 @@ class SimpleMLPH(nn.Module):
         self.num_layers = c.num_layers
         self.num_class = c.num_class
         self.h = c.h
+        self.activation_fn = get_activation_fn(c.activation)
         output_dim = 1 if c.num_class == 2 else c.num_class
 
         if self.num_layers == 0:
@@ -323,7 +330,7 @@ class SimpleMLPH(nn.Module):
                 current = layer(current)
                 if width_mask is not None:
                     current = current * width_mask.unsqueeze(0)
-                current = torch.relu(current)
+                current = self.activation_fn(current)
 
         output = self.final_layer(current)
         if self.num_class == 2:

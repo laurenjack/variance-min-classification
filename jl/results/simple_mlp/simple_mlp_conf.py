@@ -23,29 +23,29 @@ def run_experiment(width_range: list[int], num_runs: int, graph_config: Optional
     )
     n = 128
 
-    # h = max(width_range)
-    h = 40
-    d_model = max(width_range)
+    h = max(width_range)
+    #h = 40
+    # d_model = max(width_range)
     # d_model = 40
 
     # Model configuration
     model_config = Config(
-        model_type='resnet',
+        model_type='simple-mlp',
         d=problem.d,
         n_val=1000,
         n=n,
         batch_size=n // 4,
         lr=0.01,
         epochs=100,
-        weight_decay=0.001,
+        weight_decay=0.0,
         num_layers=1,
         num_class=problem.num_classes(),
         h=h,
         weight_tracker="accuracy",
-        width_varyer="d_model",
+        width_varyer="h",
         optimizer="adam_w",
         is_norm=False,
-        d_model=d_model,
+        # d_model=d_model,
     )
 
     # Generate validation set with class-balanced sampling
