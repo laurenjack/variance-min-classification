@@ -373,6 +373,48 @@ python -m jl.double_descent.resnet18.plot_single_k ./data/resnet18/03-01-1010 --
 
 ---
 
+## Phase 6: Final-Layer Fine-Tuning
+
+Fine-tunes only the final linear layer (`model.linear`) of each trained model using L-BFGS with L2 regularization, to reach a stationary point. This enables training-point decomposition per Yeh & Kim et al. (2018).
+
+### Running Fine-Tuning
+
+```bash
+python -m jl.double_descent.resnet18.fine_tune \
+    --model-path ./output/resnet18/03-01-1010 \
+    --data-path ./data \
+    --l2-lambda 1e-5 --max-steps 100
+```
+
+- Discovers all `model_k*.pt` files (excludes variance/split models)
+- Extracts features from frozen backbone (no data augmentation, BatchNorm in eval mode)
+- Fine-tunes a standalone copy of the final linear layer with L-BFGS + L2
+- Parallelizes across available GPUs (one model per GPU)
+- Saves only the fine-tuned layer weights (not full model)
+
+### Output
+
+```
+output/resnet18/03-01-1010/fine_tuned/
+├── layer_k4.pt                    # Final layer state_dict only
+├── layer_k8.pt
+├── ...
+└── fine_tune_metadata.jsonl       # {k, final_loss, final_grad_norm, steps, l2_lambda}
+```
+
+### Plotting (shared with Transformer)
+
+```bash
+python -m jl.double_descent.plot_fine_tune \
+    --resnet-path ./data/resnet18/03-01-1010 \
+    --transformer-path ./data/transformer/03-01-1010 \
+    --output-dir ./data
+```
+
+Produces `fine_tune_comparison.png` with side-by-side original vs fine-tuned test loss.
+
+---
+
 ## Key Differences from Paper
 
 | Aspect | Paper | Our Implementation |

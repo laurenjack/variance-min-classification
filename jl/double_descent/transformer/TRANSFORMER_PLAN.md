@@ -579,6 +579,50 @@ python -m jl.double_descent.transformer.plot_variance_evaluation \
 ```
 
 
+## Phase 7: Final-Layer Fine-Tuning
+
+Fine-tunes only the output projection layer (`model.output_proj`) of each trained model using L-BFGS with L2 regularization. The output projection is first untied from the embedding (copied into a standalone `nn.Linear`), then fine-tuned independently.
+
+### Running Fine-Tuning
+
+```bash
+python -m jl.double_descent.transformer.fine_tune \
+    --model-path ./output/transformer/03-01-1010 \
+    --data-path ./data/iwslt14.tokenized.de-en \
+    --l2-lambda 1e-5 --max-steps 100
+```
+
+- Discovers all `model_d*_*k.pt` files (excludes variance/split models)
+- Unties output projection from embedding (copies weights into standalone layer)
+- Extracts decoder features using forward hook on `decoder_norm`
+- Excludes padding tokens from features/targets
+- Fine-tunes the untied output projection with L-BFGS + L2
+- Parallelizes across available GPUs (one model per GPU)
+- No label smoothing during fine-tuning (decomposition requires standard CE)
+
+### Output
+
+```
+output/transformer/03-01-1010/fine_tuned/
+├── layer_d8_36k.pt                # Output projection state_dict only
+├── layer_d16_36k.pt
+├── ...
+└── fine_tune_metadata.jsonl       # {d_model, train_samples, final_loss, final_grad_norm, steps, l2_lambda}
+```
+
+### Plotting (shared with ResNet18)
+
+```bash
+python -m jl.double_descent.plot_fine_tune \
+    --resnet-path ./data/resnet18/03-01-1010 \
+    --transformer-path ./data/transformer/03-01-1010 \
+    --output-dir ./data
+```
+
+Produces `fine_tune_comparison.png` with side-by-side original vs fine-tuned test loss.
+
+---
+
 ## Key Differences from Paper
 
 | Aspect | Paper | Our Implementation |
