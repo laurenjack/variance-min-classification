@@ -21,7 +21,7 @@ def fine_tune_final_layer(
     linear_layer: nn.Linear,
     l2_lambda: float = 1e-5,
     max_steps: int = 100,
-    chunk_size: int = 50000,
+    chunk_size: int = 20000,
     device: Optional[torch.device] = None,
 ) -> Dict[str, float]:
     """Fine-tune a linear layer with L-BFGS and L2 regularization.
