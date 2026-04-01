@@ -19,7 +19,9 @@ class Config:
                 is_hashed_dropout: bool = False,
                 prob_weight: float = 1.0,
                 num_models: Optional[int] = None,
-                unique_training_set: bool = False):
+                unique_training_set: bool = False,
+                activation: str = "relu",
+                shared_init: bool = False):
         # Validate model_type
         if model_type not in ['resnet', 'mlp', 'k-polynomial', 'multi-linear', 'simple-mlp']:
             raise ValueError(f"model_type must be 'resnet', 'mlp', 'k-polynomial', 'multi-linear', or 'simple-mlp', got '{model_type}'")
@@ -110,6 +112,10 @@ class Config:
             if width_varyer is not None:
                 raise ValueError(f"is_hashed_dropout=True is incompatible with width_varyer={width_varyer}")
 
+        # Validate activation
+        if activation not in ('relu', 'silu'):
+            raise ValueError(f"activation must be 'relu' or 'silu', got '{activation}'")
+
         self.model_type = model_type
         self.d = d
         self.n_val = n_val
@@ -138,3 +144,5 @@ class Config:
         self.prob_weight = prob_weight
         self.num_models = num_models
         self.unique_training_set = unique_training_set
+        self.activation = activation
+        self.shared_init = shared_init

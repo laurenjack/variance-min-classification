@@ -13,6 +13,16 @@ from jl.config import Config
 from jl.feature_experiments.dropout import Dropout, DropoutModules
 
 
+def get_activation_fn(name: str):
+    """Return the functional activation corresponding to the given name."""
+    if name == "relu":
+        return F.relu
+    elif name == "silu":
+        return F.silu
+    else:
+        raise ValueError(f"Unknown activation: '{name}'")
+
+
 class RMSNorm(nn.Module):
     """
     Custom implementation of RMSNorm
@@ -35,16 +45,18 @@ class RMSNorm(nn.Module):
 
 
 class ResidualBlock(nn.Module):
-    def __init__(self, d, h, is_norm=True, learnable_norm_parameters=True):
+    def __init__(self, d, h, is_norm=True, learnable_norm_parameters=True, activation_fn=None):
         """
         d: Dimension of the residual stream.
         h: Hidden dimension for the block.
         is_norm: Whether to apply RMSNorm (default True).
         learnable_norm_parameters: Whether RMSNorm weights are learnable.
+        activation_fn: Activation function (default F.relu).
         """
         super(ResidualBlock, self).__init__()
 
         self.is_norm = is_norm
+        self.activation_fn = activation_fn if activation_fn is not None else F.relu
         if is_norm:
             self.rms_norm = RMSNorm(d, learnable_norm_parameters=learnable_norm_parameters)
         else:
@@ -58,7 +70,7 @@ class ResidualBlock(nn.Module):
         if self.is_norm:
             x = self.rms_norm(x)
         hidden = self.weight_in(x)
-        hidden = F.relu(hidden)
+        hidden = self.activation_fn(hidden)
         out = self.weight_out(hidden)
         return out
 
@@ -77,7 +89,8 @@ class Resnet(nn.Module):
         self.input_dim = c.d
         self.d_model = c.d if c.d_model is None else c.d_model
         self.num_class = c.num_class
-        
+        self.activation_fn = get_activation_fn(c.activation)
+
         # Determine output dimension: 1 for binary, num_class for multi-class
         output_dim = 1 if c.num_class == 2 else c.num_class
 
@@ -90,7 +103,7 @@ class Resnet(nn.Module):
 
         # Residual blocks operate in d_model space
         self.blocks = nn.ModuleList([
-            block_class(self.d_model, c.h, is_norm=c.is_norm, learnable_norm_parameters=c.learnable_norm_parameters)
+            block_class(self.d_model, c.h, is_norm=c.is_norm, learnable_norm_parameters=c.learnable_norm_parameters, activation_fn=self.activation_fn)
             for _ in range(c.num_layers)
         ])
 
@@ -168,6 +181,7 @@ class MLP(nn.Module):
         self.num_layers = c.num_layers
         self.is_norm = c.is_norm
         self.num_class = c.num_class
+        self.activation_fn = get_activation_fn(c.activation)
         
         # Determine output dimension: 1 for binary, num_class for multi-class
         output_dim = 1 if c.num_class == 2 else c.num_class
@@ -237,8 +251,8 @@ class MLP(nn.Module):
             # Apply first linear
             current = self.hidden_linear1[i](current)
             
-            # Apply ReLU
-            current = F.relu(current)
+            # Apply activation
+            current = self.activation_fn(current)
             
             # Apply second linear
             current = self.hidden_linear2[i](current)
@@ -427,6 +441,7 @@ class SimpleMLP(nn.Module):
         super(SimpleMLP, self).__init__()
         self.num_layers = c.num_layers
         self.num_class = c.num_class
+        self.activation_fn = get_activation_fn(c.activation)
         output_dim = 1 if c.num_class == 2 else c.num_class
 
         if self.num_layers == 0:
@@ -448,7 +463,7 @@ class SimpleMLP(nn.Module):
         current = x
         if self.num_layers > 0:
             for layer in self.hidden_layers:
-                current = torch.relu(layer(current))
+                current = self.activation_fn(layer(current))
 
         output = self.final_layer(current)
 
