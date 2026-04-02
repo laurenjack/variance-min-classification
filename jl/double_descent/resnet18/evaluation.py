@@ -102,7 +102,8 @@ def compute_final_metrics(
     test_loader: DataLoader,
     metrics_path: Path,
     output_path: Path,
-    k: int,
+    model_label: str,
+    model_params: Dict,
     device: torch.device,
 ) -> Dict:
     """Compute final metrics for a trained model.
@@ -114,9 +115,10 @@ def compute_final_metrics(
     Args:
         model: Trained model (already on device, in eval mode).
         test_loader: DataLoader for test set.
-        metrics_path: Path to metrics_k{k}.jsonl file.
+        metrics_path: Path to metrics file.
         output_path: Directory to write evaluation.jsonl.
-        k: Width parameter k.
+        model_label: Label for logging, e.g. "k4" or "n3".
+        model_params: Dict of model params to include in result, e.g. {"k": 4}.
         device: Device model is on.
 
     Returns:
@@ -166,7 +168,7 @@ def compute_final_metrics(
     train_metrics = read_final_train_metrics(metrics_path)
 
     result = {
-        'k': k,
+        **model_params,
         'test_loss': round(test_loss, 6),
         'test_error': round(test_error, 6),
         'train_loss': round(train_metrics['train_loss'], 6),
@@ -180,7 +182,7 @@ def compute_final_metrics(
         f.write(json.dumps(result) + '\n')
 
     logger.info(
-        f"k={k}: test_loss={test_loss:.4f}, test_error={test_error:.4f}, "
+        f"{model_label}: test_loss={test_loss:.4f}, test_error={test_error:.4f}, "
         f"ece={ece:.6f}"
     )
 
@@ -291,7 +293,8 @@ def main():
 
         # Compute and save metrics
         compute_final_metrics(
-            model, test_loader, metrics_path, output_path, k, device
+            model, test_loader, metrics_path, output_path,
+            model_label=f"k{k}", model_params={"k": k}, device=device,
         )
 
         # Clean up

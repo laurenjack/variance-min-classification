@@ -32,12 +32,14 @@ import argparse
 import logging
 import os
 import time
+from functools import partial
 
 import torch
 import torch.multiprocessing as mp
 
 from jl.double_descent.resnet18.resnet18_config import DDConfig
 from jl.double_descent.resnet18.resnet18_data import download_cifar10
+from jl.double_descent.resnet18.resnet18k import make_resnet18k
 from jl.double_descent.resnet18.trainer import train_single_model
 
 # Hardcoded experiment parameters
@@ -158,9 +160,12 @@ def run_default(args, config):
         processes = []
         for gpu_id in range(REQUIRED_GPUS):
             k = batch_k_values[gpu_id]
+            model_factory = partial(make_resnet18k, k=k, num_classes=10)
+            model_label = f"k{k}"
+            model_params = {"k": k}
             p = mp.Process(
                 target=train_single_model,
-                args=(gpu_id, k, config, args.output_path, args.data_path)
+                args=(gpu_id, model_factory, model_label, model_params, config, args.output_path, args.data_path)
             )
             p.start()
             processes.append(p)
@@ -216,10 +221,13 @@ def run_variance(args, config):
         processes = []
         gpu_id = 0
         for k in batch_k_values:
+            model_factory = partial(make_resnet18k, k=k, num_classes=10)
+            model_label = f"k{k}"
+            model_params = {"k": k}
             for split_id in range(VARIANCE_NUM_SPLITS):
                 p = mp.Process(
                     target=train_single_model,
-                    args=(gpu_id, k, config, args.output_path, args.data_path),
+                    args=(gpu_id, model_factory, model_label, model_params, config, args.output_path, args.data_path),
                     kwargs={'split_id': split_id, 'num_splits': VARIANCE_NUM_SPLITS}
                 )
                 p.start()

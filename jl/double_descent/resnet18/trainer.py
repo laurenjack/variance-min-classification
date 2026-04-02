@@ -1,20 +1,22 @@
-"""Single model training for double descent experiments."""
+"""Single model training for double descent experiments.
+
+Model-agnostic: accepts a model factory callable so any architecture can be trained.
+"""
 
 import json
 import math
 import os
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 
-from jl.double_descent.resnet18.resnet18_config import DDConfig
 from jl.double_descent.resnet18.resnet18_data import load_cifar10_split, load_cifar10_with_noise
-from jl.double_descent.resnet18.resnet18k import make_resnet18k
 
 
 def make_cosine_decay_scheduler(
@@ -89,21 +91,25 @@ def evaluate(
 
 def train_single_model(
     gpu_id: int,
-    k: int,
-    config: DDConfig,
+    model_factory: Callable[[], nn.Module],
+    model_label: str,
+    model_params: Dict[str, Any],
+    config,
     output_path: str,
     data_path: str,
     split_id: Optional[int] = None,
     num_splits: Optional[int] = None,
 ) -> None:
-    """Train a single ResNet18 with width k on the specified GPU.
+    """Train a single model on the specified GPU.
 
     This function is designed to be called from a multiprocessing worker.
 
     Args:
         gpu_id: GPU device ID (0-7).
-        k: Width parameter for ResNet18.
-        config: Training configuration.
+        model_factory: Zero-arg callable returning an nn.Module (use functools.partial).
+        model_label: Label for filenames, e.g. "k4" or "n3" (used in metrics_{label}.jsonl).
+        model_params: Dict merged into every metrics line, e.g. {"k": 4} or {"n": 3}.
+        config: Training configuration (duck-typed: needs epochs, batch_size, etc.).
         output_path: Directory to save metrics.
         data_path: Path to CIFAR-10 data.
         split_id: For variance mode, which disjoint split to use (0 to num_splits-1).
@@ -115,9 +121,9 @@ def train_single_model(
     variance_mode = split_id is not None and num_splits is not None
 
     if variance_mode:
-        print(f"[GPU {gpu_id}] Training k={k}, split={split_id} on {device}")
+        print(f"[GPU {gpu_id}] Training {model_label}, split={split_id} on {device}")
     else:
-        print(f"[GPU {gpu_id}] Training k={k} on {device}")
+        print(f"[GPU {gpu_id}] Training {model_label} on {device}")
 
     # Load data (each process loads independently)
     if variance_mode:
@@ -137,15 +143,15 @@ def train_single_model(
             data_dir=data_path,
         )
 
-    # Fix initialization for variance mode: all splits for the same k
+    # Fix initialization for variance mode: all splits for the same model config
     # get identical initial weights, so Jensen Gap measures only data variance.
     if variance_mode:
         torch.manual_seed(42)
 
     # Create model
-    model = make_resnet18k(k=k, num_classes=10).to(device)
+    model = model_factory().to(device)
     num_params = sum(p.numel() for p in model.parameters())
-    print(f"[GPU {gpu_id}] k={k} has {num_params:,} parameters")
+    print(f"[GPU {gpu_id}] {model_label} has {num_params:,} parameters")
 
     # Optimizer
     if config.optimizer == "adam_w":
@@ -164,9 +170,9 @@ def train_single_model(
     # Metrics file path depends on mode
     os.makedirs(output_path, exist_ok=True)
     if variance_mode:
-        metrics_path = Path(output_path) / f"metrics_k{k}_split{split_id}.jsonl"
+        metrics_path = Path(output_path) / f"metrics_{model_label}_split{split_id}.jsonl"
     else:
-        metrics_path = Path(output_path) / f"metrics_k{k}.jsonl"
+        metrics_path = Path(output_path) / f"metrics_{model_label}.jsonl"
 
     # Clear metrics file
     with open(metrics_path, 'w') as f:
@@ -215,7 +221,7 @@ def train_single_model(
         epoch_time = time.time() - epoch_start
         metrics = {
             "epoch": epoch + 1,
-            "k": k,
+            **model_params,
             "train_error": train_error,
             "test_error": test_error,
             "train_loss": train_loss,
@@ -230,7 +236,7 @@ def train_single_model(
         if (epoch + 1) % config.log_interval == 0 or epoch == 0:
             split_str = f", split={split_id}" if variance_mode else ""
             print(
-                f"[GPU {gpu_id}] k={k}{split_str} Epoch {epoch + 1:4d}/{config.epochs} | "
+                f"[GPU {gpu_id}] {model_label}{split_str} Epoch {epoch + 1:4d}/{config.epochs} | "
                 f"train_err={train_error:.4f} test_err={test_error:.4f} | "
                 f"train_loss={train_loss:.4f} test_loss={test_loss:.4f} | "
                 f"{epoch_time:.1f}s"
@@ -238,15 +244,15 @@ def train_single_model(
 
     # Save final model
     if variance_mode:
-        model_path = Path(output_path) / f"model_k{k}_split{split_id}.pt"
+        model_path = Path(output_path) / f"model_{model_label}_split{split_id}.pt"
     else:
-        model_path = Path(output_path) / f"model_k{k}.pt"
+        model_path = Path(output_path) / f"model_{model_label}.pt"
     torch.save(model.state_dict(), model_path)
     split_str = f", split={split_id}" if variance_mode else ""
-    print(f"[GPU {gpu_id}] k={k}{split_str} training complete! Model saved to {model_path}")
+    print(f"[GPU {gpu_id}] {model_label}{split_str} training complete! Model saved to {model_path}")
 
     # Compute and save final evaluation metrics (main runs only)
     if not variance_mode:
         from jl.double_descent.resnet18.evaluation import compute_final_metrics
         eval_output = Path(output_path)
-        compute_final_metrics(model, test_loader, metrics_path, eval_output, k, device)
+        compute_final_metrics(model, test_loader, metrics_path, eval_output, model_label, model_params, device)
