@@ -43,10 +43,13 @@ from torch.utils.data import DataLoader
 
 from jl.double_descent.transformer.transformer_config import TDDConfig
 from jl.double_descent.transformer.transformer_data import (
+    M2M100TranslationDataset,
+    M2M100Vocab,
     TranslationDataset,
     Vocab,
     build_vocab,
     collate_fn,
+    load_m2m100_split_ids,
     load_split,
 )
 from jl.double_descent.transformer.transformer_model import TransformerModel
@@ -359,6 +362,187 @@ def _ts_eval_worker(gpu_id, model_path_str, d_model, temperature,
     }, output_file)
 
 
+def _load_m2m100_test_data(data_path):
+    """Build M2M100 vocab and test DataLoader from M2M100-preprocessed IWSLT data."""
+    vocab = M2M100Vocab(str(Path(data_path) / "vocab_mapping.json"))
+    test_src, test_tgt = load_m2m100_split_ids(data_path, "test")
+    test_dataset = M2M100TranslationDataset(test_src, test_tgt, vocab)
+    loader = DataLoader(
+        test_dataset, batch_size=EVAL_BATCH_SIZE, shuffle=False,
+        collate_fn=partial(collate_fn, pad_idx=vocab.pad_idx),
+    )
+    return test_dataset, loader, vocab
+
+
+def _distributional_eval_worker(gpu_id, model_path_str, d_model, data_path,
+                                ref_token_ids, ref_log_probs, output_file):
+    """Worker: evaluate one model, gather log q_j at the top-K reference positions.
+
+    Saves log_q_j_at_ref [N_positions, K] to output_file.
+    """
+    device = torch.device(f"cuda:{gpu_id}")
+    config = TDDConfig()
+
+    _, loader, vocab = _load_m2m100_test_data(data_path)
+    model = load_model(
+        Path(model_path_str), d_model, len(vocab),
+        vocab.pad_idx, config, device,
+    )
+
+    all_log_q_at_ref = []
+    total_loss = 0.0
+    total_tokens = 0
+    position_offset = 0
+
+    with torch.no_grad():
+        for src, tgt in loader:
+            src, tgt = src.to(device), tgt.to(device)
+            tgt_input, target, mask, num_tokens = _prepare_batch(tgt, vocab.pad_idx)
+
+            logits = model(src, tgt_input)
+            log_q = F.log_softmax(logits, dim=-1)  # [batch, seq_len, vocab_size]
+
+            # Compute loss at ground truth for test_loss metric
+            log_q_y = log_q.gather(dim=-1, index=target.unsqueeze(-1)).squeeze(-1)
+            total_loss += -log_q_y[mask].sum().item()
+
+            # For each non-padding position, gather log q at the reference top-K tokens
+            for b in range(src.size(0)):
+                b_mask = mask[b]  # [seq_len]
+                n_pos = b_mask.sum().item()
+                if n_pos == 0:
+                    continue
+
+                # Get reference token IDs for these positions
+                ref_tids = ref_token_ids[position_offset:position_offset + n_pos].to(device)
+                # ref_tids: [n_pos, K] compact token IDs
+
+                # Gather log q at those positions
+                b_log_q = log_q[b][b_mask]  # [n_pos, vocab_size]
+                b_log_q_at_ref = b_log_q.gather(dim=-1, index=ref_tids.long())  # [n_pos, K]
+
+                all_log_q_at_ref.append(b_log_q_at_ref.cpu())
+                position_offset += n_pos
+                total_tokens += n_pos
+
+    torch.save({
+        'log_q_at_ref': torch.cat(all_log_q_at_ref, dim=0),  # [total_positions, K]
+        'total_loss': torch.tensor(total_loss),
+        'total_tokens': torch.tensor(total_tokens),
+    }, output_file)
+
+
+def compute_distributional_decomposition(all_log_q_at_ref, ref_log_probs, ref_entropy,
+                                         total_loss_sum, num_models, total_tokens):
+    """Compute entropy, bias, and variance from distributional data.
+
+    Args:
+        all_log_q_at_ref: list of [N, K] tensors, one per model
+        ref_log_probs: [N, K] reference log-probabilities
+        ref_entropy: [N] per-position entropy from full distribution
+        total_loss_sum: sum of per-model total losses
+        num_models: M
+        total_tokens: N
+
+    Returns:
+        dict with mean_test_loss, entropy, bias, variance
+    """
+    log_q_j = torch.stack(all_log_q_at_ref)  # [M, N, K]
+
+    # Ensemble: q_bar
+    log_q_bar = torch.logsumexp(log_q_j, dim=0) - math.log(num_models)  # [N, K]
+
+    # Reference distribution
+    log_p = ref_log_probs  # [N, K]
+    p = log_p.exp()        # [N, K]
+
+    # Entropy: H(p) from full distribution (pre-computed, not top-K approximation)
+    mean_entropy = ref_entropy.mean().item()
+
+    # Bias: KL(p || q_bar) = Σ_x p(x) [log p(x) - log q_bar(x)]
+    bias_per_position = (p * (log_p - log_q_bar)).sum(dim=-1)  # [N]
+    mean_bias = bias_per_position.mean().item()
+
+    # Variance (Jensen Gap): E_j[Σ_x p(x) log(q_bar(x) / q_j(x))]
+    total_variance = 0.0
+    for j in range(num_models):
+        variance_j = (p * (log_q_bar - log_q_j[j])).sum(dim=-1)  # [N]
+        total_variance += variance_j.mean().item()
+    mean_variance = total_variance / num_models
+
+    mean_test_loss = total_loss_sum / (num_models * total_tokens)
+
+    return {
+        "mean_test_loss": mean_test_loss,
+        "entropy": mean_entropy,
+        "bias": mean_bias,
+        "variance": mean_variance,
+    }
+
+
+def evaluate_d_model_distributional(
+    model_paths, d_model, data_path, config, num_gpus, ref_data,
+):
+    """Compute distributional decomposition for one d_model using reference logits."""
+    num_models = len(model_paths)
+    logger.info(f"d_model={d_model}: distributional eval with {num_models} models on {num_gpus} GPUs")
+
+    ref_token_ids = ref_data['token_ids']    # [total_positions, K]
+    ref_log_probs = ref_data['log_probs'].float()  # [total_positions, K]
+    ref_entropy = ref_data['entropy'].float()      # [total_positions]
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        processes = []
+        for split_idx, model_path in enumerate(model_paths):
+            gpu_id = split_idx % num_gpus
+            out_f = os.path.join(tmp_dir, f"d{d_model}_s{split_idx}.pt")
+            p = mp.Process(
+                target=_distributional_eval_worker,
+                args=(gpu_id, str(model_path), d_model, data_path,
+                      ref_token_ids, ref_log_probs, out_f),
+            )
+            p.start()
+            processes.append(p)
+
+        for p in processes:
+            p.join()
+
+        # Collect results
+        all_log_q_at_ref = []
+        total_loss_sum = 0.0
+        total_tokens = 0
+
+        for split_idx in range(num_models):
+            data = torch.load(
+                os.path.join(tmp_dir, f"d{d_model}_s{split_idx}.pt"),
+                weights_only=True,
+            )
+            all_log_q_at_ref.append(data['log_q_at_ref'])
+            total_loss_sum += data['total_loss'].item()
+            total_tokens = data['total_tokens'].item()
+
+    decomp = compute_distributional_decomposition(
+        all_log_q_at_ref, ref_log_probs, ref_entropy,
+        total_loss_sum, num_models, total_tokens,
+    )
+
+    logger.info(
+        f"d_model={d_model}: test_loss={decomp['mean_test_loss']:.4f}, "
+        f"entropy={decomp['entropy']:.4f}, bias={decomp['bias']:.4f}, "
+        f"variance={decomp['variance']:.6f}"
+    )
+
+    return {
+        "d_model": d_model,
+        "mean_test_loss": round(decomp["mean_test_loss"], 6),
+        "entropy": round(decomp["entropy"], 6),
+        "bias": round(decomp["bias"], 6),
+        "variance": round(decomp["variance"], 6),
+        "num_models": num_models,
+        "total_tokens": total_tokens,
+    }
+
+
 def main():
     logging.basicConfig(
         level=logging.INFO,
@@ -386,6 +570,12 @@ def main():
         action="store_true",
         help="Fit per-d_model temperature and recompute bias-variance decomposition",
     )
+    parser.add_argument(
+        "--reference-logits",
+        type=str,
+        default=None,
+        help="Path to reference_logits.pt for distributional bias-variance decomposition",
+    )
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -402,6 +592,37 @@ def main():
     )
 
     config = TDDConfig()
+
+    if args.reference_logits:
+        # Distributional mode: use M2M100 reference logits
+        logger.info(f"Loading reference logits from {args.reference_logits}")
+        ref_data = torch.load(args.reference_logits, weights_only=True)
+        logger.info(
+            f"Reference: {ref_data['token_ids'].shape[0]} positions, "
+            f"top-{ref_data['top_k']}, mean entropy={ref_data['entropy'].float().mean():.4f}"
+        )
+
+        test_dataset, test_loader, vocab = _load_m2m100_test_data(args.data_path)
+        logger.info(f"Test set: {len(test_dataset)} examples, vocab: {len(vocab)} tokens")
+
+        mp.set_start_method('spawn', force=True)
+        num_gpus = torch.cuda.device_count()
+
+        ref_output = Path(args.model_path) / "reference"
+        ref_output.mkdir(parents=True, exist_ok=True)
+        eval_file = ref_output / "evaluation.jsonl"
+        if eval_file.exists():
+            eval_file.unlink()
+
+        for d_model, model_paths in grouped.items():
+            result = evaluate_d_model_distributional(
+                model_paths, d_model, args.data_path, config, num_gpus, ref_data,
+            )
+            with open(eval_file, "a") as fh:
+                fh.write(json.dumps(result) + "\n")
+
+        logger.info(f"Distributional results written to {eval_file}")
+        return
 
     test_dataset, test_loader, vocab = _load_test_data(args.data_path)
     logger.info(f"Test set: {len(test_dataset)} examples, vocab: {len(vocab)} tokens")

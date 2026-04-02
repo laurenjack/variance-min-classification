@@ -623,6 +623,125 @@ Produces `fine_tune_comparison.png` with side-by-side original vs fine-tuned tes
 
 ---
 
+## Phase 8: M2M100 Reference Distribution Experiment (`--m2m100-variance` flag)
+
+A new experiment mode that replaces the BPE tokenizer with M2M100's SentencePiece tokenizer and uses M2M100-12B as a reference distribution p(x) for a full distributional bias-variance decomposition.
+
+### Motivation
+
+The existing variance experiment (Phase 6) only evaluates the Jensen Gap at the ground truth token y, which is effectively a point estimate of p(x). This underestimates the true variance because it ignores the full shape of the predicted distributions. Using M2M100-12B as a reference distribution p(x) enables the complete decomposition:
+
+```
+E[CE(p, q)] = H(p) + KL(p || q_bar) + Jensen Gap
+              ^^^^   ^^^^^^^^^^^^^^   ^^^^^^^^^^
+             entropy      bias         variance
+```
+
+where H(p) is the entropy of the reference distribution, KL(p || q_bar) is the bias (divergence between reference and mean prediction), and the Jensen Gap is the variance (disagreement among individual predictions).
+
+### Tokenizer Change
+
+M2M100's SentencePiece tokenizer replaces the BPE 10K tokenizer. Only ~18,144 of M2M100's 128K vocabulary tokens actually appear in the IWSLT training data. These are remapped to "compact IDs" (0..~18K) to keep embedding tables small. M2M100's logits are renormalized over this compact subset.
+
+Compact vocab special tokens: PAD=0, BOS=1, EOS=2, UNK=3. The full mapping is stored in `data/iwslt14.m2m100.de-en/vocab_mapping.json`.
+
+### New Files
+
+| File | Purpose |
+|------|---------|
+| `prepare_m2m100_data.py` | Downloads IWSLT14, tokenizes with M2M100 tokenizer (no lowercasing), saves compact IDs and vocab mapping to `data/iwslt14.m2m100.de-en/` |
+| `extract_m2m100_reference.py` | One-time script on H100: loads M2M100-12B (FP16, ~24GB), teacher-forces test set, extracts top-500 renormalized logits per position + per-position entropy. Output: `reference_logits.pt` (~280MB) |
+
+### Modified Files
+
+| File | Change |
+|------|--------|
+| `transformer_data.py` | New classes: `M2M100Vocab`, `M2M100TranslationDataset`, `load_m2m100_iwslt14_variance_split()` |
+| `trainer.py` | `m2m100: bool` parameter on `train_single_model()` |
+| `transformer_main.py` | `--m2m100-variance` flag; pilot: d_model {112, 128} x 4 splits of 36K = 8 models = 1 batch |
+| `variance_evaluation.py` | `--reference-logits` flag enables distributional decomposition (entropy, bias, variance) |
+| `plot_variance_evaluation.py` | Auto-detects distributional format, plots entropy (constant line), bias, variance, test loss |
+| `infra/train.sh` | `--m2m100-variance` flag |
+| `infra/download.sh` | `transformer_m2m100_variance` experiment type |
+
+### Running the Experiment
+
+```bash
+# 1. Preprocess data (CPU, ~5min)
+python -m jl.double_descent.transformer.prepare_m2m100_data
+
+# 2. Train variance models (8 GPUs required)
+./infra/train.sh <ip> --module jl.double_descent.transformer.transformer_main --m2m100-variance
+
+# 3. Extract M2M100 reference logits (one-time, single H100)
+python -m jl.double_descent.transformer.extract_m2m100_reference \
+    --data-path ./data/iwslt14.m2m100.de-en \
+    --output-path ./data/iwslt14.m2m100.de-en/reference_logits.pt \
+    --batch-size 128 --top-k 500
+
+# 4. Evaluate with distributional decomposition
+python -m jl.double_descent.transformer.variance_evaluation \
+    --model-path ./output/transformer_m2m100_variance/<timestamp> \
+    --data-path ./data/iwslt14.m2m100.de-en \
+    --reference-logits ./data/iwslt14.m2m100.de-en/reference_logits.pt
+
+# 5. Plot
+python -m jl.double_descent.transformer.plot_variance_evaluation \
+    ./data/transformer_m2m100_variance/<timestamp>/reference/evaluation.jsonl
+```
+
+### Output Format
+
+Distributional `evaluation.jsonl` includes entropy, bias, and variance fields:
+
+```json
+{"d_model": 112, "mean_test_loss": 3.14, "entropy": 2.01, "bias": 0.85, "variance": 0.28}
+{"d_model": 128, "mean_test_loss": 2.98, "entropy": 2.01, "bias": 0.72, "variance": 0.25}
+```
+
+The plot auto-detects this format (presence of `entropy` field) and renders:
+- Entropy as a constant horizontal line
+- Bias vs d_model
+- Variance vs d_model
+- Mean test loss vs d_model
+
+### Pilot Scope
+
+Currently hardcoded to d_model {112, 128} with 4 splits of 36K samples. This fits in a single batch (2 d_model x 4 splits = 8 GPUs). To expand the experiment, modify `M2M100_D_MODEL_VALUES` and related constants in `transformer_main.py`.
+
+### Output Structure
+
+```
+output/transformer_m2m100_variance/<timestamp>/
+├── metrics_d112_split0.jsonl
+├── metrics_d112_split1.jsonl
+├── metrics_d112_split2.jsonl
+├── metrics_d112_split3.jsonl
+├── metrics_d128_split0.jsonl
+├── metrics_d128_split1.jsonl
+├── metrics_d128_split2.jsonl
+├── metrics_d128_split3.jsonl
+├── model_d112_split0.pt
+├── ...
+└── model_d128_split3.pt
+```
+
+### Data Output Structure
+
+```
+data/iwslt14.m2m100.de-en/
+├── train.de.pt              # Compact token IDs
+├── train.en.pt
+├── valid.de.pt
+├── valid.en.pt
+├── test.de.pt
+├── test.en.pt
+├── vocab_mapping.json       # M2M100 token ID → compact ID mapping
+└── reference_logits.pt      # Top-500 renormalized logits from M2M100-12B (~280MB)
+```
+
+---
+
 ## Key Differences from Paper
 
 | Aspect | Paper | Our Implementation |

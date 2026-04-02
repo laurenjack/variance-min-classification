@@ -86,6 +86,10 @@ while [[ $# -gt 0 ]]; do
             VARIANCE="true"
             shift
             ;;
+        --m2m100-variance)
+            M2M100_VARIANCE="true"
+            shift
+            ;;
         --module)
             MODULE="$2"
             shift 2
@@ -136,6 +140,10 @@ if [[ -n "$VARIANCE" ]]; then
     EXTRA_FLAGS="$EXTRA_FLAGS --variance"
     log_info "Using variance mode"
 fi
+if [[ -n "${M2M100_VARIANCE:-}" ]]; then
+    EXTRA_FLAGS="$EXTRA_FLAGS --m2m100-variance"
+    log_info "Using M2M100 variance mode"
+fi
 log_info "Using module: $MODULE"
 
 # Derive experiment type from module and generate timestamp
@@ -149,7 +157,9 @@ elif [[ "$MODULE" == "jl.double_descent.resnet18.resnet18_main" ]]; then
         EXPERIMENT_TYPE="resnet18"
     fi
 elif [[ "$MODULE" == "jl.double_descent.transformer.transformer_main" ]]; then
-    if [[ -n "$VARIANCE" ]]; then
+    if [[ -n "${M2M100_VARIANCE:-}" ]]; then
+        EXPERIMENT_TYPE="transformer_m2m100_variance"
+    elif [[ -n "$VARIANCE" ]]; then
         EXPERIMENT_TYPE="transformer_variance"
     else
         EXPERIMENT_TYPE="transformer"
@@ -168,7 +178,11 @@ if [[ "$MODULE" == "jl.reward_model.reward_main" ]]; then
 elif [[ "$MODULE" == "jl.double_descent.resnet18.resnet18_main" ]]; then
     PYTHON_CMD="python -m $MODULE --output-path $OUTPUT_PATH --data-path ./data $EXTRA_FLAGS"
 elif [[ "$MODULE" == "jl.double_descent.transformer.transformer_main" ]]; then
-    PYTHON_CMD="python -m $MODULE --output-path $OUTPUT_PATH --data-path ./data/iwslt14.tokenized.de-en $EXTRA_FLAGS"
+    if [[ -n "${M2M100_VARIANCE:-}" ]]; then
+        PYTHON_CMD="python -m $MODULE --output-path $OUTPUT_PATH --data-path ./data/iwslt14.m2m100.de-en $EXTRA_FLAGS"
+    else
+        PYTHON_CMD="python -m $MODULE --output-path $OUTPUT_PATH --data-path ./data/iwslt14.tokenized.de-en $EXTRA_FLAGS"
+    fi
 else
     # Generic module - just pass output-path
     PYTHON_CMD="python -m $MODULE --output-path $OUTPUT_PATH $EXTRA_FLAGS"
@@ -222,9 +236,15 @@ echo '=== Starting training ==='
 mkdir -p output data
 
 # Run IWSLT preprocessing if using transformer module and data doesn't exist
-if [[ $MODULE == jl.double_descent.transformer.transformer_main ]] && [[ ! -f data/iwslt14.tokenized.de-en/train.de ]]; then
-    echo '=== Running IWSLT preprocessing ==='
-    ./infra/prepare_iwslt14.sh
+if [[ $MODULE == jl.double_descent.transformer.transformer_main ]]; then
+    if [[ -n '${M2M100_VARIANCE:-}' ]] && [[ ! -f data/iwslt14.m2m100.de-en/vocab_mapping.json ]]; then
+        echo '=== Running M2M100 IWSLT preprocessing ==='
+        pip install sentencepiece
+        python -m jl.double_descent.transformer.prepare_m2m100_data
+    elif [[ ! -f data/iwslt14.tokenized.de-en/train.de ]]; then
+        echo '=== Running IWSLT preprocessing ==='
+        ./infra/prepare_iwslt14.sh
+    fi
 fi
 
 $PYTHON_CMD

@@ -38,17 +38,20 @@ def load_evaluation(eval_path: str) -> List[Dict]:
 def plot_evaluation(eval_path: str, output_dir: str, temperature_scaled: bool = False) -> None:
     """Plot bias-variance decomposition vs d_model.
 
+    Supports two formats:
+    - Legacy: mean_test_loss, mean_jensen_gap → plots test loss, Jensen gap, entropy+bias
+    - Distributional: mean_test_loss, entropy, bias, variance → plots all four terms
+
     Args:
         eval_path: Path to evaluation.jsonl file.
         output_dir: Directory to save plot.
         temperature_scaled: If True, append "(Temperature Scaled)" to plot title.
     """
     results = load_evaluation(eval_path)
+    distributional = "entropy" in results[0]
 
     d_models = [r["d_model"] for r in results]
     test_losses = [r["mean_test_loss"] for r in results]
-    jensen_gaps = [r["mean_jensen_gap"] for r in results]
-    entropy_bias = [tl - jg for tl, jg in zip(test_losses, jensen_gaps)]
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -67,8 +70,21 @@ def plot_evaluation(eval_path: str, output_dir: str, temperature_scaled: bool = 
     fig, ax = plt.subplots(figsize=(8, 5), dpi=150)
 
     ax.plot(d_models, test_losses, "-o", color="#1f77b4", lw=2, markersize=4, label="Test Loss")
-    ax.plot(d_models, jensen_gaps, "-s", color="#d62728", lw=2, markersize=4, label="Jensen Gap (variance)")
-    ax.plot(d_models, entropy_bias, "-^", color="#2ca02c", lw=2, markersize=4, label="Entropy + Bias")
+
+    if distributional:
+        biases = [r["bias"] for r in results]
+        variances = [r["variance"] for r in results]
+        entropy_val = results[0]["entropy"]  # constant across d_model
+
+        ax.plot(d_models, biases, "-^", color="#2ca02c", lw=2, markersize=4, label="Bias")
+        ax.plot(d_models, variances, "-s", color="#d62728", lw=2, markersize=4, label="Variance (Jensen Gap)")
+        ax.axhline(y=entropy_val, color="#7f7f7f", ls="--", lw=1.5, label=f"Entropy ({entropy_val:.2f})")
+    else:
+        jensen_gaps = [r["mean_jensen_gap"] for r in results]
+        entropy_bias = [tl - jg for tl, jg in zip(test_losses, jensen_gaps)]
+
+        ax.plot(d_models, jensen_gaps, "-s", color="#d62728", lw=2, markersize=4, label="Jensen Gap (variance)")
+        ax.plot(d_models, entropy_bias, "-^", color="#2ca02c", lw=2, markersize=4, label="Entropy + Bias")
 
     ax.set_xlabel(r"Model Width ($d_{model}$)")
     ax.set_ylabel("Cross-Entropy (nats)")

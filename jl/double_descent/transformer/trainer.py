@@ -22,6 +22,7 @@ from jl.double_descent.transformer.transformer_data import (
     collate_fn,
     load_iwslt14,
     load_iwslt14_variance_split,
+    load_m2m100_iwslt14_variance_split,
 )
 from jl.double_descent.transformer.transformer_model import TransformerModel, count_parameters
 
@@ -122,6 +123,7 @@ def train_single_model(
     data_path: str,
     split_id: int = None,
     num_splits: int = 8,
+    m2m100: bool = False,
 ) -> None:
     """Train a single Transformer with embedding dimension d_model.
 
@@ -134,6 +136,7 @@ def train_single_model(
         data_path: Directory containing preprocessed IWSLT data.
         split_id: If provided, use disjoint split for variance experiments.
         num_splits: Number of disjoint splits for variance experiments.
+        m2m100: If True, use M2M100-tokenized data instead of BPE.
     """
     device = torch.device(f"cuda:{gpu_id}")
 
@@ -150,7 +153,12 @@ def train_single_model(
     process_logger = logging.getLogger(log_name)
     process_logger.setLevel(logging.INFO)
 
-    if split_id is not None:
+    if split_id is not None and m2m100:
+        process_logger.info(f"Starting M2M100 training for d_model={d_model}, split {split_id} on GPU {gpu_id}")
+        train_dataset, valid_dataset, test_dataset, vocab = load_m2m100_iwslt14_variance_split(
+            data_path, split_id, num_splits=num_splits, samples_per_split=train_samples, subsample_seed=config.subsample_seed
+        )
+    elif split_id is not None:
         process_logger.info(f"Starting training for d_model={d_model}, split {split_id} on GPU {gpu_id}")
         # Load disjoint split for variance experiment
         train_dataset, valid_dataset, test_dataset, vocab = load_iwslt14_variance_split(
