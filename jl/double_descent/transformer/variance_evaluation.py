@@ -432,16 +432,11 @@ def compute_distributional_decomposition(all_log_q, ref_log_probs, ref_entropy,
     # Ensemble: q_bar
     log_q_bar = torch.logsumexp(log_q_j, dim=0) - math.log(num_models)  # [N, V]
 
-    # Reference distribution
-    log_p = ref_log_probs  # [N, V]
-    p = log_p.exp()        # [N, V]
+    # Reference distribution (used as weights in Jensen Gap)
+    p = ref_log_probs.exp()  # [N, V]
 
     # Entropy: H(p) pre-computed from full distribution
     mean_entropy = ref_entropy.mean().item()
-
-    # Bias: KL(p || q_bar) = Σ_x p(x) [log p(x) - log q_bar(x)]
-    bias_per_position = (p * (log_p - log_q_bar)).sum(dim=-1)  # [N]
-    mean_bias = bias_per_position.mean().item()
 
     # Variance (Jensen Gap): E_j[Σ_x p(x) log(q_bar(x) / q_j(x))]
     total_variance = 0.0
@@ -451,6 +446,10 @@ def compute_distributional_decomposition(all_log_q, ref_log_probs, ref_entropy,
     mean_variance = total_variance / num_models
 
     mean_test_loss = total_loss_sum / (num_models * total_tokens)
+
+    # Bias: computed as residual so decomposition holds by construction
+    # test_loss = entropy + bias + variance
+    mean_bias = mean_test_loss - mean_entropy - mean_variance
 
     return {
         "mean_test_loss": mean_test_loss,
