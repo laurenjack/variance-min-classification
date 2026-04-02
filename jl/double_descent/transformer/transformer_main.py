@@ -73,7 +73,7 @@ VARIANCE_NUM_SPLITS = 8  # 8 disjoint training sets
 VARIANCE_D_MODELS_PER_BATCH = 1  # Train 1 d_model value per batch (1 * 8 splits = 8 GPUs)
 
 # M2M100 variance experiment parameters (pilot)
-M2M100_D_MODEL_VALUES = [112, 128]
+M2M100_D_MODEL_VALUES = [16, 32, 48, 64, 80, 96]
 M2M100_NUM_SPLITS = 4
 M2M100_SAMPLES_PER_SPLIT = 36000
 M2M100_D_MODELS_PER_BATCH = 2  # 2 d_model x 4 splits = 8 GPUs
