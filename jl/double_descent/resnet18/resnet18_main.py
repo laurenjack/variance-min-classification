@@ -43,9 +43,9 @@ from jl.double_descent.resnet18.resnet18k import make_resnet18k
 from jl.double_descent.resnet18.trainer import train_single_model
 
 # Hardcoded experiment parameters
-REQUIRED_GPUS = 8
-K_INCREMENT = 4
-NUM_BATCHES = 2  # Default mode runs 2 batches: k=4-32, then k=36-64
+REQUIRED_GPUS = 6
+K_INCREMENT = 1
+NUM_BATCHES = 1  # Default mode runs 1 batch: k=1-6
 
 # Variance experiment parameters
 VARIANCE_K_VALUES = [2, 6, 10, 14]  # Temporary: fill in gaps for first/second descent
