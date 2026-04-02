@@ -629,15 +629,18 @@ A new experiment mode that replaces the BPE tokenizer with M2M100's SentencePiec
 
 ### Motivation
 
-The existing variance experiment (Phase 6) only evaluates the Jensen Gap at the ground truth token y, which is effectively a point estimate of p(x). This underestimates the true variance because it ignores the full shape of the predicted distributions. Using M2M100-12B as a reference distribution p(x) enables the complete decomposition:
+The existing variance experiment (Phase 6) only evaluates the Jensen Gap at the ground truth token y, which is effectively a point estimate of p(x). This underestimates the true variance because it ignores the full shape of the predicted distributions. Using M2M100-12B as a reference distribution p(x) enables a distributional decomposition:
 
 ```
-E[CE(p, q)] = H(p) + KL(p || q_bar) + Jensen Gap
-              ^^^^   ^^^^^^^^^^^^^^   ^^^^^^^^^^
-             entropy      bias         variance
+test_loss = H(p) + bias + variance
 ```
 
-where H(p) is the entropy of the reference distribution, KL(p || q_bar) is the bias (divergence between reference and mean prediction), and the Jensen Gap is the variance (disagreement among individual predictions).
+where:
+- **H(p)** is the entropy of the reference distribution (constant across d_model)
+- **Variance** (Jensen Gap) = E_j[Σ_x p(x) log(q_bar(x) / q_j(x))], measuring disagreement among individual models weighted by the reference distribution
+- **Bias** = test_loss - H(p) - variance, computed as the residual so the decomposition holds by construction
+
+Note: bias is not computed directly as KL(p || q_bar) because the reference p (M2M100-12B) is an approximation of the true data distribution, not the true distribution itself. Computing bias as the residual avoids this issue.
 
 ### Tokenizer Change
 
