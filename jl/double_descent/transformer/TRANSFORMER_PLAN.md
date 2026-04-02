@@ -650,7 +650,7 @@ Compact vocab special tokens: PAD=0, BOS=1, EOS=2, UNK=3. The full mapping is st
 | File | Purpose |
 |------|---------|
 | `prepare_m2m100_data.py` | Downloads IWSLT14, tokenizes with M2M100 tokenizer (no lowercasing), saves compact IDs and vocab mapping to `data/iwslt14.m2m100.de-en/` |
-| `extract_m2m100_reference.py` | One-time script on H100: loads M2M100-12B (FP16, ~24GB), teacher-forces test set, extracts top-500 renormalized logits per position + per-position entropy. Output: `reference_logits.pt` (~280MB) |
+| `extract_m2m100_reference.py` | One-time script on H100: loads M2M100-12B (FP16, ~24GB), teacher-forces test set, extracts full renormalized log-probabilities over compact vocab (~18K) per position + per-position entropy. Output: `reference_logits.pt` (~5.7GB) |
 
 ### Modified Files
 
@@ -677,7 +677,7 @@ python -m jl.double_descent.transformer.prepare_m2m100_data
 python -m jl.double_descent.transformer.extract_m2m100_reference \
     --data-path ./data/iwslt14.m2m100.de-en \
     --output-path ./data/iwslt14.m2m100.de-en/reference_logits.pt \
-    --batch-size 128 --top-k 500
+    --batch-size 128
 
 # 4. Evaluate with distributional decomposition
 python -m jl.double_descent.transformer.variance_evaluation \
@@ -737,7 +737,7 @@ data/iwslt14.m2m100.de-en/
 ├── test.de.pt
 ├── test.en.pt
 ├── vocab_mapping.json       # M2M100 token ID → compact ID mapping
-└── reference_logits.pt      # Top-500 renormalized logits from M2M100-12B (~280MB)
+└── reference_logits.pt      # Full renormalized log-probs from M2M100-12B (~5.7GB)
 ```
 
 ---

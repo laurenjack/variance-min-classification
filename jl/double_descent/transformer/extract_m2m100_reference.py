@@ -3,22 +3,21 @@
 One-time script that runs on an H100. Teacher-forces the M2M100-12B model
 on each test sentence (German source → English target), extracts next-token
 distributions renormalized to the compact IWSLT vocab subset (~18K tokens),
-and stores the top-500 tokens per position with their log-probabilities.
+and stores the full log-probability distribution per position.
 
-Also computes per-position entropy H(p) from the full renormalized distribution.
+Also computes per-position entropy H(p) from the renormalized distribution.
 
 Output: reference_logits.pt with:
   - sentence_offsets: cumulative position counts
   - target_ids: compact IDs of actual target tokens
-  - token_ids: [total_positions, top_k] compact token IDs
-  - log_probs: [total_positions, top_k] log-probabilities
+  - log_probs: [total_positions, vocab_size] full log-probabilities (fp16)
   - entropy: [total_positions] H(p) per position
 
 Usage:
     python -m jl.double_descent.transformer.extract_m2m100_reference \\
         --data-path ./data/iwslt14.m2m100.de-en \\
         --output-path ./data/iwslt14.m2m100.de-en/reference_logits.pt \\
-        --batch-size 128 --top-k 500
+        --batch-size 128
 """
 
 import argparse
@@ -51,7 +50,6 @@ def main():
         help="Path to save reference_logits.pt",
     )
     parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--top-k", type=int, default=500)
     args = parser.parse_args()
 
     data_path = Path(args.data_path)
@@ -67,7 +65,6 @@ def main():
     unk_idx = mapping["unk_idx"]
 
     logger.info(f"Compact vocab size: {vocab_size}")
-    logger.info(f"Top-K: {args.top_k}")
 
     # Load M2M100-12B model and tokenizer
     from transformers import AutoTokenizer, M2M100ForConditionalGeneration
@@ -94,11 +91,9 @@ def main():
     logger.info(f"Test set: {len(test_de)} sentence pairs")
 
     # Index tensor for extracting compact vocab columns from M2M100 logits
-    # compact_to_m2m100[i] gives the M2M100 native ID for compact ID i
     extract_indices = torch.tensor(compact_to_m2m100, dtype=torch.long, device=device)
 
     # Process test set in batches
-    all_token_ids = []
     all_log_probs = []
     all_entropy = []
     all_target_ids = []
@@ -128,7 +123,6 @@ def main():
             tgt_attention_mask = tgt_encoded["attention_mask"].to(device)
 
             # Teacher-forced forward pass
-            # decoder_input_ids = tgt[:, :-1], labels would be tgt[:, 1:]
             decoder_input_ids = tgt_input_ids[:, :-1]
 
             outputs = model(
@@ -138,7 +132,6 @@ def main():
             )
 
             # Extract compact vocab columns before upcasting (128K fp16 -> 18K fp16 -> 18K fp32)
-            # This avoids allocating 128K x fp32 which would OOM
             compact_logits = outputs.logits[:, :, extract_indices].float()
             del outputs
 
@@ -155,28 +148,19 @@ def main():
             entropy = -(probs * log_probs).sum(dim=-1)  # [batch, tgt_len-1]
             del probs
 
-            # Top-K per position
-            topk_log_probs, topk_indices = log_probs.topk(args.top_k, dim=-1)
-            # topk_indices are compact IDs (since we already indexed into compact space)
-
             # Process each sentence in batch, skipping padding positions
             for i in range(len(batch_de)):
-                # Find non-padding positions
                 mask = target_mask[i].bool()
 
                 # M2M100 target is [</s>, __en__, tok1, tok2, ..., </s>]
                 # After shifting: predicting [__en__, tok1, tok2, ..., </s>]
-                # We want to skip the __en__ language token prediction (position 0)
-                # since our small models don't predict that token.
                 # Skip position 0 (predicting __en__), keep positions 1+ (predicting content)
                 if mask.sum() > 1:
-                    # Skip first position (language token prediction)
                     content_mask = mask.clone()
                     content_mask[0] = False
                     n_positions = content_mask.sum().item()
 
-                    all_token_ids.append(topk_indices[i][content_mask].cpu())
-                    all_log_probs.append(topk_log_probs[i][content_mask].cpu())
+                    all_log_probs.append(log_probs[i][content_mask].cpu())
                     all_entropy.append(entropy[i][content_mask].cpu())
 
                     # Map target native IDs to compact IDs
@@ -196,30 +180,23 @@ def main():
                 )
 
     # Concatenate all results
-    all_token_ids = torch.cat(all_token_ids, dim=0)      # [total_positions, top_k]
-    all_log_probs = torch.cat(all_log_probs, dim=0)      # [total_positions, top_k]
+    all_log_probs = torch.cat(all_log_probs, dim=0)      # [total_positions, vocab_size]
     all_entropy = torch.cat(all_entropy, dim=0)           # [total_positions]
     all_target_ids = torch.cat(all_target_ids, dim=0)     # [total_positions]
     sentence_offsets = torch.tensor(sentence_offsets, dtype=torch.long)
 
-    total_positions = all_token_ids.shape[0]
+    total_positions = all_log_probs.shape[0]
     logger.info(f"\nTotal positions: {total_positions}")
+    logger.info(f"Vocab size: {vocab_size}")
     logger.info(f"Mean entropy: {all_entropy.mean().item():.4f}")
-
-    # Check top-K coverage: what fraction of probability mass is in top-K?
-    top_k_mass = all_log_probs.exp().sum(dim=-1)
-    logger.info(f"Top-{args.top_k} coverage: mean={top_k_mass.mean().item():.4f}, "
-                f"min={top_k_mass.min().item():.4f}, "
-                f"<0.95 fraction={float((top_k_mass < 0.95).sum()) / total_positions:.4f}")
 
     # Save
     output = {
         'sentence_offsets': sentence_offsets,
         'target_ids': all_target_ids.short(),
-        'top_k': args.top_k,
-        'token_ids': all_token_ids.short(),
         'log_probs': all_log_probs.half(),
         'entropy': all_entropy.half(),
+        'vocab_size': vocab_size,
     }
 
     output_path = Path(args.output_path)
