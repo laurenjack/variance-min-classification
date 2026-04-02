@@ -22,7 +22,7 @@ import torch.multiprocessing as mp
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from jl.double_descent.fine_tune_lib import fine_tune_final_layer
+from jl.double_descent.fine_tune_lib import fine_tune_final_layer, lambda_dir_name
 from jl.double_descent.transformer.evaluation import discover_models
 from jl.double_descent.transformer.transformer_config import TDDConfig
 from jl.double_descent.transformer.transformer_data import (
@@ -203,7 +203,9 @@ def main():
         )
     logger.info(f"Found models: {list(models.keys())}")
 
-    output_dir = str(Path(args.model_path) / "fine_tuned")
+    output_dir = str(
+        Path(args.model_path) / "fine_tuned" / lambda_dir_name(args.l2_lambda)
+    )
 
     # Clear existing metadata file
     metadata_path = Path(output_dir) / "fine_tune_metadata.jsonl"

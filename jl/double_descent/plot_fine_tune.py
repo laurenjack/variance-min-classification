@@ -18,6 +18,8 @@ from saved models directly.
 import argparse
 import json
 import logging
+
+from jl.double_descent.fine_tune_lib import lambda_dir_name
 from functools import partial
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -63,7 +65,7 @@ def _resnet_test_loss(model, test_loader, device) -> float:
 
 
 def compute_resnet_losses(
-    model_dir: str, data_path: str, device: torch.device
+    model_dir: str, data_path: str, device: torch.device, l2_lambda: float = 1e-5
 ) -> Tuple[List[int], List[float], List[float]]:
     """Compute original and fine-tuned test losses for all ResNet18 models.
 
@@ -77,7 +79,7 @@ def compute_resnet_losses(
     import torchvision.transforms as transforms
 
     model_path = Path(model_dir)
-    fine_tuned_dir = model_path / "fine_tuned"
+    fine_tuned_dir = model_path / "fine_tuned" / lambda_dir_name(l2_lambda)
 
     models = discover_models(model_dir)
     if not models:
@@ -172,7 +174,7 @@ def _transformer_test_loss(model, test_loader, pad_idx, device) -> float:
 
 
 def compute_transformer_losses(
-    model_dir: str, data_path: str, device: torch.device
+    model_dir: str, data_path: str, device: torch.device, l2_lambda: float = 1e-5
 ) -> Tuple[List[int], List[float], List[float]]:
     """Compute original and fine-tuned test losses for all Transformer models.
 
@@ -190,7 +192,7 @@ def compute_transformer_losses(
     from jl.double_descent.transformer.transformer_model import TransformerModel
 
     model_path = Path(model_dir)
-    fine_tuned_dir = model_path / "fine_tuned"
+    fine_tuned_dir = model_path / "fine_tuned" / lambda_dir_name(l2_lambda)
 
     models = discover_models(model_dir)
     if not models:
@@ -370,6 +372,12 @@ def main():
         default="./data",
         help="Directory to save plot",
     )
+    parser.add_argument(
+        "--l2-lambda",
+        type=float,
+        default=1e-5,
+        help="L2 lambda value (determines which fine_tuned/lambda_* subdir to use)",
+    )
     args = parser.parse_args()
 
     if args.resnet_path is None and args.transformer_path is None:
@@ -383,7 +391,9 @@ def main():
 
     if args.resnet_path:
         logger.info("Computing ResNet18 losses...")
-        resnet_data = compute_resnet_losses(args.resnet_path, args.data_path, device)
+        resnet_data = compute_resnet_losses(
+            args.resnet_path, args.data_path, device, args.l2_lambda
+        )
 
     if args.transformer_path:
         t_data_path = args.transformer_data_path
@@ -391,7 +401,7 @@ def main():
             parser.error("--transformer-data-path is required when --transformer-path is set")
         logger.info("Computing Transformer losses...")
         transformer_data = compute_transformer_losses(
-            args.transformer_path, t_data_path, device
+            args.transformer_path, t_data_path, device, args.l2_lambda
         )
 
     plot_fine_tune_comparison(resnet_data, transformer_data, args.output_dir)

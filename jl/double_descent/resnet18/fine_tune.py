@@ -22,7 +22,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from jl.double_descent.fine_tune_lib import fine_tune_final_layer
+from jl.double_descent.fine_tune_lib import fine_tune_final_layer, lambda_dir_name
 from jl.double_descent.resnet18.evaluation import discover_models
 from jl.double_descent.resnet18.resnet18_config import DDConfig
 from jl.double_descent.resnet18.resnet18_data import load_cifar10_with_noise
@@ -180,7 +180,9 @@ def main():
         )
     logger.info(f"Found models for k values: {list(models.keys())}")
 
-    output_dir = str(Path(args.model_path) / "fine_tuned")
+    output_dir = str(
+        Path(args.model_path) / "fine_tuned" / lambda_dir_name(args.l2_lambda)
+    )
 
     # Clear existing metadata file
     metadata_path = Path(output_dir) / "fine_tune_metadata.jsonl"

@@ -15,6 +15,11 @@ import torch.nn.functional as F
 logger = logging.getLogger(__name__)
 
 
+def lambda_dir_name(l2_lambda: float) -> str:
+    """Format lambda value as a directory name, e.g. 1e-5 -> 'lambda_1e-5'."""
+    return f"lambda_{l2_lambda:.0e}"
+
+
 def fine_tune_final_layer(
     features: torch.Tensor,
     targets: torch.Tensor,
