@@ -148,27 +148,21 @@ def main():
             entropy = -(probs * log_probs).sum(dim=-1)  # [batch, tgt_len-1]
             del probs
 
-            # Process each sentence in batch, skipping padding positions
+            # Process each sentence in batch, keeping all non-padding positions.
+            # M2M100 target is [__en__, tok1, tok2, ..., </s>]
+            # After shifting: predicting [tok1, tok2, ..., </s>] (all content)
             for i in range(len(batch_de)):
                 mask = target_mask[i].bool()
+                n_positions = mask.sum().item()
 
-                # M2M100 target is [</s>, __en__, tok1, tok2, ..., </s>]
-                # After shifting: predicting [__en__, tok1, tok2, ..., </s>]
-                # Skip position 0 (predicting __en__), keep positions 1+ (predicting content)
-                if mask.sum() > 1:
-                    content_mask = mask.clone()
-                    content_mask[0] = False
-                    n_positions = content_mask.sum().item()
-
-                    all_log_probs.append(log_probs[i][content_mask].cpu())
-                    all_entropy.append(entropy[i][content_mask].cpu())
+                if n_positions > 0:
+                    all_log_probs.append(log_probs[i][mask].cpu())
+                    all_entropy.append(entropy[i][mask].cpu())
 
                     # Map target native IDs to compact IDs
-                    target_native = target_native_ids[i][content_mask].cpu().tolist()
+                    target_native = target_native_ids[i][mask].cpu().tolist()
                     target_compact = [m2m100_to_compact.get(tid, unk_idx) for tid in target_native]
                     all_target_ids.append(torch.tensor(target_compact, dtype=torch.short))
-                else:
-                    n_positions = 0
 
                 sentence_offsets.append(sentence_offsets[-1] + n_positions)
 
