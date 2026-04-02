@@ -285,9 +285,15 @@ echo '=== Starting training in background ==='
 mkdir -p output data
 
 # Run IWSLT preprocessing if using transformer module and data doesn't exist
-if [[ $MODULE == jl.double_descent.transformer.transformer_main ]] && [[ ! -f data/iwslt14.tokenized.de-en/train.de ]]; then
-    echo '=== Running IWSLT preprocessing ==='
-    ./infra/prepare_iwslt14.sh
+if [[ $MODULE == jl.double_descent.transformer.transformer_main ]]; then
+    if [[ -n '${M2M100_VARIANCE:-}' ]] && [[ ! -f data/iwslt14.m2m100.de-en/vocab_mapping.json ]]; then
+        echo '=== Running M2M100 IWSLT preprocessing ==='
+        pip install sentencepiece
+        python -m jl.double_descent.transformer.prepare_m2m100_data
+    elif [[ ! -f data/iwslt14.tokenized.de-en/train.de ]]; then
+        echo '=== Running IWSLT preprocessing ==='
+        ./infra/prepare_iwslt14.sh
+    fi
 fi
 
 nohup $PYTHON_CMD > training.log 2>&1 &
