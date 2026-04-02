@@ -374,10 +374,10 @@ def _load_m2m100_test_data(data_path):
     return test_dataset, loader, vocab
 
 
-def _distributional_eval_worker(gpu_id, model_path_str, d_model, data_path, output_file):
-    """Worker: evaluate one model, save full log q_j distribution.
+def _eval_single_model(gpu_id, model_path_str, d_model, data_path):
+    """Evaluate one model, return full log q_j distribution in CPU memory.
 
-    Saves log_q_j [N_positions, vocab_size] in fp16 to output_file.
+    Returns log_q_j [N_positions, vocab_size] in fp16, total_loss, total_tokens.
     """
     device = torch.device(f"cuda:{gpu_id}")
     config = TDDConfig()
@@ -408,11 +408,8 @@ def _distributional_eval_worker(gpu_id, model_path_str, d_model, data_path, outp
             all_log_q.append(log_q[mask].cpu())
             total_tokens += num_tokens
 
-    torch.save({
-        'log_q': torch.cat(all_log_q, dim=0).half(),  # [total_positions, vocab_size] fp16
-        'total_loss': torch.tensor(total_loss),
-        'total_tokens': torch.tensor(total_tokens),
-    }, output_file)
+    log_q_cat = torch.cat(all_log_q, dim=0).half()  # [total_positions, vocab_size] fp16
+    return log_q_cat, total_loss, total_tokens
 
 
 def compute_distributional_decomposition(all_log_q, ref_log_probs, ref_entropy,
@@ -473,34 +470,21 @@ def evaluate_d_model_distributional(
     ref_log_probs = ref_data['log_probs'].float()  # [total_positions, vocab_size]
     ref_entropy = ref_data['entropy'].float()       # [total_positions]
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        processes = []
-        for split_idx, model_path in enumerate(model_paths):
-            gpu_id = split_idx % num_gpus
-            out_f = os.path.join(tmp_dir, f"d{d_model}_s{split_idx}.pt")
-            p = mp.Process(
-                target=_distributional_eval_worker,
-                args=(gpu_id, str(model_path), d_model, data_path, out_f),
-            )
-            p.start()
-            processes.append(p)
+    # Evaluate models sequentially to avoid writing large temp files to disk.
+    # Each model's full distribution is ~5GB; keeping in CPU memory is fine.
+    all_log_q = []
+    total_loss_sum = 0.0
+    total_tokens = 0
 
-        for p in processes:
-            p.join()
-
-        # Collect results
-        all_log_q = []
-        total_loss_sum = 0.0
-        total_tokens = 0
-
-        for split_idx in range(num_models):
-            data = torch.load(
-                os.path.join(tmp_dir, f"d{d_model}_s{split_idx}.pt"),
-                weights_only=True,
-            )
-            all_log_q.append(data['log_q'].float())
-            total_loss_sum += data['total_loss'].item()
-            total_tokens = data['total_tokens'].item()
+    for split_idx, model_path in enumerate(model_paths):
+        gpu_id = split_idx % num_gpus
+        logger.info(f"  Evaluating split {split_idx} on GPU {gpu_id}...")
+        log_q, loss, tokens = _eval_single_model(
+            gpu_id, str(model_path), d_model, data_path,
+        )
+        all_log_q.append(log_q.float())
+        total_loss_sum += loss
+        total_tokens = tokens
 
     decomp = compute_distributional_decomposition(
         all_log_q, ref_log_probs, ref_entropy,
