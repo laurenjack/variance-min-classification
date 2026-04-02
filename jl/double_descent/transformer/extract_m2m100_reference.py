@@ -120,12 +120,10 @@ def main():
             ).to(device)
 
             # Tokenize target (English) for teacher-forcing
-            # Use text_target to get proper target-side tokenization
-            with tokenizer.as_target_tokenizer():
-                tgt_encoded = tokenizer(
-                    batch_en, return_tensors="pt", padding=True, truncation=True,
-                    max_length=512,
-                )
+            tgt_encoded = tokenizer(
+                text_target=batch_en, return_tensors="pt", padding=True,
+                truncation=True, max_length=512,
+            )
             tgt_input_ids = tgt_encoded["input_ids"].to(device)
             tgt_attention_mask = tgt_encoded["attention_mask"].to(device)
 
@@ -139,22 +137,23 @@ def main():
                 decoder_input_ids=decoder_input_ids,
             )
 
-            # logits: [batch, tgt_len-1, 128K]
-            logits = outputs.logits.float()  # upcast from fp16 for precision
+            # Extract compact vocab columns before upcasting (128K fp16 -> 18K fp16 -> 18K fp32)
+            # This avoids allocating 128K x fp32 which would OOM
+            compact_logits = outputs.logits[:, :, extract_indices].float()
+            del outputs
 
             # Target tokens (what each position is predicting)
             target_native_ids = tgt_input_ids[:, 1:]  # [batch, tgt_len-1]
             target_mask = tgt_attention_mask[:, 1:]    # [batch, tgt_len-1]
 
-            # Extract compact vocab columns: [batch, tgt_len-1, vocab_size]
-            compact_logits = logits[:, :, extract_indices]
-
             # Renormalize over compact vocab (log_softmax)
             log_probs = F.log_softmax(compact_logits, dim=-1)
+            del compact_logits
 
             # Compute entropy from full renormalized distribution
             probs = log_probs.exp()
             entropy = -(probs * log_probs).sum(dim=-1)  # [batch, tgt_len-1]
+            del probs
 
             # Top-K per position
             topk_log_probs, topk_indices = log_probs.topk(args.top_k, dim=-1)
