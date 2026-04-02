@@ -92,7 +92,7 @@ log_info "Found experiment folders:"
 echo "$REMOTE_STRUCTURE" | sed 's|.*/output/||'
 
 # Download each experiment type's folders
-for EXPERIMENT_TYPE in resnet18 resnet18_variance transformer transformer_variance reward_model; do
+for EXPERIMENT_TYPE in resnet18 resnet18_variance transformer transformer_variance transformer_m2m100_variance reward_model; do
     # Find timestamp folders for this experiment type
     FOLDERS=$(echo "$REMOTE_STRUCTURE" | grep "/$EXPERIMENT_TYPE/" || true)
 
@@ -146,7 +146,7 @@ if [[ -f "./venv/bin/activate" ]]; then
 fi
 
 # Plot each downloaded experiment
-for EXPERIMENT_TYPE in resnet18 resnet18_variance transformer transformer_variance reward_model; do
+for EXPERIMENT_TYPE in resnet18 resnet18_variance transformer transformer_variance transformer_m2m100_variance reward_model; do
     EXPERIMENT_DIR="$LOCAL_DATA/$EXPERIMENT_TYPE"
 
     if [[ ! -d "$EXPERIMENT_DIR" ]]; then
@@ -211,6 +211,15 @@ for EXPERIMENT_TYPE in resnet18 resnet18_variance transformer transformer_varian
                         --output-dir "$TIMESTAMP_DIR/temperature-scaled" \
                         --temperature-scaled || \
                         log_warn "Failed to plot transformer_variance (temperature-scaled)"
+                fi
+                ;;
+            transformer_m2m100_variance)
+                if [[ -f "$TIMESTAMP_DIR/reference/evaluation.jsonl" ]]; then
+                    python -m jl.double_descent.transformer.plot_variance_evaluation \
+                        "$TIMESTAMP_DIR/reference/evaluation.jsonl" --output-dir "$TIMESTAMP_DIR/reference" || \
+                        log_warn "Failed to plot transformer_m2m100_variance"
+                else
+                    log_info "No reference/evaluation.jsonl in $TIMESTAMP_DIR (run variance_evaluation --reference-logits first)"
                 fi
                 ;;
             reward_model)
