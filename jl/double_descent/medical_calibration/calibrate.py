@@ -285,7 +285,14 @@ def main():
     parser.add_argument(
         "--sweep",
         action="store_true",
-        help="Sweep over lambda values, select best by val ECE, report on test",
+        help="Sweep over lambda values, select best by val metric, report on test",
+    )
+    parser.add_argument(
+        "--sweep-metric",
+        type=str,
+        default="ece",
+        choices=["ece", "nll"],
+        help="Metric to select best lambda on validation set (default: ece)",
     )
     args = parser.parse_args()
 
@@ -371,13 +378,15 @@ def main():
             sweep_results.append((lam, val_metrics, linear.state_dict()))
             logger.info(f"  λ={lam:.0e}: val_ece={val_metrics['ece']:.4f}, val_nll={val_metrics['nll']:.4f}")
 
-        # Select best by val ECE
-        best_idx = min(range(len(sweep_results)), key=lambda i: sweep_results[i][1]["ece"])
+        # Select best by val metric
+        sweep_metric = args.sweep_metric
+        best_idx = min(range(len(sweep_results)), key=lambda i: sweep_results[i][1][sweep_metric])
         best_lambda, best_val_metrics, best_state = sweep_results[best_idx]
-        logger.info(f"Best λ={best_lambda:.0e} (val ECE={best_val_metrics['ece']:.4f})")
+        logger.info(f"Best λ={best_lambda:.0e} (val {sweep_metric}={best_val_metrics[sweep_metric]:.4f})")
 
         # Print sweep table
-        print("\n" + "=" * 50)
+        print(f"\n(Selecting by val {sweep_metric})")
+        print("=" * 50)
         print(f"{'Lambda':<12} {'Val ECE':>10} {'Val NLL':>10} {'Val Acc':>10}")
         print("-" * 50)
         for lam, val_m, _ in sweep_results:
