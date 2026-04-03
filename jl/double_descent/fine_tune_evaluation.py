@@ -518,34 +518,32 @@ def _transformer_test_metrics_with_temperature(
 def _fit_transformer_temperature(model, test_loader, pad_idx, device) -> float:
     """Fit scalar temperature T via L-BFGS to minimize NLL on test set.
 
-    Runs model forward pass with no_grad; only temperature gets gradients.
+    Collects all logits first with no_grad, then optimizes temperature.
     """
-    temperature = nn.Parameter(torch.ones(1, device=device))
+    model.eval()
+    all_logits = []
+    all_targets = []
+    with torch.no_grad():
+        for src, tgt in test_loader:
+            src, tgt = src.to(device), tgt.to(device)
+            logits = model(src, tgt[:, :-1])
+            all_logits.append(logits.cpu())
+            all_targets.append(tgt[:, 1:].contiguous().cpu())
+
+    # Flatten to [total_tokens, vocab] and [total_tokens]
+    flat_logits = torch.cat([l.view(-1, l.size(-1)) for l in all_logits])
+    flat_targets = torch.cat([t.view(-1) for t in all_targets])
+
+    temperature = nn.Parameter(torch.ones(1))
     optimizer = torch.optim.LBFGS([temperature], lr=0.01, max_iter=50)
 
     def closure():
         optimizer.zero_grad()
-        total_loss = 0.0
-        total_tokens = 0
-        with torch.no_grad():
-            for src, tgt in test_loader:
-                src, tgt = src.to(device), tgt.to(device)
-                logits = model(src, tgt[:, :-1])
-                target = tgt[:, 1:].contiguous()
-                mask = target != pad_idx
-                total_tokens += mask.sum().item()
-                # Detach logits, apply temperature with grad
-                logits_detached = logits.detach()
-                loss_val = F.cross_entropy(
-                    (logits_detached / temperature).view(-1, logits.size(-1)),
-                    target.view(-1),
-                    ignore_index=pad_idx,
-                    reduction="sum",
-                )
-                total_loss = total_loss + loss_val
-        avg_loss = total_loss / total_tokens if total_tokens > 0 else total_loss
-        avg_loss.backward()
-        return avg_loss
+        loss = F.cross_entropy(
+            flat_logits / temperature, flat_targets, ignore_index=pad_idx
+        )
+        loss.backward()
+        return loss
 
     optimizer.step(closure)
     return temperature.item()
