@@ -518,32 +518,36 @@ def _transformer_test_metrics_with_temperature(
 def _fit_transformer_temperature(model, test_loader, pad_idx, device) -> float:
     """Fit scalar temperature T via L-BFGS to minimize NLL on test set.
 
-    Collects all logits first with no_grad, then optimizes temperature.
+    Runs model forward per batch with no_grad, scales detached logits by
+    temperature (which keeps grad), and accumulates a scalar loss.
+    No logits are collected to CPU.
     """
     model.eval()
-    all_logits = []
-    all_targets = []
-    with torch.no_grad():
-        for src, tgt in test_loader:
-            src, tgt = src.to(device), tgt.to(device)
-            logits = model(src, tgt[:, :-1])
-            all_logits.append(logits.cpu())
-            all_targets.append(tgt[:, 1:].contiguous().cpu())
-
-    # Flatten to [total_tokens, vocab] and [total_tokens]
-    flat_logits = torch.cat([l.view(-1, l.size(-1)) for l in all_logits])
-    flat_targets = torch.cat([t.view(-1) for t in all_targets])
-
-    temperature = nn.Parameter(torch.ones(1))
+    temperature = nn.Parameter(torch.ones(1, device=device))
     optimizer = torch.optim.LBFGS([temperature], lr=0.01, max_iter=50)
 
     def closure():
         optimizer.zero_grad()
-        loss = F.cross_entropy(
-            flat_logits / temperature, flat_targets, ignore_index=pad_idx
-        )
-        loss.backward()
-        return loss
+        total_loss = torch.zeros(1, device=device)
+        total_tokens = 0
+        for src, tgt in test_loader:
+            src, tgt = src.to(device), tgt.to(device)
+            with torch.no_grad():
+                logits = model(src, tgt[:, :-1])
+            scaled = logits.detach() / temperature
+            target = tgt[:, 1:].contiguous()
+            mask = target != pad_idx
+            loss = F.cross_entropy(
+                scaled.view(-1, scaled.size(-1)),
+                target.view(-1),
+                ignore_index=pad_idx,
+                reduction="sum",
+            )
+            total_loss = total_loss + loss
+            total_tokens += mask.sum().item()
+        avg = total_loss / total_tokens
+        avg.backward()
+        return avg
 
     optimizer.step(closure)
     return temperature.item()
