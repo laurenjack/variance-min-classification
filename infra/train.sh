@@ -200,40 +200,23 @@ fi
 
 chmod 600 "$SSH_KEY_PATH" 2>/dev/null || true
 
-log_info "Connecting to $SSH_USER@$INSTANCE_IP..."
+# Run setup_remote.sh first (clone/pull, venv, deps, env vars)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SETUP_ARGS="$INSTANCE_IP"
+[[ "$SSH_USER" != "ubuntu" ]] && SETUP_ARGS="$SETUP_ARGS --user $SSH_USER"
+[[ -n "$SSH_PORT" ]] && SETUP_ARGS="$SETUP_ARGS --port $SSH_PORT"
 
-# Build the remote script
-# Note: We pass HF_TOKEN from local env to remote
+log_info "Running remote setup..."
+"$SCRIPT_DIR/setup_remote.sh" $SETUP_ARGS
+
+log_info "Running training command..."
+
+# Build the remote run script (setup already done)
 REMOTE_SCRIPT="
 set -ex
-
-# Set HF token for gated models
-export HF_TOKEN='${HF_TOKEN:-}'
-
-echo '=== Setting up environment ==='
-cd ~
-
-# Clone the repo (or pull if exists)
-if [[ -d 'variance-min-classification' ]]; then
-    cd variance-min-classification
-    git pull
-else
-    git clone $REPO_URL
-    cd variance-min-classification
-fi
-
-# Create virtual environment if needed
-if [[ ! -d 'venv' ]]; then
-    python3 -m venv venv
-fi
+cd ~/variance-min-classification
 source venv/bin/activate
-
-# Install dependencies
-pip install --upgrade pip
-pip install -r requirements-gpu.txt --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple
-
-echo '=== Starting training ==='
-mkdir -p output data
+source .env
 
 # Run IWSLT preprocessing if using transformer module and data doesn't exist
 if [[ $MODULE == jl.double_descent.transformer.transformer_main ]]; then
@@ -255,34 +238,9 @@ ls -la output/
 
 REMOTE_SCRIPT_BG="
 set -ex
-
-# Set HF token for gated models
-export HF_TOKEN='${HF_TOKEN:-}'
-
-echo '=== Setting up environment ==='
-cd ~
-
-# Clone the repo (or pull if exists)
-if [[ -d 'variance-min-classification' ]]; then
-    cd variance-min-classification
-    git pull
-else
-    git clone $REPO_URL
-    cd variance-min-classification
-fi
-
-# Create virtual environment if needed
-if [[ ! -d 'venv' ]]; then
-    python3 -m venv venv
-fi
+cd ~/variance-min-classification
 source venv/bin/activate
-
-# Install dependencies
-pip install --upgrade pip
-pip install -r requirements-gpu.txt --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple
-
-echo '=== Starting training in background ==='
-mkdir -p output data
+source .env
 
 # Run IWSLT preprocessing if using transformer module and data doesn't exist
 if [[ $MODULE == jl.double_descent.transformer.transformer_main ]]; then

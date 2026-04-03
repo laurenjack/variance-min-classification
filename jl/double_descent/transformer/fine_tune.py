@@ -1,14 +1,21 @@
-"""Fine-tune Transformer final layer with L-BFGS + L2 regularization.
+"""Fine-tune Transformer final layer with L-BFGS or SGD + L2 regularization.
 
 Loads trained Transformer models, unties the output projection from the
 embedding, extracts decoder features, and fine-tunes only the output
-projection layer to reach a stationary point.
+projection layer.
 
 Usage:
+    # L-BFGS (default)
     python -m jl.double_descent.transformer.fine_tune \
         --model-path ./output/transformer/03-01-1010 \
         --data-path ./data/iwslt14.tokenized.de-en \
         --l2-lambda 1e-5 --max-steps 100
+
+    # SGD
+    python -m jl.double_descent.transformer.fine_tune \
+        --model-path ./output/transformer/03-01-1010 \
+        --data-path ./data/iwslt14.tokenized.de-en \
+        --sgd --l2-lambda 1e-5 --sgd-epochs 100 --sgd-lr 0.01
 """
 
 import argparse
@@ -22,7 +29,7 @@ import torch.multiprocessing as mp
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from jl.double_descent.fine_tune_lib import fine_tune_final_layer, lambda_dir_name
+from jl.double_descent.fine_tune_lib import fine_tune_final_layer, lambda_dir_name, sgd_fine_tune_final_layer
 from jl.double_descent.transformer.evaluation import discover_models
 from jl.double_descent.transformer.transformer_config import TDDConfig
 from jl.double_descent.transformer.transformer_data import (
@@ -44,6 +51,9 @@ def fine_tune_worker(
     output_dir: str,
     l2_lambda: float,
     max_steps: int,
+    sgd: bool = False,
+    sgd_epochs: int = 100,
+    sgd_lr: float = 0.01,
 ) -> None:
     """Fine-tune a single Transformer model on one GPU."""
     logging.basicConfig(
@@ -130,14 +140,25 @@ def fine_tune_worker(
     torch.cuda.empty_cache()
 
     # Fine-tune
-    metadata = fine_tune_final_layer(
-        features=features,
-        targets=targets,
-        linear_layer=new_linear,
-        l2_lambda=l2_lambda,
-        max_steps=max_steps,
-        device=device,
-    )
+    if sgd:
+        metadata = sgd_fine_tune_final_layer(
+            features=features,
+            targets=targets,
+            linear_layer=new_linear,
+            l2_lambda=l2_lambda,
+            epochs=sgd_epochs,
+            lr=sgd_lr,
+            device=device,
+        )
+    else:
+        metadata = fine_tune_final_layer(
+            features=features,
+            targets=targets,
+            linear_layer=new_linear,
+            l2_lambda=l2_lambda,
+            max_steps=max_steps,
+            device=device,
+        )
     metadata["d_model"] = d_model
     metadata["train_samples"] = train_samples
 
@@ -167,7 +188,7 @@ def main():
     )
 
     parser = argparse.ArgumentParser(
-        description="Fine-tune Transformer final layers with L-BFGS + L2"
+        description="Fine-tune Transformer final layers with L-BFGS or SGD + L2"
     )
     parser.add_argument(
         "--model-path",
@@ -193,6 +214,23 @@ def main():
         default=100,
         help="Number of L-BFGS steps (default: 100)",
     )
+    parser.add_argument(
+        "--sgd",
+        action="store_true",
+        help="Use SGD instead of L-BFGS",
+    )
+    parser.add_argument(
+        "--sgd-epochs",
+        type=int,
+        default=100,
+        help="Number of SGD epochs (default: 100)",
+    )
+    parser.add_argument(
+        "--sgd-lr",
+        type=float,
+        default=0.01,
+        help="SGD learning rate (default: 0.01)",
+    )
     args = parser.parse_args()
 
     # Discover models
@@ -204,7 +242,7 @@ def main():
     logger.info(f"Found models: {list(models.keys())}")
 
     output_dir = str(
-        Path(args.model_path) / "fine_tuned" / lambda_dir_name(args.l2_lambda)
+        Path(args.model_path) / "fine_tuned" / lambda_dir_name(args.l2_lambda, sgd=args.sgd)
     )
 
     # Clear existing metadata file
@@ -241,6 +279,9 @@ def main():
                     output_dir,
                     args.l2_lambda,
                     args.max_steps,
+                    args.sgd,
+                    args.sgd_epochs,
+                    args.sgd_lr,
                 ),
             )
             p.start()

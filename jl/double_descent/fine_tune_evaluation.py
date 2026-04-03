@@ -8,13 +8,14 @@ Two modes (mutually exclusive):
 Parallelizes across all available GPUs.
 
 Usage:
-    # Fine-tune evaluation
+    # Fine-tune evaluation (pass layer directories directly)
     python -m jl.double_descent.fine_tune_evaluation --fine-tune \
         --resnet-path ./output/resnet18/long_double_descent \
+        --resnet-layer-dir ./output/resnet18/long_double_descent/fine_tuned/lambda_1e-03 \
         --transformer-path ./output/transformer/long_double_descent_36K \
+        --transformer-layer-dir ./output/transformer/long_double_descent_36K/fine_tuned/lambda_1e-03 \
         --data-path ./data \
-        --transformer-data-path ./data/iwslt14.tokenized.de-en \
-        --l2-lambda 1e-3
+        --transformer-data-path ./data/iwslt14.tokenized.de-en
 
     # Temperature scaling evaluation
     python -m jl.double_descent.fine_tune_evaluation --temperature-scaling \
@@ -37,7 +38,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from jl.double_descent.fine_tune_lib import lambda_dir_name
 
 logger = logging.getLogger(__name__)
 
@@ -296,9 +296,14 @@ def _resnet_worker(
 
 
 def evaluate_resnet(
-    model_dir: str, data_path: str, l2_lambda: float = 1e-5
+    model_dir: str, layer_dir: str, data_path: str
 ) -> Path:
     """Evaluate all ResNet18 models and write fine_tune_evaluation.jsonl.
+
+    Args:
+        model_dir: Directory containing model_k*.pt base model files.
+        layer_dir: Directory containing layer_k*.pt fine-tuned layer files.
+        data_path: Directory containing CIFAR-10 data.
 
     Returns:
         Path to the written JSONL file.
@@ -311,7 +316,7 @@ def evaluate_resnet(
     torchvision.datasets.CIFAR10(root=data_path, train=False, download=True)
 
     model_path = Path(model_dir)
-    fine_tuned_dir = model_path / "fine_tuned" / lambda_dir_name(l2_lambda)
+    fine_tuned_dir = Path(layer_dir)
 
     models = discover_models(model_dir)
     if not models:
@@ -726,9 +731,14 @@ def _transformer_worker(
 
 
 def evaluate_transformer(
-    model_dir: str, data_path: str, l2_lambda: float = 1e-5
+    model_dir: str, layer_dir: str, data_path: str
 ) -> Path:
     """Evaluate all Transformer models and write fine_tune_evaluation.jsonl.
+
+    Args:
+        model_dir: Directory containing model_d*_*k.pt base model files.
+        layer_dir: Directory containing layer_d*_*k.pt fine-tuned layer files.
+        data_path: Directory containing preprocessed IWSLT data.
 
     Returns:
         Path to the written JSONL file.
@@ -736,7 +746,7 @@ def evaluate_transformer(
     from jl.double_descent.transformer.evaluation import discover_models
 
     model_path = Path(model_dir)
-    fine_tuned_dir = model_path / "fine_tuned" / lambda_dir_name(l2_lambda)
+    fine_tuned_dir = Path(layer_dir)
 
     models = discover_models(model_dir)
     if not models:
@@ -900,10 +910,22 @@ def main():
         help="Directory containing ResNet18 model_k*.pt files",
     )
     parser.add_argument(
+        "--resnet-layer-dir",
+        type=str,
+        default=None,
+        help="Directory containing ResNet18 layer_k*.pt fine-tuned files (for --fine-tune mode)",
+    )
+    parser.add_argument(
         "--transformer-path",
         type=str,
         default=None,
         help="Directory containing Transformer model_d*_*k.pt files",
+    )
+    parser.add_argument(
+        "--transformer-layer-dir",
+        type=str,
+        default=None,
+        help="Directory containing Transformer layer_d*_*k.pt fine-tuned files (for --fine-tune mode)",
     )
     parser.add_argument(
         "--data-path",
@@ -917,16 +939,16 @@ def main():
         default=None,
         help="Directory containing preprocessed IWSLT data (for Transformer evaluation)",
     )
-    parser.add_argument(
-        "--l2-lambda",
-        type=float,
-        default=1e-5,
-        help="L2 lambda value (for --fine-tune mode only)",
-    )
     args = parser.parse_args()
 
     if args.resnet_path is None and args.transformer_path is None:
         parser.error("At least one of --resnet-path or --transformer-path is required")
+
+    if args.fine_tune:
+        if args.resnet_path and not args.resnet_layer_dir:
+            parser.error("--resnet-layer-dir is required when using --fine-tune with --resnet-path")
+        if args.transformer_path and not args.transformer_layer_dir:
+            parser.error("--transformer-layer-dir is required when using --fine-tune with --transformer-path")
 
     mp.set_start_method("spawn", force=True)
 
@@ -938,7 +960,7 @@ def main():
     if args.fine_tune:
         if args.resnet_path:
             logger.info("Evaluating ResNet18 fine-tuned models...")
-            path = evaluate_resnet(args.resnet_path, args.data_path, args.l2_lambda)
+            path = evaluate_resnet(args.resnet_path, args.resnet_layer_dir, args.data_path)
             logger.info(f"ResNet results: {path}")
 
         if args.transformer_path:
@@ -946,7 +968,7 @@ def main():
             if t_data_path is None:
                 parser.error("--transformer-data-path is required when --transformer-path is set")
             logger.info("Evaluating Transformer fine-tuned models...")
-            path = evaluate_transformer(args.transformer_path, t_data_path, args.l2_lambda)
+            path = evaluate_transformer(args.transformer_path, args.transformer_layer_dir, t_data_path)
             logger.info(f"Transformer results: {path}")
 
     elif args.temperature_scaling:

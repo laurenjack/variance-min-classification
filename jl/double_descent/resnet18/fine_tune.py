@@ -1,14 +1,20 @@
-"""Fine-tune ResNet18 final layer with L-BFGS + L2 regularization.
+"""Fine-tune ResNet18 final layer with L-BFGS or SGD + L2 regularization.
 
 Loads trained ResNet18 models, extracts features from the frozen backbone,
-and fine-tunes only the final linear layer to reach a stationary point.
-This enables training-point decomposition per Yeh & Kim et al. (2018).
+and fine-tunes only the final linear layer.
 
 Usage:
+    # L-BFGS (default)
     python -m jl.double_descent.resnet18.fine_tune \
         --model-path ./output/resnet18/03-01-1010 \
         --data-path ./data \
         --l2-lambda 1e-5 --max-steps 100
+
+    # SGD
+    python -m jl.double_descent.resnet18.fine_tune \
+        --model-path ./output/resnet18/03-01-1010 \
+        --data-path ./data \
+        --sgd --l2-lambda 1e-5 --sgd-epochs 100 --sgd-lr 0.01
 """
 
 import argparse
@@ -22,7 +28,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from jl.double_descent.fine_tune_lib import fine_tune_final_layer, lambda_dir_name
+from jl.double_descent.fine_tune_lib import fine_tune_final_layer, lambda_dir_name, sgd_fine_tune_final_layer
 from jl.double_descent.resnet18.evaluation import discover_models
 from jl.double_descent.resnet18.resnet18_config import DDConfig
 from jl.double_descent.resnet18.resnet18_data import load_cifar10_with_noise
@@ -56,6 +62,9 @@ def fine_tune_worker(
     output_dir: str,
     l2_lambda: float,
     max_steps: int,
+    sgd: bool = False,
+    sgd_epochs: int = 100,
+    sgd_lr: float = 0.01,
 ) -> None:
     """Fine-tune a single ResNet18 model on one GPU."""
     logging.basicConfig(
@@ -108,14 +117,25 @@ def fine_tune_worker(
     torch.cuda.empty_cache()
 
     # Fine-tune
-    metadata = fine_tune_final_layer(
-        features=features,
-        targets=targets,
-        linear_layer=linear,
-        l2_lambda=l2_lambda,
-        max_steps=max_steps,
-        device=device,
-    )
+    if sgd:
+        metadata = sgd_fine_tune_final_layer(
+            features=features,
+            targets=targets,
+            linear_layer=linear,
+            l2_lambda=l2_lambda,
+            epochs=sgd_epochs,
+            lr=sgd_lr,
+            device=device,
+        )
+    else:
+        metadata = fine_tune_final_layer(
+            features=features,
+            targets=targets,
+            linear_layer=linear,
+            l2_lambda=l2_lambda,
+            max_steps=max_steps,
+            device=device,
+        )
     metadata["k"] = k
 
     # Save fine-tuned layer
@@ -144,7 +164,7 @@ def main():
     )
 
     parser = argparse.ArgumentParser(
-        description="Fine-tune ResNet18 final layers with L-BFGS + L2"
+        description="Fine-tune ResNet18 final layers with L-BFGS or SGD + L2"
     )
     parser.add_argument(
         "--model-path",
@@ -170,6 +190,23 @@ def main():
         default=100,
         help="Number of L-BFGS steps (default: 100)",
     )
+    parser.add_argument(
+        "--sgd",
+        action="store_true",
+        help="Use SGD instead of L-BFGS",
+    )
+    parser.add_argument(
+        "--sgd-epochs",
+        type=int,
+        default=100,
+        help="Number of SGD epochs (default: 100)",
+    )
+    parser.add_argument(
+        "--sgd-lr",
+        type=float,
+        default=0.01,
+        help="SGD learning rate (default: 0.01)",
+    )
     args = parser.parse_args()
 
     # Discover models
@@ -181,7 +218,7 @@ def main():
     logger.info(f"Found models for k values: {list(models.keys())}")
 
     output_dir = str(
-        Path(args.model_path) / "fine_tuned" / lambda_dir_name(args.l2_lambda)
+        Path(args.model_path) / "fine_tuned" / lambda_dir_name(args.l2_lambda, sgd=args.sgd)
     )
 
     # Clear existing metadata file
@@ -217,6 +254,9 @@ def main():
                     output_dir,
                     args.l2_lambda,
                     args.max_steps,
+                    args.sgd,
+                    args.sgd_epochs,
+                    args.sgd_lr,
                 ),
             )
             p.start()
