@@ -7,7 +7,7 @@ SGD provides a simpler alternative for calibration purposes.
 """
 
 import logging
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import torch
 import torch.nn as nn
@@ -168,6 +168,7 @@ def sgd_fine_tune_final_layer(
     )
 
     last_loss = None
+    history: List[Dict[str, float]] = []
 
     for epoch in range(epochs):
         # Shuffle indices each epoch
@@ -190,29 +191,24 @@ def sgd_fine_tune_final_layer(
             num_batches += 1
 
         last_loss = epoch_loss / num_batches
+        grad_norm = max(
+            p.grad.norm().item()
+            for p in linear_layer.parameters()
+            if p.grad is not None
+        )
+        history.append({"epoch": epoch + 1, "loss": last_loss, "grad_norm": grad_norm})
 
         if epoch % 10 == 0 or epoch == epochs - 1:
-            grad_norm = max(
-                p.grad.norm().item()
-                for p in linear_layer.parameters()
-                if p.grad is not None
-            )
             logger.info(
                 f"  Epoch {epoch + 1}/{epochs}: loss={last_loss:.6f}, "
                 f"grad_norm={grad_norm:.2e}"
             )
 
-    # Final metrics
-    final_grad_norm = max(
-        p.grad.norm().item()
-        for p in linear_layer.parameters()
-        if p.grad is not None
-    )
-
     return {
         "final_loss": last_loss,
-        "final_grad_norm": final_grad_norm,
+        "final_grad_norm": history[-1]["grad_norm"],
         "epochs": epochs,
         "l2_lambda": l2_lambda,
         "lr": lr,
+        "history": history,
     }

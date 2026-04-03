@@ -170,6 +170,16 @@ def fine_tune_worker(
     torch.save(new_linear.state_dict(), layer_path)
     logger.info(f"[d={d_model}] Saved fine-tuned layer to {layer_path}")
 
+    # Save per-epoch history if present (SGD mode)
+    history = metadata.pop("history", None)
+    if history:
+        history_path = out_path / f"history_d{d_model}_{samples_k}k.jsonl"
+        with open(history_path, "w") as f:
+            for entry in history:
+                entry["d_model"] = d_model
+                f.write(json.dumps(entry) + "\n")
+        logger.info(f"[d={d_model}] Saved {len(history)} epoch history to {history_path}")
+
     # Append metadata
     metadata_path = out_path / "fine_tune_metadata.jsonl"
     with open(metadata_path, "a") as f:
