@@ -29,7 +29,7 @@ fi
 if [[ ! -d "$EXTRACT_DIR" ]]; then
     echo "Extracting $ZIP_PATH..."
     mkdir -p "$EXTRACT_DIR"
-    unzip -q "$ZIP_PATH" -d "$EXTRACT_DIR"
+    python3 -c "import zipfile; zipfile.ZipFile('$ZIP_PATH').extractall('$EXTRACT_DIR')"
     echo "Extracted to $EXTRACT_DIR"
 fi
 
