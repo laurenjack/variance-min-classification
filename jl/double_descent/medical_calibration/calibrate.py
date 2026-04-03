@@ -35,23 +35,30 @@ logger = logging.getLogger(__name__)
 
 
 def load_retfound_model(checkpoint_path: str, config: MedCalConfig, device: torch.device) -> nn.Module:
-    """Load fine-tuned RETFound checkpoint into a timm ViT-Large."""
+    """Load fine-tuned RETFound checkpoint into a timm ViT-Large.
+
+    Detects num_classes from checkpoint head.weight shape.
+    """
     import timm
+
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    num_classes = checkpoint["model"]["head.weight"].shape[0]
+    config.num_classes = num_classes
 
     model = timm.create_model(
         "vit_large_patch16_224",
-        num_classes=config.num_classes,
+        num_classes=num_classes,
         drop_path_rate=0.0,  # No drop path at inference
         global_pool="avg" if config.global_pool else "token",
     )
 
-    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     model.load_state_dict(checkpoint["model"], strict=True)
     model = model.to(device)
     model.eval()
 
     logger.info(
         f"Loaded checkpoint (epoch {checkpoint.get('epoch', '?')}), "
+        f"{num_classes} classes, "
         f"{sum(p.numel() for p in model.parameters()) / 1e6:.1f}M params"
     )
     return model
