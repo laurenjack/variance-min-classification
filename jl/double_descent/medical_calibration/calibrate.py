@@ -78,8 +78,9 @@ def extract_features(
     with torch.no_grad():
         for images, labels in loader:
             images = images.to(device)
-            features = model.forward_features(images)
-            # forward_features returns [B, D] for global_pool="avg"
+            x = model.forward_features(images)
+            # forward_head with pre_logits=True applies pool + fc_norm
+            features = model.forward_head(x, pre_logits=True)
             all_features.append(features.cpu())
             all_labels.append(labels)
 
