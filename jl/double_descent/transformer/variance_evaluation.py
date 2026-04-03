@@ -377,7 +377,7 @@ def _load_m2m100_test_data(data_path):
 def _eval_single_model(gpu_id, model_path_str, d_model, data_path):
     """Evaluate one model, return full log q_j distribution in CPU memory.
 
-    Returns log_q_j [N_positions, vocab_size] in fp16, total_loss, total_tokens.
+    Returns log_q_j [N_positions, vocab_size] in fp16.
     """
     device = torch.device(f"cuda:{gpu_id}")
     config = TDDConfig()
@@ -389,8 +389,6 @@ def _eval_single_model(gpu_id, model_path_str, d_model, data_path):
     )
 
     all_log_q = []
-    total_loss = 0.0
-    total_tokens = 0
 
     with torch.no_grad():
         for src, tgt in loader:
@@ -400,43 +398,45 @@ def _eval_single_model(gpu_id, model_path_str, d_model, data_path):
             logits = model(src, tgt_input)
             log_q = F.log_softmax(logits, dim=-1)  # [batch, seq_len, vocab_size]
 
-            # Compute loss at ground truth for test_loss metric
-            log_q_y = log_q.gather(dim=-1, index=target.unsqueeze(-1)).squeeze(-1)
-            total_loss += -log_q_y[mask].sum().item()
-
             # Save full distribution for non-padding positions
             all_log_q.append(log_q[mask].cpu())
-            total_tokens += num_tokens
 
     log_q_cat = torch.cat(all_log_q, dim=0).half()  # [total_positions, vocab_size] fp16
-    return log_q_cat, total_loss, total_tokens
+    return log_q_cat
 
 
 def compute_distributional_decomposition(all_log_q, ref_log_probs, ref_entropy,
-                                         total_loss_sum, num_models, total_tokens):
-    """Compute entropy, bias, and variance from full distributional data.
+                                         num_models):
+    """Compute exact bias-variance decomposition using reference distribution p.
+
+    All terms are computed with respect to p, so the decomposition is exact:
+        CE(p, q) = H(p) + KL(p || q_bar) + Jensen Gap
+        (test_loss = entropy + bias + variance)
 
     Args:
         all_log_q: list of [N, V] tensors (fp32), one per model
         ref_log_probs: [N, V] reference log-probabilities (fp32)
         ref_entropy: [N] per-position entropy
-        total_loss_sum: sum of per-model total losses
         num_models: M
-        total_tokens: N
 
     Returns:
-        dict with mean_test_loss, entropy, bias, variance
+        dict with mean_test_loss, entropy, bias, variance (all non-negative)
     """
     log_q_j = torch.stack(all_log_q)  # [M, N, V]
 
     # Ensemble: q_bar
     log_q_bar = torch.logsumexp(log_q_j, dim=0) - math.log(num_models)  # [N, V]
 
-    # Reference distribution (used as weights in Jensen Gap)
-    p = ref_log_probs.exp()  # [N, V]
+    # Reference distribution
+    log_p = ref_log_probs  # [N, V]
+    p = log_p.exp()        # [N, V]
 
-    # Entropy: H(p) pre-computed from full distribution
+    # Entropy: H(p) = -Σ_x p(x) log p(x), pre-computed from full distribution
     mean_entropy = ref_entropy.mean().item()
+
+    # Bias: KL(p || q_bar) = Σ_x p(x) [log p(x) - log q_bar(x)]
+    bias_per_position = (p * (log_p - log_q_bar)).sum(dim=-1)  # [N]
+    mean_bias = bias_per_position.mean().item()
 
     # Variance (Jensen Gap): E_j[Σ_x p(x) log(q_bar(x) / q_j(x))]
     total_variance = 0.0
@@ -445,11 +445,8 @@ def compute_distributional_decomposition(all_log_q, ref_log_probs, ref_entropy,
         total_variance += variance_j.mean().item()
     mean_variance = total_variance / num_models
 
-    mean_test_loss = total_loss_sum / (num_models * total_tokens)
-
-    # Bias: computed as residual so decomposition holds by construction
-    # test_loss = entropy + bias + variance
-    mean_bias = mean_test_loss - mean_entropy - mean_variance
+    # Test loss: CE(p, q) = H(p) + KL(p || q_bar) + Jensen Gap
+    mean_test_loss = mean_entropy + mean_bias + mean_variance
 
     return {
         "mean_test_loss": mean_test_loss,
@@ -472,22 +469,17 @@ def evaluate_d_model_distributional(
     # Evaluate models sequentially to avoid writing large temp files to disk.
     # Each model's full distribution is ~5GB; keeping in CPU memory is fine.
     all_log_q = []
-    total_loss_sum = 0.0
-    total_tokens = 0
 
     for split_idx, model_path in enumerate(model_paths):
         gpu_id = split_idx % num_gpus
         logger.info(f"  Evaluating split {split_idx} on GPU {gpu_id}...")
-        log_q, loss, tokens = _eval_single_model(
+        log_q = _eval_single_model(
             gpu_id, str(model_path), d_model, data_path,
         )
         all_log_q.append(log_q.float())
-        total_loss_sum += loss
-        total_tokens = tokens
 
     decomp = compute_distributional_decomposition(
-        all_log_q, ref_log_probs, ref_entropy,
-        total_loss_sum, num_models, total_tokens,
+        all_log_q, ref_log_probs, ref_entropy, num_models,
     )
 
     logger.info(
@@ -503,7 +495,6 @@ def evaluate_d_model_distributional(
         "bias": round(decomp["bias"], 6),
         "variance": round(decomp["variance"], 6),
         "num_models": num_models,
-        "total_tokens": total_tokens,
     }
 
 
