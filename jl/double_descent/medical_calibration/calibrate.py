@@ -338,7 +338,7 @@ def main():
     # === Final-layer fine-tuning ===
     if args.sweep:
         logger.info("=== Lambda sweep (selecting by val ECE) ===")
-        lambdas = [1e-4, 1e-3, 1e-2, 5e-2, 1e-1, 5e-1, 1.0, 5.0, 10.0]
+        lambdas = [1e-4, 1e-3, 1e-2, 5e-2, 1e-1, 2e-1, 3e-1, 5e-1, 7e-1, 1.0, 2.0, 3.0, 5.0, 10.0]
         original_head_state = model.head.state_dict()
 
         sweep_results = []
