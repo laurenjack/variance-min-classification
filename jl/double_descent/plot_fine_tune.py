@@ -37,6 +37,7 @@ def plot_fine_tune_comparison(
     transformer_ft: Optional[List[Dict]],
     transformer_ts: Optional[List[Dict]],
     output_dir: str,
+    output_name: str = "fine_tune_comparison.png",
 ) -> None:
     """Plot comparison of calibration approaches.
 
@@ -163,7 +164,7 @@ def plot_fine_tune_comparison(
 
     plt.tight_layout()
     Path(output_dir).mkdir(parents=True, exist_ok=True)
-    output_path = Path(output_dir) / "fine_tune_comparison.png"
+    output_path = Path(output_dir) / output_name
     plt.savefig(output_path, bbox_inches="tight")
     plt.close()
     print(f"Saved plot to {output_path}")
@@ -203,6 +204,12 @@ def main():
         default="./data",
         help="Directory to save plot",
     )
+    parser.add_argument(
+        "--output-name",
+        type=str,
+        default="fine_tune_comparison.png",
+        help="Output filename (default: fine_tune_comparison.png)",
+    )
     args = parser.parse_args()
 
     if all(v is None for v in [args.resnet_ft_eval, args.resnet_ts_eval,
@@ -214,7 +221,7 @@ def main():
     transformer_ft = _load_eval(args.transformer_ft_eval) if args.transformer_ft_eval else None
     transformer_ts = _load_eval(args.transformer_ts_eval) if args.transformer_ts_eval else None
 
-    plot_fine_tune_comparison(resnet_ft, resnet_ts, transformer_ft, transformer_ts, args.output_dir)
+    plot_fine_tune_comparison(resnet_ft, resnet_ts, transformer_ft, transformer_ts, args.output_dir, args.output_name)
 
 
 if __name__ == "__main__":
