@@ -610,16 +610,32 @@ output/transformer/03-01-1010/fine_tuned/
 └── fine_tune_metadata.jsonl       # {d_model, train_samples, final_loss, final_grad_norm, steps, l2_lambda}
 ```
 
-### Plotting (shared with ResNet18)
+### Evaluation (shared with ResNet18, requires GPU)
+
+Computes original and fine-tuned test loss and test error, parallelized across all available GPUs:
+
+```bash
+python -m jl.double_descent.fine_tune_evaluation \
+    --transformer-path ./output/transformer/03-01-1010 \
+    --transformer-data-path ./data/iwslt14.tokenized.de-en \
+    --l2-lambda 1e-3
+```
+
+Output: `fine_tuned/lambda_1e-03/fine_tune_evaluation.jsonl` with schema:
+```json
+{"d_model": 8, "original_loss": 5.12, "fine_tuned_loss": 4.98, "original_error": 0.72, "fine_tuned_error": 0.70}
+```
+
+### Plotting (shared with ResNet18, no GPU required)
 
 ```bash
 python -m jl.double_descent.plot_fine_tune \
-    --resnet-path ./data/resnet18/03-01-1010 \
-    --transformer-path ./data/transformer/03-01-1010 \
+    --resnet-eval ./data/resnet18/03-01-1010/fine_tuned/lambda_1e-03/fine_tune_evaluation.jsonl \
+    --transformer-eval ./data/transformer/03-01-1010/fine_tuned/lambda_1e-03/fine_tune_evaluation.jsonl \
     --output-dir ./data
 ```
 
-Produces `fine_tune_comparison.png` with side-by-side original vs fine-tuned test loss.
+Produces `fine_tune_comparison.png` with side-by-side original vs fine-tuned test loss and test error (2x2 grid).
 
 ---
 
