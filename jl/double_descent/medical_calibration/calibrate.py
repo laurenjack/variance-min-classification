@@ -266,14 +266,19 @@ def main():
     parser.add_argument(
         "--l2-lambda",
         type=float,
-        default=1e-3,
+        default=1e-1,
         help="L2 regularization for final-layer fine-tuning",
     )
     parser.add_argument(
         "--max-steps",
         type=int,
-        default=100,
+        default=30,
         help="L-BFGS steps for final-layer fine-tuning",
+    )
+    parser.add_argument(
+        "--sweep",
+        action="store_true",
+        help="Sweep over lambda values, select best by val ECE, report on test",
     )
     args = parser.parse_args()
 
@@ -295,74 +300,125 @@ def main():
     val_loader = build_loader(args.data_path, "val", config)
     test_loader = build_loader(args.data_path, "test", config)
 
-    # === Step 1: Uncalibrated evaluation ===
-    logger.info("=== Uncalibrated evaluation ===")
+    # Extract features once (shared by all modes)
+    logger.info("Extracting features...")
+    train_features, train_labels = extract_features(model, train_loader, device)
+    val_features, val_labels = extract_features(model, val_loader, device)
+    test_features, test_labels = extract_features(model, test_loader, device)
+    logger.info(
+        f"Features: train={train_features.shape}, val={val_features.shape}, "
+        f"test={test_features.shape}"
+    )
+
+    # Collect test logits for uncalibrated + temp scaling
     model.eval()
     test_logits_list = []
-    test_labels_list = []
     with torch.no_grad():
         for images, labels in test_loader:
-            images = images.to(device)
-            logits = model(images)
+            logits = model(images.to(device))
             test_logits_list.append(logits.cpu())
-            test_labels_list.append(labels)
-
     test_logits = torch.cat(test_logits_list)
-    test_labels = torch.cat(test_labels_list)
 
+    # === Uncalibrated ===
+    logger.info("=== Uncalibrated evaluation ===")
     uncalibrated_metrics = evaluate_logits(test_logits, test_labels)
     logger.info(f"Uncalibrated: {uncalibrated_metrics}")
 
-    # Save test logits
     torch.save(
         {"logits": test_logits, "labels": test_labels},
         out_dir / "test_logits.pt",
     )
 
-    # === Step 2: Temperature scaling (fit on validation) ===
+    # === Temperature scaling (fit on validation) ===
     logger.info("=== Temperature scaling ===")
     T = fit_temperature(model, val_loader, device)
-
-    ts_logits = test_logits / T
-    ts_metrics = evaluate_logits(ts_logits, test_labels)
+    ts_metrics = evaluate_logits(test_logits / T, test_labels)
     logger.info(f"Temperature-scaled (T={T:.4f}): {ts_metrics}")
 
-    # === Step 3: Final-layer fine-tuning (fit on training set) ===
-    logger.info("=== Final-layer fine-tuning ===")
+    # === Final-layer fine-tuning ===
+    if args.sweep:
+        logger.info("=== Lambda sweep (selecting by val ECE) ===")
+        lambdas = [1e-4, 1e-3, 1e-2, 5e-2, 1e-1, 5e-1, 1.0, 5.0, 10.0]
+        original_head_state = model.head.state_dict()
 
-    # Extract training features
-    logger.info("Extracting training features...")
-    train_features, train_labels = extract_features(model, train_loader, device)
-    logger.info(f"Training features: {train_features.shape}")
+        sweep_results = []
+        for lam in lambdas:
+            linear = nn.Linear(train_features.shape[1], config.num_classes).to(device)
+            linear.load_state_dict(original_head_state)
 
-    # Copy head into standalone linear layer
-    linear = nn.Linear(train_features.shape[1], config.num_classes).to(device)
-    linear.load_state_dict(model.head.state_dict())
+            fine_tune_final_layer(
+                features=train_features,
+                targets=train_labels,
+                linear_layer=linear,
+                l2_lambda=lam,
+                max_steps=config.lbfgs_max_steps,
+                device=device,
+            )
 
-    # Fine-tune with L-BFGS
-    metadata = fine_tune_final_layer(
-        features=train_features,
-        targets=train_labels,
-        linear_layer=linear,
-        l2_lambda=config.l2_lambda,
-        max_steps=config.lbfgs_max_steps,
-        device=device,
-    )
-    logger.info(f"Fine-tune metadata: {metadata}")
+            # Evaluate on val
+            linear.eval()
+            with torch.no_grad():
+                val_logits = linear(val_features.to(device)).cpu()
+            val_metrics = evaluate_logits(val_logits, val_labels)
 
-    # Save fine-tuned layer
-    torch.save(linear.state_dict(), out_dir / "calibrated_head.pt")
+            sweep_results.append((lam, val_metrics, linear.state_dict()))
+            logger.info(f"  λ={lam:.0e}: val_ece={val_metrics['ece']:.4f}, val_nll={val_metrics['nll']:.4f}")
 
-    # Evaluate fine-tuned on test
-    # Extract test features
-    logger.info("Extracting test features...")
-    test_features, _ = extract_features(model, test_loader, device)
+        # Select best by val ECE
+        best_idx = min(range(len(sweep_results)), key=lambda i: sweep_results[i][1]["ece"])
+        best_lambda, best_val_metrics, best_state = sweep_results[best_idx]
+        logger.info(f"Best λ={best_lambda:.0e} (val ECE={best_val_metrics['ece']:.4f})")
 
-    linear.eval()
-    with torch.no_grad():
-        ft_logits = linear(test_features.to(device)).cpu()
+        # Print sweep table
+        print("\n" + "=" * 50)
+        print(f"{'Lambda':<12} {'Val ECE':>10} {'Val NLL':>10} {'Val Acc':>10}")
+        print("-" * 50)
+        for lam, val_m, _ in sweep_results:
+            marker = " <-- best" if lam == best_lambda else ""
+            print(f"{lam:<12.0e} {val_m['ece']:>10.4f} {val_m['nll']:>10.4f} {val_m['accuracy']:>10.4f}{marker}")
+        print("=" * 50)
 
-    ft_metrics = evaluate_logits(ft_logits, test_labels)
+        # Evaluate best on test
+        linear = nn.Linear(train_features.shape[1], config.num_classes).to(device)
+        linear.load_state_dict(best_state)
+        linear.eval()
+        with torch.no_grad():
+            ft_logits = linear(test_features.to(device)).cpu()
+        ft_metrics = evaluate_logits(ft_logits, test_labels)
+
+        torch.save(best_state, out_dir / "calibrated_head.pt")
+        config.l2_lambda = best_lambda
+
+        # Save sweep details
+        sweep_path = out_dir / "sweep_results.json"
+        with open(sweep_path, "w") as f:
+            json.dump(
+                [{"l2_lambda": lam, **vm} for lam, vm, _ in sweep_results],
+                f, indent=2,
+            )
+
+    else:
+        logger.info("=== Final-layer fine-tuning ===")
+        linear = nn.Linear(train_features.shape[1], config.num_classes).to(device)
+        linear.load_state_dict(model.head.state_dict())
+
+        metadata = fine_tune_final_layer(
+            features=train_features,
+            targets=train_labels,
+            linear_layer=linear,
+            l2_lambda=config.l2_lambda,
+            max_steps=config.lbfgs_max_steps,
+            device=device,
+        )
+        logger.info(f"Fine-tune metadata: {metadata}")
+
+        torch.save(linear.state_dict(), out_dir / "calibrated_head.pt")
+
+        linear.eval()
+        with torch.no_grad():
+            ft_logits = linear(test_features.to(device)).cpu()
+        ft_metrics = evaluate_logits(ft_logits, test_labels)
+
     logger.info(f"Fine-tuned: {ft_metrics}")
 
     # === Save results ===
