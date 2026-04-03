@@ -238,8 +238,8 @@ def main():
     parser.add_argument(
         "--sgd-lr",
         type=float,
-        default=0.01,
-        help="SGD learning rate (default: 0.01)",
+        default=0.1,
+        help="SGD learning rate (default: 0.1)",
     )
     args = parser.parse_args()
 

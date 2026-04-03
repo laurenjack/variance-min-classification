@@ -130,23 +130,27 @@ def sgd_fine_tune_final_layer(
     l2_lambda: float = 1e-5,
     epochs: int = 100,
     batch_size: int = 2048,
-    lr: float = 0.01,
+    lr: float = 0.1,
+    momentum: float = 0.9,
     device: Optional[torch.device] = None,
 ) -> Dict[str, float]:
-    """Fine-tune a linear layer with plain SGD and L2 regularization.
+    """Fine-tune a linear layer with SGD and L2 regularization.
 
     Args:
         features: [N, d_in] pre-extracted features from frozen backbone.
         targets: [N] class/token indices.
         linear_layer: The layer to optimize, initialized with trained weights.
-        l2_lambda: L2 regularization strength (applied as weight_decay).
+        l2_lambda: L2 regularization strength. Applied as weight_decay = 2 * l2_lambda
+            to match L-BFGS which optimizes loss + l2_lambda * ||W||^2
+            (gradient 2 * l2_lambda * W vs PyTorch's weight_decay * W).
         epochs: Number of passes over the full dataset.
         batch_size: Mini-batch size.
         lr: Learning rate.
+        momentum: SGD momentum (default: 0.0).
         device: Device to run on. If None, uses features' device.
 
     Returns:
-        Metadata dict with final_loss, final_grad_norm, epochs, l2_lambda, lr.
+        Metadata dict with final_loss, final_grad_norm, epochs, l2_lambda, lr, momentum.
     """
     if device is not None:
         features = features.to(device)
@@ -159,12 +163,14 @@ def sgd_fine_tune_final_layer(
 
     N = features.shape[0]
 
-    # weight_decay in SGD implements L2 regularization: grad += weight_decay * param
-    # This is equivalent to adding l2_lambda * ||W||^2 to the loss
+    # weight_decay in SGD adds weight_decay * param to gradient.
+    # L-BFGS optimizes loss + l2_lambda * ||W||^2, gradient = 2 * l2_lambda * W.
+    # So weight_decay = 2 * l2_lambda to match.
     optimizer = torch.optim.SGD(
         linear_layer.parameters(),
         lr=lr,
-        weight_decay=l2_lambda,
+        momentum=momentum,
+        weight_decay=2 * l2_lambda,
     )
 
     last_loss = None
@@ -210,5 +216,6 @@ def sgd_fine_tune_final_layer(
         "epochs": epochs,
         "l2_lambda": l2_lambda,
         "lr": lr,
+        "momentum": momentum,
         "history": history,
     }
