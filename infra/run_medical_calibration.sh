@@ -34,7 +34,13 @@ if [[ ! -d "$EXTRACT_DIR" ]]; then
 fi
 
 # Find the data directory (contains train/val/test subdirs)
-DATA_DIR=$(find "$EXTRACT_DIR" -type d -name "train" | head -1 | xargs dirname)
+TRAIN_DIR=$(find "$EXTRACT_DIR" -type d -name "train" | head -1)
+if [[ -z "$TRAIN_DIR" ]]; then
+    echo "ERROR: No train/ directory found in $EXTRACT_DIR"
+    find "$EXTRACT_DIR" -maxdepth 3 -type d
+    exit 1
+fi
+DATA_DIR=$(dirname "$TRAIN_DIR")
 CHECKPOINT="$EXTRACT_DIR/checkpoint-best.pth"
 
 if [[ ! -f "$CHECKPOINT" ]]; then
