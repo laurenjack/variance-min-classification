@@ -237,6 +237,11 @@ def main():
     if metadata_path.exists():
         metadata_path.unlink()
 
+    # Pre-download CIFAR-10 before spawning workers to avoid race condition
+    import torchvision
+    torchvision.datasets.CIFAR10(root=args.data_path, train=True, download=True)
+    torchvision.datasets.CIFAR10(root=args.data_path, train=False, download=True)
+
     num_gpus = torch.cuda.device_count()
     if num_gpus == 0:
         raise RuntimeError("No GPUs available. Fine-tuning requires at least one GPU.")
