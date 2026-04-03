@@ -295,20 +295,6 @@ This computes for each k:
 
 Output: `evaluation.jsonl` alongside the model files.
 
-### Temperature Scaling
-
-Optional post-hoc calibration to demonstrate that simple calibration cannot recover first-descent loss:
-
-```bash
-python -m jl.double_descent.resnet18.variance_evaluation \
-    --model-path ./output/resnet18_variance/03-01-1010 \
-    --data-path ./data --temperature-scaling
-```
-
-This fits a scalar temperature T per k value using L-BFGS on one randomly chosen model's test NLL, then recomputes the full bias-variance decomposition with `softmax(logits/T)` across all models.
-
-Output: `temperature-scaled/evaluation.jsonl` in the model directory (same schema plus a `"temperature"` field).
-
 ### Plotting
 
 ```bash
@@ -318,16 +304,6 @@ python -m jl.double_descent.resnet18.plot_variance_evaluation \
 ```
 
 Produces `bias_variance.png` showing test loss, Jensen Gap, and implied bias vs k.
-
-For temperature-scaled results:
-
-```bash
-python -m jl.double_descent.resnet18.plot_variance_evaluation \
-    ./output/resnet18_variance/03-01-1010/temperature-scaled/evaluation.jsonl \
-    --output-dir ./data --temperature-scaled
-```
-
-Produces `bias_variance.png` with "(Temperature Scaled)" in the title.
 
 ---
 
