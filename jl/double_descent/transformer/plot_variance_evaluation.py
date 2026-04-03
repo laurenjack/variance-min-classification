@@ -35,7 +35,7 @@ def load_evaluation(eval_path: str) -> List[Dict]:
     return sorted(results, key=lambda r: r["d_model"])
 
 
-def plot_evaluation(eval_path: str, output_dir: str, temperature_scaled: bool = False) -> None:
+def plot_evaluation(eval_path: str, output_dir: str) -> None:
     """Plot bias-variance decomposition vs d_model.
 
     Supports two formats:
@@ -45,7 +45,6 @@ def plot_evaluation(eval_path: str, output_dir: str, temperature_scaled: bool = 
     Args:
         eval_path: Path to evaluation.jsonl file.
         output_dir: Directory to save plot.
-        temperature_scaled: If True, append "(Temperature Scaled)" to plot title.
     """
     results = load_evaluation(eval_path)
     distributional = "entropy" in results[0]
@@ -56,8 +55,6 @@ def plot_evaluation(eval_path: str, output_dir: str, temperature_scaled: bool = 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     title = "Bias-Variance Decomposition"
-    if temperature_scaled:
-        title += " (Temperature Scaled)"
 
     plt.rcParams.update({
         'font.size': 12,
@@ -118,15 +115,10 @@ def main():
         default=None,
         help="Directory to save plot (default: same directory as eval_path)",
     )
-    parser.add_argument(
-        "--temperature-scaled",
-        action="store_true",
-        help="Label plot as temperature-scaled results",
-    )
     args = parser.parse_args()
 
     output_dir = args.output_dir if args.output_dir else str(Path(args.eval_path).parent)
-    plot_evaluation(args.eval_path, output_dir, temperature_scaled=args.temperature_scaled)
+    plot_evaluation(args.eval_path, output_dir)
 
 
 if __name__ == "__main__":
