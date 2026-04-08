@@ -46,7 +46,7 @@ from jl.double_descent.resnet18.resnet18k import make_resnet18k
 
 logger = logging.getLogger(__name__)
 
-LAMBDAS = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2]
+LAMBDAS = [1e-7, 5e-7, 1e-6, 5e-6, 1e-5, 5e-5, 1e-4, 5e-4]
 
 
 def evaluate_calibrated(
