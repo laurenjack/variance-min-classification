@@ -6,13 +6,13 @@ Evaluate post-hoc calibration approaches on **pre-fine-tuned RETFound** checkpoi
 
 1. **Uncalibrated** — direct model outputs
 2. **Temperature scaling** — fit scalar T on validation set via L-BFGS
-3. **Final-layer fine-tuning** — L-BFGS + L2 on classifier head using training set
+3. **L2 calibration** — L-BFGS + L2 on classifier head using training set
 
 ## Results Summary
 
-Fine-tuning the final layer beats temperature scaling on 5 of 7 datasets, with the largest gains on datasets with more classes (JSIEC, 39 classes) and more training data (APTOS2019, 2K images).
+L2 calibration beats temperature scaling on 5 of 7 datasets, with the largest gains on datasets with more classes (JSIEC, 39 classes) and more training data (APTOS2019, 2K images).
 
-| Dataset | Classes | Train | Val | Test | FT ΔNLL | FT ΔECE | FT ΔAcc |
+| Dataset | Classes | Train | Val | Test | L2 ΔNLL | L2 ΔECE | L2 ΔAcc |
 |---------|---------|-------|-----|------|---------|---------|---------|
 | **APTOS2019** | 5 | 2,048 | 514 | 1,100 | **-0.048** | **-0.033** | **+1.7%** |
 | MESSIDOR2 | 5 | 972 | 246 | 526 | +0.019 | -0.010 | -1.0% |
@@ -22,7 +22,7 @@ Fine-tuning the final layer beats temperature scaling on 5 of 7 datasets, with t
 | **JSIEC** | 39 | 534 | 150 | 318 | **-0.105** | **-0.077** | **+1.9%** |
 | **Retina** | 4 | 336 | 84 | 181 | **-0.031** | +0.000 | **+2.2%** |
 
-Deltas are vs uncalibrated. Bold = fine-tuning improves over both uncalibrated and temp scaling.
+Deltas are vs uncalibrated. Bold = L2 calibration improves over both uncalibrated and temp scaling.
 
 ---
 
@@ -133,7 +133,7 @@ Expects `data/medical_calibration/<dataset_name>.zip` on the remote. Extracts, f
 2. Extract features once for all splits via `model.forward_features()` + `model.forward_head(x, pre_logits=True)` → [N, 1024]
 3. Collect test logits for uncalibrated evaluation
 4. **Temperature scaling:** fit scalar T on **validation** logits via L-BFGS, evaluate on test
-5. **Final-layer fine-tuning:** copy `model.head` into standalone `nn.Linear`, run `fine_tune_lib.fine_tune_final_layer()` with L-BFGS + L2 on **training** features
+5. **L2 calibration:** copy `model.head` into standalone `nn.Linear`, run `fine_tune_lib.fine_tune_final_layer()` with L-BFGS + L2 on **training** features
 6. With `--sweep`: try 14 lambda values, select best by val metric (ECE or NLL), report test metrics for the winner
 7. Save `calibration_results.json`, `test_logits.pt`, `calibrated_head.pt`
 
@@ -157,7 +157,7 @@ Sweep lambda values: `[1e-4, 1e-3, 1e-2, 5e-2, 1e-1, 2e-1, 3e-1, 5e-1, 7e-1, 1, 
 ## Key Design Decisions
 
 - **Temperature scaling fits on val** — standard practice, same data used for model selection
-- **Final-layer fine-tuning fits on train** — our method has more capacity (classes×1024 params), so we use the larger training set
+- **L2 calibration fits on train** — our method has more capacity (classes×1024 params), so we use the larger training set
 - **Lambda selected on val** — proper train/val/test protocol, no test leakage
 - **Feature extraction uses timm's `forward_head(pre_logits=True)`** — applies pool + fc_norm, returns [B, 1024]
 - **Shared optimization via `fine_tune_lib.py`** — same L-BFGS code used for ResNet and Transformer calibration
@@ -175,9 +175,9 @@ Sweep lambda values: `[1e-4, 1e-3, 1e-2, 5e-2, 1e-1, 2e-1, 3e-1, 5e-1, 7e-1, 1, 
 
 ## Observations
 
-- Fine-tuning works best with **more classes** (JSIEC: 39 classes, biggest improvement) and **more training data** (APTOS: 2K images)
+- L2 calibration works best with **more classes** (JSIEC: 39 classes, biggest improvement) and **more training data** (APTOS: 2K images)
 - On tiny datasets (IDRID: 329 train, 104 test) neither method helps much
 - Selected lambdas vary by dataset (0.01 to 3.0) — the sweep is important
 - ECE-selection and NLL-selection give similar results; ECE-selection slightly better overall
 - L-BFGS converges by step ~11 for all datasets — 30 steps is more than sufficient
-- The base model's strength matters: fine-tuning can't fix bad features (MESSIDOR2: AUROC 0.883)
+- The base model's strength matters: L2 calibration can't fix bad features (MESSIDOR2: AUROC 0.883)
