@@ -25,6 +25,14 @@ import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.nn.functional as F
 
+from jl.double_descent.calibration_baselines import (
+    apply_dirichlet_l2,
+    apply_histogram_binning,
+    apply_vector_scaling,
+    fit_dirichlet_l2,
+    fit_histogram_binning,
+    fit_vector_scaling,
+)
 from jl.double_descent.l2_calibrate_lib import compute_brier_score, l2_calibrate_final_layer
 from jl.double_descent.resnet18.evaluation import compute_ece, discover_models
 from jl.double_descent.resnet18.l2_calibrate import extract_features
@@ -44,12 +52,35 @@ def evaluate_calibrated(
     linear.eval()
     with torch.no_grad():
         logits = linear(features.to(device)).cpu()
+    return evaluate_logits(logits, labels)
 
+
+def evaluate_logits(logits: torch.Tensor, labels: torch.Tensor) -> Dict[str, float]:
+    """Compute NLL, accuracy, ECE, Brier from logits."""
     probs = F.softmax(logits, dim=-1)
     max_probs, predictions = probs.max(dim=-1)
     correct = predictions == labels
 
     nll = F.cross_entropy(logits, labels).item()
+    accuracy = correct.float().mean().item()
+    ece = compute_ece(max_probs, correct)
+    brier = compute_brier_score(probs, labels)
+
+    return {
+        "nll": round(nll, 6),
+        "accuracy": round(accuracy, 6),
+        "ece": round(ece, 6),
+        "brier": round(brier, 6),
+    }
+
+
+def evaluate_probs(probs: torch.Tensor, labels: torch.Tensor) -> Dict[str, float]:
+    """Compute NLL, accuracy, ECE, Brier from probabilities."""
+    probs = probs.clamp(min=1e-8)
+    max_probs, predictions = probs.max(dim=-1)
+    correct = predictions == labels
+
+    nll = -torch.log(probs[torch.arange(len(labels)), labels]).mean().item()
     accuracy = correct.float().mean().item()
     ece = compute_ece(max_probs, correct)
     brier = compute_brier_score(probs, labels)
@@ -241,6 +272,55 @@ def main():
     test_labels = full_test_labels[test_idx]
     logger.info(f"Val: {val_features.shape[0]} samples, Test: {test_features.shape[0]} samples")
 
+    # Compute val/test logits from original model for baselines
+    with torch.no_grad():
+        linear_layer = model.linear
+        val_logits = linear_layer(val_features.to(device)).cpu()
+        test_logits = linear_layer(test_features.to(device)).cpu()
+
+    # Evaluate uncalibrated
+    uncal_test = evaluate_logits(test_logits, test_labels)
+    logger.info(f"Uncalibrated: {uncal_test}")
+
+    # === Calibration baselines (fit on val) ===
+    logger.info("=== Fitting calibration baselines on val ===")
+
+    # Temperature scaling
+    temperature = nn.Parameter(torch.ones(1))
+    ts_opt = torch.optim.LBFGS([temperature], lr=0.01, max_iter=50)
+    def ts_closure():
+        ts_opt.zero_grad()
+        loss = F.cross_entropy(val_logits / temperature, val_labels)
+        loss.backward()
+        return loss
+    ts_opt.step(ts_closure)
+    T = temperature.item()
+    ts_test = evaluate_logits(test_logits / T, test_labels)
+    logger.info(f"Temperature scaling (T={T:.4f}): {ts_test}")
+
+    # Vector scaling
+    vs_weights, vs_biases = fit_vector_scaling(val_logits, val_labels)
+    vs_test = evaluate_logits(apply_vector_scaling(test_logits, vs_weights, vs_biases), test_labels)
+    logger.info(f"Vector scaling: {vs_test}")
+
+    # Histogram binning
+    bin_bounds, bin_accs = fit_histogram_binning(val_logits, val_labels)
+    hb_test = evaluate_probs(apply_histogram_binning(test_logits, bin_bounds, bin_accs), test_labels)
+    logger.info(f"Histogram binning: {hb_test}")
+
+    # Dirichlet L2
+    dir_W, dir_b = fit_dirichlet_l2(val_logits, val_labels)
+    dir_test = evaluate_logits(apply_dirichlet_l2(test_logits, dir_W, dir_b), test_labels)
+    logger.info(f"Dirichlet L2: {dir_test}")
+
+    baselines = {
+        "uncalibrated": uncal_test,
+        "temperature_scaled": {**ts_test, "temperature": round(T, 6)},
+        "vector_scaled": vs_test,
+        "histogram_binning": hb_test,
+        "dirichlet_l2": dir_test,
+    }
+
     # Free model memory
     del model
     torch.cuda.empty_cache()
@@ -299,7 +379,40 @@ def main():
     best_lambda = best["l2_lambda"]
     logger.info(f"Best lambda={best_lambda:.0e} (val ECE={best['val_ece']:.4f})")
 
-    # Print summary table
+    # Print baselines
+    print(f"\n=== Calibration comparison for k={args.k} ===")
+    print("=" * 60)
+    print(f"{'Method':<20} {'Test NLL':>10} {'Test Acc':>10} {'Test ECE':>10} {'Test Brier':>10}")
+    print("-" * 60)
+    for method, metrics in baselines.items():
+        print(
+            f"{method:<20} {metrics['nll']:>10.4f} {metrics['accuracy']:>10.4f}"
+            f" {metrics['ece']:>10.4f} {metrics['brier']:>10.4f}"
+        )
+    # Print best L2 calibration result
+    print(
+        f"{'l2_calibrated':<20} {best['test_nll']:>10.4f} {best['test_accuracy']:>10.4f}"
+        f" {best['test_ece']:>10.4f} {best['test_brier']:>10.4f}  (λ={best_lambda:.0e})"
+    )
+    print("=" * 60)
+
+    # Print deltas vs uncalibrated
+    base = baselines["uncalibrated"]
+    print(f"\n{'Method':<20} {'ΔNLL':>10} {'ΔAcc':>10} {'ΔECE':>10} {'ΔBrier':>10}")
+    print("-" * 60)
+    for method in ["temperature_scaled", "vector_scaled", "histogram_binning", "dirichlet_l2"]:
+        m = baselines[method]
+        print(
+            f"{method:<20} {m['nll'] - base['nll']:>+10.4f} {m['accuracy'] - base['accuracy']:>+10.4f}"
+            f" {m['ece'] - base['ece']:>+10.4f} {m['brier'] - base['brier']:>+10.4f}"
+        )
+    print(
+        f"{'l2_calibrated':<20} {best['test_nll'] - base['nll']:>+10.4f} {best['test_accuracy'] - base['accuracy']:>+10.4f}"
+        f" {best['test_ece'] - base['ece']:>+10.4f} {best['test_brier'] - base['brier']:>+10.4f}"
+    )
+    print("=" * 60)
+
+    # Print L2 sweep table
     print(f"\nL2 Calibrate Sweep for k={args.k} (L-BFGS, max_steps={args.max_steps})")
     print(f"Selecting by val ECE")
     print("=" * 90)
@@ -323,9 +436,13 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"sweep_k{args.k}.jsonl"
 
+    all_results = {
+        "baselines": baselines,
+        "l2_sweep": [dict(r) for r in results],
+        "best_l2": {"l2_lambda": best_lambda, **{k: best[k] for k in best if k != "l2_lambda"}},
+    }
     with open(output_path, "w") as f:
-        for r in results:
-            f.write(json.dumps(r) + "\n")
+        json.dump(all_results, f, indent=2)
     logger.info(f"Saved results to {output_path}")
 
 
