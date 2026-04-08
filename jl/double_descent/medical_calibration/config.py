@@ -13,7 +13,7 @@ class MedCalConfig:
     global_pool: bool = True
     drop_path: float = 0.2
 
-    # Fine-tuning (paper recipe)
+    # Training (paper recipe, for reference)
     epochs: int = 50
     batch_size: int = 16
     blr: float = 5e-3  # base learning rate

@@ -1,10 +1,10 @@
-"""Calibration methods for RETFound on APTOS-2019.
+"""Calibration methods for RETFound ophthalmology models.
 
-Loads the fine-tuned checkpoint, applies two calibration approaches:
+Loads a pre-trained checkpoint, applies two calibration approaches:
 1. Temperature scaling (fit T on validation set)
-2. Final-layer fine-tuning with L-BFGS (fit on training set)
+2. L2 calibration — L-BFGS + L2 refit of classifier head (fit on training set)
 
-Then evaluates all three modes (uncalibrated, temp-scaled, fine-tuned)
+Then evaluates all three modes (uncalibrated, temp-scaled, L2-calibrated)
 on the test set.
 
 Usage:
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 
 def load_retfound_model(checkpoint_path: str, config: MedCalConfig, device: torch.device) -> nn.Module:
-    """Load fine-tuned RETFound checkpoint into a timm ViT-Large.
+    """Load pre-trained RETFound checkpoint into a timm ViT-Large.
 
     Detects num_classes from checkpoint head.weight shape.
     """
@@ -256,7 +256,7 @@ def main():
         "--checkpoint",
         type=str,
         required=True,
-        help="Path to fine-tuned RETFound checkpoint (.pth)",
+        help="Path to pre-trained RETFound checkpoint (.pth)",
     )
     parser.add_argument(
         "--data-path",
@@ -274,13 +274,13 @@ def main():
         "--l2-lambda",
         type=float,
         default=1e-1,
-        help="L2 regularization for final-layer fine-tuning",
+        help="L2 regularization strength for L2 calibration",
     )
     parser.add_argument(
         "--max-steps",
         type=int,
         default=30,
-        help="L-BFGS steps for final-layer fine-tuning",
+        help="L-BFGS steps for L2 calibration",
     )
     parser.add_argument(
         "--sweep",
@@ -349,7 +349,7 @@ def main():
     ts_metrics = evaluate_logits(test_logits / T, test_labels)
     logger.info(f"Temperature-scaled (T={T:.4f}): {ts_metrics}")
 
-    # === Final-layer fine-tuning ===
+    # === L2 calibration ===
     if args.sweep:
         logger.info("=== Lambda sweep (selecting by val ECE) ===")
         lambdas = [1e-4, 1e-3, 1e-2, 5e-2, 1e-1, 2e-1, 3e-1, 5e-1, 7e-1, 1.0, 2.0, 3.0, 5.0, 10.0]
@@ -414,7 +414,7 @@ def main():
             )
 
     else:
-        logger.info("=== Final-layer fine-tuning ===")
+        logger.info("=== L2 calibration ===")
         linear = nn.Linear(train_features.shape[1], config.num_classes).to(device)
         linear.load_state_dict(model.head.state_dict())
 
@@ -426,7 +426,7 @@ def main():
             max_steps=config.lbfgs_max_steps,
             device=device,
         )
-        logger.info(f"Fine-tune metadata: {metadata}")
+        logger.info(f"L2 calibration metadata: {metadata}")
 
         torch.save(linear.state_dict(), out_dir / "calibrated_head.pt")
 
@@ -435,13 +435,13 @@ def main():
             ft_logits = linear(test_features.to(device)).cpu()
         ft_metrics = evaluate_logits(ft_logits, test_labels)
 
-    logger.info(f"Fine-tuned: {ft_metrics}")
+    logger.info(f"L2-calibrated: {ft_metrics}")
 
     # === Save results ===
     results = {
         "uncalibrated": uncalibrated_metrics,
         "temperature_scaled": {**ts_metrics, "temperature": round(T, 6)},
-        "fine_tuned": {**ft_metrics, "l2_lambda": config.l2_lambda, "max_steps": config.lbfgs_max_steps},
+        "l2_calibrated": {**ft_metrics, "l2_lambda": config.l2_lambda, "max_steps": config.lbfgs_max_steps},
     }
 
     results_path = out_dir / "calibration_results.json"
@@ -465,7 +465,7 @@ def main():
     print(f"\n{'Method':<20} {'ΔNLL':>8} {'ΔAcc':>8} {'ΔECE':>8} {'ΔBrier':>8} {'ΔAUROC':>8} {'ΔAUPR':>8}")
     print("-" * 70)
     base = uncalibrated_metrics
-    for method in ["temperature_scaled", "fine_tuned"]:
+    for method in ["temperature_scaled", "l2_calibrated"]:
         m = results[method]
         print(
             f"{method:<20} {m['nll'] - base['nll']:>+8.4f} {m['accuracy'] - base['accuracy']:>+8.4f} "
