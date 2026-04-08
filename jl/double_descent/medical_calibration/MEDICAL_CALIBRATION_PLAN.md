@@ -181,3 +181,4 @@ Sweep lambda values: `[1e-4, 1e-3, 1e-2, 5e-2, 1e-1, 2e-1, 3e-1, 5e-1, 7e-1, 1, 
 - ECE-selection and NLL-selection give similar results; ECE-selection slightly better overall
 - L-BFGS converges by step ~11 for all datasets — 30 steps is more than sufficient
 - The base model's strength matters: L2 calibration can't fix bad features (MESSIDOR2: AUROC 0.883)
+- **SGD vs L-BFGS:** Full-batch SGD (momentum=0.9) was tested as an alternative optimizer. At lr=0.1 it diverges badly (NLL +1 to +10). At lr=0.01 it nearly matches L-BFGS on most datasets but remains worse on JSIEC (39 classes): ΔNLL -0.065 vs -0.105, ΔECE -0.049 vs -0.077. L-BFGS is the right tool — the problem is small and convex (1024×C weights), and L-BFGS converges to grad_norm ~1e-6 in ~11 steps vs SGD still at ~0.04 after 100 epochs.
