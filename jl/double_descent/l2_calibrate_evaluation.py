@@ -2,23 +2,23 @@
 """Evaluate calibration approaches on trained models.
 
 Two modes (mutually exclusive):
-  --fine-tune: Evaluates fine-tuned final layers vs originals.
+  --l2-calibrate: Evaluates L2-calibrated final layers vs originals.
   --temperature-scaling: Fits per-model temperature T on test NLL, evaluates with logits/T.
 
 Parallelizes across all available GPUs.
 
 Usage:
-    # Fine-tune evaluation (pass layer directories directly)
-    python -m jl.double_descent.fine_tune_evaluation --fine-tune \
+    # L2 calibrate evaluation (pass layer directories directly)
+    python -m jl.double_descent.l2_calibrate_evaluation --l2-calibrate \
         --resnet-path ./output/resnet18/long_double_descent \
-        --resnet-layer-dir ./output/resnet18/long_double_descent/fine_tuned/lambda_1e-03 \
+        --resnet-layer-dir ./output/resnet18/long_double_descent/l2_calibrated/lambda_1e-03 \
         --transformer-path ./output/transformer/long_double_descent_36K \
-        --transformer-layer-dir ./output/transformer/long_double_descent_36K/fine_tuned/lambda_1e-03 \
+        --transformer-layer-dir ./output/transformer/long_double_descent_36K/l2_calibrated/lambda_1e-03 \
         --data-path ./data \
         --transformer-data-path ./data/iwslt14.tokenized.de-en
 
     # Temperature scaling evaluation
-    python -m jl.double_descent.fine_tune_evaluation --temperature-scaling \
+    python -m jl.double_descent.l2_calibrate_evaluation --temperature-scaling \
         --resnet-path ./output/resnet18/long_double_descent \
         --transformer-path ./output/transformer/long_double_descent_36K \
         --data-path ./data \
@@ -229,13 +229,13 @@ def _resnet_worker(
     gpu_id: int,
     k: int,
     orig_model_path: str,
-    fine_tuned_layer_path: str,
+    l2_calibrated_layer_path: str,
     data_path: str,
     batch_size: int,
     eval_entry: Optional[Dict],
     result_dict: dict,
 ) -> None:
-    """Evaluate one ResNet18 model (original + fine-tuned) on a single GPU."""
+    """Evaluate one ResNet18 model (original + L2-calibrated) on a single GPU."""
     from jl.double_descent.resnet18.resnet18_data import NoisyCIFAR10
     from jl.double_descent.resnet18.resnet18k import make_resnet18k
     import torchvision.transforms as transforms
@@ -274,13 +274,13 @@ def _resnet_worker(
         orig_loss, orig_error, orig_ece = _resnet_test_metrics(model, test_loader, device)
         del model
 
-    # Fine-tuned test loss/error/ece
+    # L2-calibrated test loss/error/ece
     model = make_resnet18k(k=k, num_classes=10).to(device)
     model.load_state_dict(
         torch.load(orig_model_path, map_location=device, weights_only=True)
     )
     layer_state = torch.load(
-        fine_tuned_layer_path, map_location=device, weights_only=True
+        l2_calibrated_layer_path, map_location=device, weights_only=True
     )
     model.linear.load_state_dict(layer_state)
     ft_loss, ft_error, ft_ece = _resnet_test_metrics(model, test_loader, device)
@@ -298,11 +298,11 @@ def _resnet_worker(
 def evaluate_resnet(
     model_dir: str, layer_dir: str, data_path: str
 ) -> Path:
-    """Evaluate all ResNet18 models and write fine_tune_evaluation.jsonl.
+    """Evaluate all ResNet18 models and write l2_calibrate_evaluation.jsonl.
 
     Args:
         model_dir: Directory containing model_k*.pt base model files.
-        layer_dir: Directory containing layer_k*.pt fine-tuned layer files.
+        layer_dir: Directory containing layer_k*.pt L2-calibrated layer files.
         data_path: Directory containing CIFAR-10 data.
 
     Returns:
@@ -316,16 +316,16 @@ def evaluate_resnet(
     torchvision.datasets.CIFAR10(root=data_path, train=False, download=True)
 
     model_path = Path(model_dir)
-    fine_tuned_dir = Path(layer_dir)
+    l2_calibrated_dir = Path(layer_dir)
 
     models = discover_models(model_dir)
     if not models:
         raise FileNotFoundError(f"No model_k*.pt files in {model_dir}")
 
     for k in models:
-        layer_path = fine_tuned_dir / f"layer_k{k}.pt"
+        layer_path = l2_calibrated_dir / f"layer_k{k}.pt"
         if not layer_path.exists():
-            raise FileNotFoundError(f"Missing fine-tuned layer: {layer_path}")
+            raise FileNotFoundError(f"Missing L2-calibrated layer: {layer_path}")
 
     eval_results = _load_evaluation_jsonl(model_path / "evaluation.jsonl")
     config = DDConfig()
@@ -346,7 +346,7 @@ def evaluate_resnet(
                     gpu_id,
                     k,
                     str(orig_model_path),
-                    str(fine_tuned_dir / f"layer_k{k}.pt"),
+                    str(l2_calibrated_dir / f"layer_k{k}.pt"),
                     data_path,
                     config.batch_size,
                     eval_results.get(k),
@@ -361,18 +361,18 @@ def evaluate_resnet(
                 logger.error(f"ResNet worker exited with code {p.exitcode}")
 
     # Write results
-    output_path = fine_tuned_dir / "fine_tune_evaluation.jsonl"
+    output_path = l2_calibrated_dir / "l2_calibrate_evaluation.jsonl"
     with open(output_path, "w") as f:
         for k, _ in sorted_models:
             orig_loss, ft_loss, orig_error, ft_error, orig_ece, ft_ece = result_dict[k]
             entry = {
                 "k": k,
                 "original_loss": round(orig_loss, 6),
-                "fine_tuned_loss": round(ft_loss, 6),
+                "l2_calibrated_loss": round(ft_loss, 6),
                 "original_error": round(orig_error, 6),
-                "fine_tuned_error": round(ft_error, 6),
+                "l2_calibrated_error": round(ft_error, 6),
                 "original_ece": round(orig_ece, 6),
-                "fine_tuned_ece": round(ft_ece, 6),
+                "l2_calibrated_ece": round(ft_ece, 6),
             }
             f.write(json.dumps(entry) + "\n")
 
@@ -647,12 +647,12 @@ def _transformer_worker(
     d_model: int,
     train_samples: int,
     orig_model_path: str,
-    fine_tuned_layer_path: str,
+    l2_calibrated_layer_path: str,
     data_path: str,
     eval_entry: Optional[Dict],
     result_dict: dict,
 ) -> None:
-    """Evaluate one Transformer model (original + fine-tuned) on a single GPU."""
+    """Evaluate one Transformer model (original + L2-calibrated) on a single GPU."""
     from jl.double_descent.transformer.transformer_config import TDDConfig
     from jl.double_descent.transformer.transformer_data import (
         build_vocab,
@@ -706,14 +706,14 @@ def _transformer_worker(
         orig_bleu = compute_bleu(model, test_dataset, vocab, device, max_len=128)
         del model
 
-    # Fine-tuned test loss/error/bleu
+    # L2-calibrated test loss/error/bleu
     model = _make_model()
     model.load_state_dict(
         torch.load(orig_model_path, map_location=device, weights_only=True)
     )
     new_linear = nn.Linear(d_model, len(vocab), bias=False).to(device)
     layer_state = torch.load(
-        fine_tuned_layer_path, map_location=device, weights_only=True
+        l2_calibrated_layer_path, map_location=device, weights_only=True
     )
     new_linear.load_state_dict(layer_state)
     model.output_proj = new_linear
@@ -733,11 +733,11 @@ def _transformer_worker(
 def evaluate_transformer(
     model_dir: str, layer_dir: str, data_path: str
 ) -> Path:
-    """Evaluate all Transformer models and write fine_tune_evaluation.jsonl.
+    """Evaluate all Transformer models and write l2_calibrate_evaluation.jsonl.
 
     Args:
         model_dir: Directory containing model_d*_*k.pt base model files.
-        layer_dir: Directory containing layer_d*_*k.pt fine-tuned layer files.
+        layer_dir: Directory containing layer_d*_*k.pt L2-calibrated layer files.
         data_path: Directory containing preprocessed IWSLT data.
 
     Returns:
@@ -746,7 +746,7 @@ def evaluate_transformer(
     from jl.double_descent.transformer.evaluation import discover_models
 
     model_path = Path(model_dir)
-    fine_tuned_dir = Path(layer_dir)
+    l2_calibrated_dir = Path(layer_dir)
 
     models = discover_models(model_dir)
     if not models:
@@ -754,9 +754,9 @@ def evaluate_transformer(
 
     for (d_model, train_samples) in models:
         samples_k = train_samples // 1000
-        layer_path = fine_tuned_dir / f"layer_d{d_model}_{samples_k}k.pt"
+        layer_path = l2_calibrated_dir / f"layer_d{d_model}_{samples_k}k.pt"
         if not layer_path.exists():
-            raise FileNotFoundError(f"Missing fine-tuned layer: {layer_path}")
+            raise FileNotFoundError(f"Missing L2-calibrated layer: {layer_path}")
 
     eval_results = _load_evaluation_jsonl(model_path / "evaluation.jsonl")
     num_gpus = torch.cuda.device_count()
@@ -778,7 +778,7 @@ def evaluate_transformer(
                     d_model,
                     train_samples,
                     str(orig_model_path),
-                    str(fine_tuned_dir / f"layer_d{d_model}_{samples_k}k.pt"),
+                    str(l2_calibrated_dir / f"layer_d{d_model}_{samples_k}k.pt"),
                     data_path,
                     eval_results.get(d_model),
                     result_dict,
@@ -792,18 +792,18 @@ def evaluate_transformer(
                 logger.error(f"Transformer worker exited with code {p.exitcode}")
 
     # Write results
-    output_path = fine_tuned_dir / "fine_tune_evaluation.jsonl"
+    output_path = l2_calibrated_dir / "l2_calibrate_evaluation.jsonl"
     with open(output_path, "w") as f:
         for (d_model, train_samples), _ in sorted_models:
             orig_loss, ft_loss, orig_error, ft_error, orig_bleu, ft_bleu = result_dict[(d_model, train_samples)]
             entry = {
                 "d_model": d_model,
                 "original_loss": round(orig_loss, 6),
-                "fine_tuned_loss": round(ft_loss, 6),
+                "l2_calibrated_loss": round(ft_loss, 6),
                 "original_error": round(orig_error, 6),
-                "fine_tuned_error": round(ft_error, 6),
+                "l2_calibrated_error": round(ft_error, 6),
                 "original_bleu": round(orig_bleu, 2),
-                "fine_tuned_bleu": round(ft_bleu, 2),
+                "l2_calibrated_bleu": round(ft_bleu, 2),
             }
             f.write(json.dumps(entry) + "\n")
 
@@ -894,9 +894,9 @@ def main():
     )
     mode_group = parser.add_mutually_exclusive_group(required=True)
     mode_group.add_argument(
-        "--fine-tune",
+        "--l2-calibrate",
         action="store_true",
-        help="Evaluate fine-tuned final layers vs originals",
+        help="Evaluate L2-calibrated final layers vs originals",
     )
     mode_group.add_argument(
         "--temperature-scaling",
@@ -913,7 +913,7 @@ def main():
         "--resnet-layer-dir",
         type=str,
         default=None,
-        help="Directory containing ResNet18 layer_k*.pt fine-tuned files (for --fine-tune mode)",
+        help="Directory containing ResNet18 layer_k*.pt L2-calibrated files (for --l2-calibrate mode)",
     )
     parser.add_argument(
         "--transformer-path",
@@ -925,7 +925,7 @@ def main():
         "--transformer-layer-dir",
         type=str,
         default=None,
-        help="Directory containing Transformer layer_d*_*k.pt fine-tuned files (for --fine-tune mode)",
+        help="Directory containing Transformer layer_d*_*k.pt L2-calibrated files (for --l2-calibrate mode)",
     )
     parser.add_argument(
         "--data-path",
@@ -944,11 +944,11 @@ def main():
     if args.resnet_path is None and args.transformer_path is None:
         parser.error("At least one of --resnet-path or --transformer-path is required")
 
-    if args.fine_tune:
+    if args.l2_calibrate:
         if args.resnet_path and not args.resnet_layer_dir:
-            parser.error("--resnet-layer-dir is required when using --fine-tune with --resnet-path")
+            parser.error("--resnet-layer-dir is required when using --l2-calibrate with --resnet-path")
         if args.transformer_path and not args.transformer_layer_dir:
-            parser.error("--transformer-layer-dir is required when using --fine-tune with --transformer-path")
+            parser.error("--transformer-layer-dir is required when using --l2-calibrate with --transformer-path")
 
     mp.set_start_method("spawn", force=True)
 
@@ -957,9 +957,9 @@ def main():
         raise RuntimeError("No GPUs available. Evaluation requires at least one GPU.")
     logger.info(f"Using {num_gpus} GPUs")
 
-    if args.fine_tune:
+    if args.l2_calibrate:
         if args.resnet_path:
-            logger.info("Evaluating ResNet18 fine-tuned models...")
+            logger.info("Evaluating ResNet18 L2-calibrated models...")
             path = evaluate_resnet(args.resnet_path, args.resnet_layer_dir, args.data_path)
             logger.info(f"ResNet results: {path}")
 
@@ -967,7 +967,7 @@ def main():
             t_data_path = args.transformer_data_path
             if t_data_path is None:
                 parser.error("--transformer-data-path is required when --transformer-path is set")
-            logger.info("Evaluating Transformer fine-tuned models...")
+            logger.info("Evaluating Transformer L2-calibrated models...")
             path = evaluate_transformer(args.transformer_path, args.transformer_layer_dir, t_data_path)
             logger.info(f"Transformer results: {path}")
 

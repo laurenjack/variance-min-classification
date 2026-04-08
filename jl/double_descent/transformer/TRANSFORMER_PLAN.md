@@ -557,21 +557,21 @@ Four new files:
    - Usage: `python -m jl.double_descent.transformer.plot_variance_evaluation ./data/transformer_variance/03-01-1010/evaluation.jsonl --output-dir ./data`
 
 
-## Phase 7: Final-Layer Fine-Tuning
+## Phase 7: L2 Calibration
 
-Fine-tunes only the output projection layer (`model.output_proj`) of each trained model using L-BFGS or SGD with L2 regularization. The output projection is first untied from the embedding (copied into a standalone `nn.Linear`), then fine-tuned independently.
+L2 calibrates only the output projection layer (`model.output_proj`) of each trained model using L-BFGS or SGD with L2 regularization. The output projection is first untied from the embedding (copied into a standalone `nn.Linear`), then L2 calibrated independently.
 
-### Running Fine-Tuning
+### Running L2 Calibration
 
 ```bash
 # L-BFGS (default)
-python -m jl.double_descent.transformer.fine_tune \
+python -m jl.double_descent.transformer.l2_calibrate \
     --model-path ./output/transformer/03-01-1010 \
     --data-path ./data/iwslt14.tokenized.de-en \
     --l2-lambda 1e-5 --max-steps 100
 
 # SGD
-python -m jl.double_descent.transformer.fine_tune \
+python -m jl.double_descent.transformer.l2_calibrate \
     --model-path ./output/transformer/03-01-1010 \
     --data-path ./data/iwslt14.tokenized.de-en \
     --sgd --l2-lambda 1e-5 --sgd-epochs 100 --sgd-lr 0.01
@@ -581,49 +581,49 @@ python -m jl.double_descent.transformer.fine_tune \
 - Unties output projection from embedding (copies weights into standalone layer)
 - Extracts decoder features using forward hook on `decoder_norm`
 - Excludes padding tokens from features/targets
-- Fine-tunes the untied output projection
+- L2 calibrates the untied output projection
 - Parallelizes across available GPUs (one model per GPU)
-- No label smoothing during fine-tuning (decomposition requires standard CE)
+- No label smoothing during L2 calibration (decomposition requires standard CE)
 
 ### Output
 
-L-BFGS writes to `fine_tuned/lambda_*/`, SGD writes to `fine_tuned/sgd_lambda_*/`:
+L-BFGS writes to `l2_calibrated/lambda_*/`, SGD writes to `l2_calibrated/sgd_lambda_*/`:
 
 ```
-output/transformer/03-01-1010/fine_tuned/lambda_1e-05/
+output/transformer/03-01-1010/l2_calibrated/lambda_1e-05/
 ├── layer_d8_36k.pt                # Output projection state_dict only
 ├── layer_d16_36k.pt
 ├── ...
-└── fine_tune_metadata.jsonl       # {d_model, train_samples, final_loss, final_grad_norm, steps, l2_lambda}
+└── l2_calibrate_metadata.jsonl    # {d_model, train_samples, final_loss, final_grad_norm, steps, l2_lambda}
 ```
 
 ### Evaluation (shared with ResNet18, requires GPU)
 
-Computes original and fine-tuned test loss, test error, and BLEU, parallelized across all available GPUs.
+Computes original and L2-calibrated test loss, test error, and BLEU, parallelized across all available GPUs.
 Pass the layer directory directly:
 
 ```bash
-python -m jl.double_descent.fine_tune_evaluation --fine-tune \
+python -m jl.double_descent.l2_calibrate_evaluation --l2-calibrate \
     --transformer-path ./output/transformer/03-01-1010 \
-    --transformer-layer-dir ./output/transformer/03-01-1010/fine_tuned/lambda_1e-03 \
+    --transformer-layer-dir ./output/transformer/03-01-1010/l2_calibrated/lambda_1e-03 \
     --transformer-data-path ./data/iwslt14.tokenized.de-en
 ```
 
-Output: `fine_tune_evaluation.jsonl` in the layer directory, with schema:
+Output: `l2_calibrate_evaluation.jsonl` in the layer directory, with schema:
 ```json
-{"d_model": 8, "original_loss": 5.12, "fine_tuned_loss": 4.98, "original_error": 0.72, "fine_tuned_error": 0.70, "original_bleu": 25.3, "fine_tuned_bleu": 26.1}
+{"d_model": 8, "original_loss": 5.12, "l2_calibrated_loss": 4.98, "original_error": 0.72, "l2_calibrated_error": 0.70, "original_bleu": 25.3, "l2_calibrated_bleu": 26.1}
 ```
 
 ### Plotting (shared with ResNet18, no GPU required)
 
 ```bash
-python -m jl.double_descent.plot_fine_tune \
-    --transformer-ft-eval ./data/transformer/03-01-1010/fine_tuned/lambda_1e-03/fine_tune_evaluation.jsonl \
+python -m jl.double_descent.plot_l2_calibrate \
+    --transformer-l2-eval ./data/transformer/03-01-1010/l2_calibrated/lambda_1e-03/l2_calibrate_evaluation.jsonl \
     --transformer-ts-eval ./data/transformer/03-01-1010/temperature_scaled/temperature_scaled_evaluation.jsonl \
     --output-dir ./data
 ```
 
-Produces `fine_tune_comparison.png` with original vs fine-tuned vs temp-scaled test loss and BLEU.
+Produces `l2_calibrate_comparison.png` with original vs L2-calibrated vs temp-scaled test loss and BLEU.
 
 ---
 

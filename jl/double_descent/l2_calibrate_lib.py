@@ -1,9 +1,7 @@
-"""Shared optimization for final-layer fine-tuning.
+"""Shared optimization for L2 calibration of a final linear layer.
 
-Fine-tunes a single nn.Linear layer using L-BFGS or SGD with L2 regularization.
-L-BFGS reaches a stationary point of loss + lambda * ||W||^2, enabling
-training-point decomposition per Yeh & Kim et al. (2018).
-SGD provides a simpler alternative for calibration purposes.
+Optimizes a single nn.Linear layer using L-BFGS or SGD with L2 regularization,
+reaching a stationary point of loss + lambda * ||W||^2.
 """
 
 import logging
@@ -29,7 +27,7 @@ def lambda_dir_name(l2_lambda: float, sgd: bool = False) -> str:
     return name
 
 
-def fine_tune_final_layer(
+def l2_calibrate_final_layer(
     features: torch.Tensor,
     targets: torch.Tensor,
     linear_layer: nn.Linear,
@@ -38,7 +36,7 @@ def fine_tune_final_layer(
     chunk_size: int = 20000,
     device: Optional[torch.device] = None,
 ) -> Dict[str, float]:
-    """Fine-tune a linear layer with L-BFGS and L2 regularization.
+    """L2 calibrate a linear layer with L-BFGS and L2 regularization.
 
     Args:
         features: [N, d_in] pre-extracted features from frozen backbone.
@@ -123,7 +121,7 @@ def fine_tune_final_layer(
     }
 
 
-def sgd_fine_tune_final_layer(
+def sgd_l2_calibrate_final_layer(
     features: torch.Tensor,
     targets: torch.Tensor,
     linear_layer: nn.Linear,
@@ -134,7 +132,7 @@ def sgd_fine_tune_final_layer(
     momentum: float = 0.9,
     device: Optional[torch.device] = None,
 ) -> Dict[str, float]:
-    """Fine-tune a linear layer with SGD and L2 regularization.
+    """L2 calibrate a linear layer with SGD and L2 regularization.
 
     Args:
         features: [N, d_in] pre-extracted features from frozen backbone.
@@ -219,3 +217,17 @@ def sgd_fine_tune_final_layer(
         "momentum": momentum,
         "history": history,
     }
+
+
+def compute_brier_score(probs: torch.Tensor, labels: torch.Tensor) -> float:
+    """Multi-class Brier score.
+
+    Args:
+        probs: [N, C] softmax probabilities.
+        labels: [N] class indices.
+
+    Returns:
+        Brier score as a float.
+    """
+    one_hot = F.one_hot(labels, num_classes=probs.size(1)).float()
+    return ((probs - one_hot) ** 2).sum(dim=1).mean().item()

@@ -2,7 +2,7 @@
 
 ## Goal
 
-Evaluate post-hoc calibration approaches on **pre-fine-tuned RETFound** checkpoints across 7 ophthalmology datasets:
+Evaluate post-hoc calibration approaches on **pre-trained RETFound** checkpoints across 7 ophthalmology datasets:
 
 1. **Uncalibrated** — direct model outputs
 2. **Temperature scaling** — fit scalar T on validation set via L-BFGS
@@ -28,10 +28,10 @@ Deltas are vs uncalibrated. Bold = L2 calibration improves over both uncalibrate
 
 ## Assets
 
-### Pre-fine-tuned checkpoints and data
+### Pre-trained checkpoints and data
 - **Source:** `rmaphoh/RETFound` [BENCHMARK.md](https://github.com/rmaphoh/RETFound/blob/main/BENCHMARK.md) → Google Drive
 - **Architecture:** timm `vit_large_patch16_224`, global_pool="avg", 307M params
-- **All CFP (color fundus photography)** — same base model, different fine-tuned heads
+- **All CFP (color fundus photography)** — same base model, different trained heads
 - **Data:** pre-split by paper authors into train/val/test ImageFolder format
 - **Preprocessing:** AutoMorph, images already resized
 
@@ -129,11 +129,11 @@ Expects `data/medical_calibration/<dataset_name>.zip` on the remote. Extracts, f
 
 ## How calibrate.py works
 
-1. Load fine-tuned RETFound model (auto-detects num_classes from checkpoint)
+1. Load trained RETFound model (auto-detects num_classes from checkpoint)
 2. Extract features once for all splits via `model.forward_features()` + `model.forward_head(x, pre_logits=True)` → [N, 1024]
 3. Collect test logits for uncalibrated evaluation
 4. **Temperature scaling:** fit scalar T on **validation** logits via L-BFGS, evaluate on test
-5. **L2 calibration:** copy `model.head` into standalone `nn.Linear`, run `fine_tune_lib.fine_tune_final_layer()` with L-BFGS + L2 on **training** features
+5. **L2 calibration:** copy `model.head` into standalone `nn.Linear`, run `l2_calibrate_lib.l2_calibrate_final_layer()` with L-BFGS + L2 on **training** features
 6. With `--sweep`: try 14 lambda values, select best by val metric (ECE or NLL), report test metrics for the winner
 7. Save `calibration_results.json`, `test_logits.pt`, `calibrated_head.pt`
 
@@ -160,7 +160,7 @@ Sweep lambda values: `[1e-4, 1e-3, 1e-2, 5e-2, 1e-1, 2e-1, 3e-1, 5e-1, 7e-1, 1, 
 - **L2 calibration fits on train** — our method has more capacity (classes×1024 params), so we use the larger training set
 - **Lambda selected on val** — proper train/val/test protocol, no test leakage
 - **Feature extraction uses timm's `forward_head(pre_logits=True)`** — applies pool + fc_norm, returns [B, 1024]
-- **Shared optimization via `fine_tune_lib.py`** — same L-BFGS code used for ResNet and Transformer calibration
+- **Shared optimization via `l2_calibrate_lib.py`** — same L-BFGS code used for ResNet and Transformer calibration
 - **Auto-detects num_classes from checkpoint** — works across all 7 datasets without config changes
 
 ---
