@@ -12,11 +12,13 @@
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
-    echo "Usage: $0 <dataset_name>"
+    echo "Usage: $0 <dataset_name> [--sgd]"
     exit 1
 fi
 
 DATASET="$1"
+shift
+EXTRA_ARGS="$@"
 ZIP_PATH="data/medical_calibration/${DATASET}.zip"
 EXTRACT_DIR="data/medical_calibration/${DATASET}_extracted"
 
@@ -57,4 +59,4 @@ python -m jl.double_descent.medical_calibration.calibrate \
     --checkpoint "$CHECKPOINT" \
     --data-path "$DATA_DIR" \
     --output-path "./output/medical_calibration/${DATASET}" \
-    --sweep
+    --sweep $EXTRA_ARGS

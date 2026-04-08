@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Plot original vs fine-tuned vs temperature-scaled test metrics.
+"""Plot original vs L2-calibrated vs temperature-scaled test metrics.
 
-Reads fine_tune_evaluation.jsonl and/or temperature_scaled_evaluation.jsonl
-files produced by fine_tune_evaluation.py and plots a comparison. No GPU required.
+Reads l2_calibrate_evaluation.jsonl and/or temperature_scaled_evaluation.jsonl
+files produced by l2_calibrate_evaluation.py and plots a comparison. No GPU required.
 
 Usage:
-    python -m jl.double_descent.plot_fine_tune \
-        --resnet-ft-eval ./data/resnet18/long_double_descent/fine_tuned/lambda_1e-03/fine_tune_evaluation.jsonl \
+    python -m jl.double_descent.plot_l2_calibrate \
+        --resnet-l2-eval ./data/resnet18/long_double_descent/l2_calibrated/lambda_1e-03/l2_calibrate_evaluation.jsonl \
         --resnet-ts-eval ./data/resnet18/long_double_descent/temperature_scaled/temperature_scaled_evaluation.jsonl \
-        --transformer-ft-eval ./data/transformer/long_double_descent_36K/fine_tuned/lambda_1e-03/fine_tune_evaluation.jsonl \
+        --transformer-l2-eval ./data/transformer/long_double_descent_36K/l2_calibrated/lambda_1e-03/l2_calibrate_evaluation.jsonl \
         --transformer-ts-eval ./data/transformer/long_double_descent_36K/temperature_scaled/temperature_scaled_evaluation.jsonl \
         --output-dir ./data
 """
@@ -31,21 +31,21 @@ def _load_eval(eval_path: str) -> List[Dict]:
     return entries
 
 
-def plot_fine_tune_comparison(
-    resnet_ft: Optional[List[Dict]],
+def plot_l2_calibrate_comparison(
+    resnet_l2: Optional[List[Dict]],
     resnet_ts: Optional[List[Dict]],
-    transformer_ft: Optional[List[Dict]],
+    transformer_l2: Optional[List[Dict]],
     transformer_ts: Optional[List[Dict]],
     output_dir: str,
-    output_name: str = "fine_tune_comparison.png",
+    output_name: str = "l2_calibrate_comparison.png",
 ) -> None:
     """Plot comparison of calibration approaches.
 
     Top row: test loss. Bottom row: error+ECE (ResNet) or BLEU (Transformer).
-    Up to 3 lines per subplot: original, fine-tuned, temperature-scaled.
+    Up to 3 lines per subplot: original, L2-calibrated, temperature-scaled.
     """
-    has_resnet = resnet_ft is not None or resnet_ts is not None
-    has_transformer = transformer_ft is not None or transformer_ts is not None
+    has_resnet = resnet_l2 is not None or resnet_ts is not None
+    has_transformer = transformer_l2 is not None or transformer_ts is not None
     num_cols = sum([has_resnet, has_transformer])
     if num_cols == 0:
         raise ValueError("No data to plot")
@@ -58,8 +58,8 @@ def plot_fine_tune_comparison(
 
     if has_resnet:
         # Merge data from ft and ts evals (both have original_ fields)
-        # Use ft as primary source for original + fine-tuned, ts for temperature-scaled
-        ft_by_k = {e["k"]: e for e in sorted(resnet_ft, key=lambda e: e["k"])} if resnet_ft else {}
+        # Use ft as primary source for original + L2-calibrated, ts for temperature-scaled
+        ft_by_k = {e["k"]: e for e in sorted(resnet_l2, key=lambda e: e["k"])} if resnet_l2 else {}
         ts_by_k = {e["k"]: e for e in sorted(resnet_ts, key=lambda e: e["k"])} if resnet_ts else {}
         all_k = sorted(set(list(ft_by_k.keys()) + list(ts_by_k.keys())))
 
@@ -73,8 +73,8 @@ def plot_fine_tune_comparison(
         ax_loss = axes[0, col_idx]
         ax_loss.plot(all_k, orig_loss, "-o", color="blue", lw=2, label="Original")
         if ft_by_k:
-            ft_loss = [ft_by_k[k]["fine_tuned_loss"] for k in all_k]
-            ax_loss.plot(all_k, ft_loss, "--s", color="red", lw=2, label="Fine-tuned")
+            ft_loss = [ft_by_k[k]["l2_calibrated_loss"] for k in all_k]
+            ax_loss.plot(all_k, ft_loss, "--s", color="red", lw=2, label="L2-calibrated")
         if ts_by_k:
             ts_loss = [ts_by_k[k]["ts_loss"] for k in all_k]
             ax_loss.plot(all_k, ts_loss, ":D", color="green", lw=2, label="Temp-scaled")
@@ -91,8 +91,8 @@ def plot_fine_tune_comparison(
         l, = ax_err.plot(all_k, orig_err, "-o", color="blue", lw=2, label="Original Error")
         err_handles.append(l)
         if ft_by_k:
-            ft_err = [ft_by_k[k]["fine_tuned_error"] for k in all_k]
-            l, = ax_err.plot(all_k, ft_err, "--s", color="red", lw=2, label="Fine-tuned Error")
+            ft_err = [ft_by_k[k]["l2_calibrated_error"] for k in all_k]
+            l, = ax_err.plot(all_k, ft_err, "--s", color="red", lw=2, label="L2-calibrated Error")
             err_handles.append(l)
         if ts_by_k:
             ts_err = [ts_by_k[k]["ts_error"] for k in all_k]
@@ -107,8 +107,8 @@ def plot_fine_tune_comparison(
         l, = ax_ece.plot(all_k, orig_ece, "-^", color="blue", lw=1.5, alpha=0.6, label="Original ECE")
         err_handles.append(l)
         if ft_by_k:
-            ft_ece = [ft_by_k[k]["fine_tuned_ece"] for k in all_k]
-            l, = ax_ece.plot(all_k, ft_ece, "--v", color="red", lw=1.5, alpha=0.6, label="Fine-tuned ECE")
+            ft_ece = [ft_by_k[k]["l2_calibrated_ece"] for k in all_k]
+            l, = ax_ece.plot(all_k, ft_ece, "--v", color="red", lw=1.5, alpha=0.6, label="L2-calibrated ECE")
             err_handles.append(l)
         if ts_by_k:
             ts_ece = [ts_by_k[k]["ts_ece"] for k in all_k]
@@ -121,7 +121,7 @@ def plot_fine_tune_comparison(
         col_idx += 1
 
     if has_transformer:
-        ft_by_d = {e["d_model"]: e for e in sorted(transformer_ft, key=lambda e: e["d_model"])} if transformer_ft else {}
+        ft_by_d = {e["d_model"]: e for e in sorted(transformer_l2, key=lambda e: e["d_model"])} if transformer_l2 else {}
         ts_by_d = {e["d_model"]: e for e in sorted(transformer_ts, key=lambda e: e["d_model"])} if transformer_ts else {}
         all_d = sorted(set(list(ft_by_d.keys()) + list(ts_by_d.keys())))
 
@@ -132,8 +132,8 @@ def plot_fine_tune_comparison(
         ax_loss = axes[0, col_idx]
         ax_loss.plot(all_d, orig_loss, "-o", color="blue", lw=2, label="Original")
         if ft_by_d:
-            ft_loss = [ft_by_d[d]["fine_tuned_loss"] for d in all_d]
-            ax_loss.plot(all_d, ft_loss, "--s", color="red", lw=2, label="Fine-tuned")
+            ft_loss = [ft_by_d[d]["l2_calibrated_loss"] for d in all_d]
+            ax_loss.plot(all_d, ft_loss, "--s", color="red", lw=2, label="L2-calibrated")
         if ts_by_d:
             ts_loss = [ts_by_d[d]["ts_loss"] for d in all_d]
             ax_loss.plot(all_d, ts_loss, ":D", color="green", lw=2, label="Temp-scaled")
@@ -151,8 +151,8 @@ def plot_fine_tune_comparison(
         ax_bleu = axes[1, col_idx]
         ax_bleu.plot(all_d, orig_bleu, "-o", color="blue", lw=2, label="Original")
         if ft_by_d:
-            ft_bleu = [ft_by_d[d]["fine_tuned_bleu"] for d in all_d]
-            ax_bleu.plot(all_d, ft_bleu, "--s", color="red", lw=2, label="Fine-tuned")
+            ft_bleu = [ft_by_d[d]["l2_calibrated_bleu"] for d in all_d]
+            ax_bleu.plot(all_d, ft_bleu, "--s", color="red", lw=2, label="L2-calibrated")
         if ts_by_d:
             ts_bleu = [ts_by_d[d]["ts_bleu"] for d in all_d]
             ax_bleu.plot(all_d, ts_bleu, ":D", color="green", lw=2, label="Temp-scaled")
@@ -172,13 +172,13 @@ def plot_fine_tune_comparison(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Plot original vs fine-tuned vs temperature-scaled metrics"
+        description="Plot original vs L2-calibrated vs temperature-scaled metrics"
     )
     parser.add_argument(
-        "--resnet-ft-eval",
+        "--resnet-l2-eval",
         type=str,
         default=None,
-        help="Path to ResNet18 fine_tune_evaluation.jsonl",
+        help="Path to ResNet18 l2_calibrate_evaluation.jsonl",
     )
     parser.add_argument(
         "--resnet-ts-eval",
@@ -187,10 +187,10 @@ def main():
         help="Path to ResNet18 temperature_scaled_evaluation.jsonl",
     )
     parser.add_argument(
-        "--transformer-ft-eval",
+        "--transformer-l2-eval",
         type=str,
         default=None,
-        help="Path to Transformer fine_tune_evaluation.jsonl",
+        help="Path to Transformer l2_calibrate_evaluation.jsonl",
     )
     parser.add_argument(
         "--transformer-ts-eval",
@@ -207,21 +207,21 @@ def main():
     parser.add_argument(
         "--output-name",
         type=str,
-        default="fine_tune_comparison.png",
-        help="Output filename (default: fine_tune_comparison.png)",
+        default="l2_calibrate_comparison.png",
+        help="Output filename (default: l2_calibrate_comparison.png)",
     )
     args = parser.parse_args()
 
-    if all(v is None for v in [args.resnet_ft_eval, args.resnet_ts_eval,
-                                args.transformer_ft_eval, args.transformer_ts_eval]):
+    if all(v is None for v in [args.resnet_l2_eval, args.resnet_ts_eval,
+                                args.transformer_l2_eval, args.transformer_ts_eval]):
         parser.error("At least one eval file is required")
 
-    resnet_ft = _load_eval(args.resnet_ft_eval) if args.resnet_ft_eval else None
+    resnet_l2 = _load_eval(args.resnet_l2_eval) if args.resnet_l2_eval else None
     resnet_ts = _load_eval(args.resnet_ts_eval) if args.resnet_ts_eval else None
-    transformer_ft = _load_eval(args.transformer_ft_eval) if args.transformer_ft_eval else None
+    transformer_l2 = _load_eval(args.transformer_l2_eval) if args.transformer_l2_eval else None
     transformer_ts = _load_eval(args.transformer_ts_eval) if args.transformer_ts_eval else None
 
-    plot_fine_tune_comparison(resnet_ft, resnet_ts, transformer_ft, transformer_ts, args.output_dir, args.output_name)
+    plot_l2_calibrate_comparison(resnet_l2, resnet_ts, transformer_l2, transformer_ts, args.output_dir, args.output_name)
 
 
 if __name__ == "__main__":

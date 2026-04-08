@@ -1,17 +1,17 @@
-"""Fine-tune ResNet18 final layer with L-BFGS or SGD + L2 regularization.
+"""L2 calibrate ResNet18 final layer with L-BFGS or SGD + L2 regularization.
 
 Loads trained ResNet18 models, extracts features from the frozen backbone,
-and fine-tunes only the final linear layer.
+and L2 calibrates only the final linear layer.
 
 Usage:
     # L-BFGS (default)
-    python -m jl.double_descent.resnet18.fine_tune \
+    python -m jl.double_descent.resnet18.l2_calibrate \
         --model-path ./output/resnet18/03-01-1010 \
         --data-path ./data \
         --l2-lambda 1e-5 --max-steps 100
 
     # SGD
-    python -m jl.double_descent.resnet18.fine_tune \
+    python -m jl.double_descent.resnet18.l2_calibrate \
         --model-path ./output/resnet18/03-01-1010 \
         --data-path ./data \
         --sgd --l2-lambda 1e-5 --sgd-epochs 100 --sgd-lr 0.01
@@ -28,7 +28,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from jl.double_descent.fine_tune_lib import fine_tune_final_layer, lambda_dir_name, sgd_fine_tune_final_layer
+from jl.double_descent.l2_calibrate_lib import l2_calibrate_final_layer, lambda_dir_name, sgd_l2_calibrate_final_layer
 from jl.double_descent.resnet18.evaluation import discover_models
 from jl.double_descent.resnet18.resnet18_config import DDConfig
 from jl.double_descent.resnet18.resnet18_data import load_cifar10_with_noise
@@ -54,7 +54,7 @@ def extract_features(model, x: torch.Tensor) -> torch.Tensor:
     return out
 
 
-def fine_tune_worker(
+def l2_calibrate_worker(
     gpu_id: int,
     k: int,
     model_path: str,
@@ -66,14 +66,14 @@ def fine_tune_worker(
     sgd_epochs: int = 100,
     sgd_lr: float = 0.01,
 ) -> None:
-    """Fine-tune a single ResNet18 model on one GPU."""
+    """L2 calibrate a single ResNet18 model on one GPU."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(name)s] %(message)s",
         datefmt="%H:%M:%S",
     )
     device = torch.device(f"cuda:{gpu_id}")
-    logger.info(f"[k={k}] Starting fine-tuning on GPU {gpu_id}")
+    logger.info(f"[k={k}] Starting L2 calibration on GPU {gpu_id}")
 
     # Load model
     model = make_resnet18k(k=k, num_classes=10).to(device)
@@ -116,9 +116,9 @@ def fine_tune_worker(
     del model
     torch.cuda.empty_cache()
 
-    # Fine-tune
+    # L2 calibrate
     if sgd:
-        metadata = sgd_fine_tune_final_layer(
+        metadata = sgd_l2_calibrate_final_layer(
             features=features,
             targets=targets,
             linear_layer=linear,
@@ -128,7 +128,7 @@ def fine_tune_worker(
             device=device,
         )
     else:
-        metadata = fine_tune_final_layer(
+        metadata = l2_calibrate_final_layer(
             features=features,
             targets=targets,
             linear_layer=linear,
@@ -138,13 +138,13 @@ def fine_tune_worker(
         )
     metadata["k"] = k
 
-    # Save fine-tuned layer
+    # Save L2-calibrated layer
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
     layer_path = out_path / f"layer_k{k}.pt"
     torch.save(linear.state_dict(), layer_path)
-    logger.info(f"[k={k}] Saved fine-tuned layer to {layer_path}")
+    logger.info(f"[k={k}] Saved L2-calibrated layer to {layer_path}")
 
     # Save per-epoch history if present (SGD mode)
     history = metadata.pop("history", None)
@@ -157,7 +157,7 @@ def fine_tune_worker(
         logger.info(f"[k={k}] Saved {len(history)} epoch history to {history_path}")
 
     # Append metadata
-    metadata_path = out_path / "fine_tune_metadata.jsonl"
+    metadata_path = out_path / "l2_calibrate_metadata.jsonl"
     with open(metadata_path, "a") as f:
         f.write(json.dumps(metadata) + "\n")
     logger.info(
@@ -174,7 +174,7 @@ def main():
     )
 
     parser = argparse.ArgumentParser(
-        description="Fine-tune ResNet18 final layers with L-BFGS or SGD + L2"
+        description="L2 calibrate ResNet18 final layers with L-BFGS or SGD"
     )
     parser.add_argument(
         "--model-path",
@@ -228,11 +228,11 @@ def main():
     logger.info(f"Found models for k values: {list(models.keys())}")
 
     output_dir = str(
-        Path(args.model_path) / "fine_tuned" / lambda_dir_name(args.l2_lambda, sgd=args.sgd)
+        Path(args.model_path) / "l2_calibrated" / lambda_dir_name(args.l2_lambda, sgd=args.sgd)
     )
 
     # Clear existing metadata file
-    metadata_path = Path(output_dir) / "fine_tune_metadata.jsonl"
+    metadata_path = Path(output_dir) / "l2_calibrate_metadata.jsonl"
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
     if metadata_path.exists():
         metadata_path.unlink()
@@ -244,7 +244,7 @@ def main():
 
     num_gpus = torch.cuda.device_count()
     if num_gpus == 0:
-        raise RuntimeError("No GPUs available. Fine-tuning requires at least one GPU.")
+        raise RuntimeError("No GPUs available. L2 calibration requires at least one GPU.")
     logger.info(f"Using {num_gpus} GPUs")
 
     k_values = list(models.keys())
@@ -260,7 +260,7 @@ def main():
         processes = []
         for gpu_id, k in enumerate(batch):
             p = mp.Process(
-                target=fine_tune_worker,
+                target=l2_calibrate_worker,
                 args=(
                     gpu_id,
                     k,
@@ -284,7 +284,7 @@ def main():
 
         logger.info(f"Batch {batch_num}/{total_batches} complete")
 
-    logger.info(f"Fine-tuning complete. Results in {output_dir}")
+    logger.info(f"L2 calibration complete. Results in {output_dir}")
 
 
 if __name__ == "__main__":

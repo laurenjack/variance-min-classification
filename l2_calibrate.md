@@ -19,11 +19,11 @@ We’ll start with a simple problem of our own construction. Knowing the distrib
 [\[Yeh & Kim et. al, 2018\]](https://arxiv.org/abs/1811.09720) prove a model can be decomposed into its training points when:
 
 1. The model’s final layer is a sum of the output of earlier layers (basically any neural net)  
-2. The model is trained, or at least has its final layer fine-tuned with L2 regularization.  
-3. That model is trained / fine tuned model is at a stationary point with respect to the loss, L(x, y) \+ W2
+2. The model is trained, or at least has its final layer L2-calibrated with L2 regularization.  
+3. That model is trained / L2 calibrated model is at a stationary point with respect to the loss, L(x, y) \+ W2
 
-The criteria are very practical, most fully trained deep learning models would meet them except for the fact that the optimizers we use, whether SGD or AdamW do not reach exact stationary points. Irrespective of whether L2 was used in the main training run, we can fine tune the same loss \+ L2 just on the final weights, using a more precise optimizer like line search to reach a stationary point. Once we have that, we may express the model’s logit for the jth class / token, on an unseen training point xt as:  
+The criteria are very practical, most fully trained deep learning models would meet them except for the fact that the optimizers we use, whether SGD or AdamW do not reach exact stationary points. Irrespective of whether L2 was used in the main training run, we can L2 calibrate the same loss \+ L2 just on the final weights, using a more precise optimizer like line search to reach a stationary point. Once we have that, we may express the model’s logit for the jth class / token, on an unseen training point xt as:  
 fj(xt) \= \-12ni=1ndL(xi, yi)dfj(xi)(xi)T(xt)  
 where (x) is the value of the network up until the layer before the logits, we point the reader to the [\[Yeh & Kim et. al, 2018\]](https://arxiv.org/abs/1811.09720) for the full derivation.
 
-Figure X: The loss for the original and fine-tuned resnet18 and transformer. The fine-tuning step does change our model and will affect the loss. Given L2’s rotational invariance, and the fact we only tune the final layer, we expect only the scale of the loss to change. We show the log loss once again for the fine-tuned model, against the original, demonstrating nothing has fundamentally changed with respect to the double descent.
+Figure X: The loss for the original and L2-calibrated resnet18 and transformer. The L2 calibration step does change our model and will affect the loss. Given L2’s rotational invariance, and the fact we only tune the final layer, we expect only the scale of the loss to change. We show the log loss once again for the L2-calibrated model, against the original, demonstrating nothing has fundamentally changed with respect to the double descent.

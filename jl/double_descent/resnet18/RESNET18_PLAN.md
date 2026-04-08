@@ -349,21 +349,21 @@ python -m jl.double_descent.resnet18.plot_single_k ./data/resnet18/03-01-1010 --
 
 ---
 
-## Phase 6: Final-Layer Fine-Tuning
+## Phase 6: L2 Calibration
 
-Fine-tunes only the final linear layer (`model.linear`) of each trained model using L-BFGS or SGD with L2 regularization.
+L2 calibrates only the final linear layer (`model.linear`) of each trained model using L-BFGS or SGD with L2 regularization.
 
-### Running Fine-Tuning
+### Running L2 Calibration
 
 ```bash
 # L-BFGS (default)
-python -m jl.double_descent.resnet18.fine_tune \
+python -m jl.double_descent.resnet18.l2_calibrate \
     --model-path ./output/resnet18/03-01-1010 \
     --data-path ./data \
     --l2-lambda 1e-5 --max-steps 100
 
 # SGD
-python -m jl.double_descent.resnet18.fine_tune \
+python -m jl.double_descent.resnet18.l2_calibrate \
     --model-path ./output/resnet18/03-01-1010 \
     --data-path ./data \
     --sgd --l2-lambda 1e-5 --sgd-epochs 100 --sgd-lr 0.01
@@ -371,49 +371,49 @@ python -m jl.double_descent.resnet18.fine_tune \
 
 - Discovers all `model_k*.pt` files (excludes variance/split models)
 - Extracts features from frozen backbone (no data augmentation, BatchNorm in eval mode)
-- Fine-tunes a standalone copy of the final linear layer
+- L2 calibrates a standalone copy of the final linear layer
 - Parallelizes across available GPUs (one model per GPU)
-- Saves only the fine-tuned layer weights (not full model)
+- Saves only the L2-calibrated layer weights (not full model)
 
 ### Output
 
-L-BFGS writes to `fine_tuned/lambda_*/`, SGD writes to `fine_tuned/sgd_lambda_*/`:
+L-BFGS writes to `l2_calibrated/lambda_*/`, SGD writes to `l2_calibrated/sgd_lambda_*/`:
 
 ```
-output/resnet18/03-01-1010/fine_tuned/lambda_1e-05/
+output/resnet18/03-01-1010/l2_calibrated/lambda_1e-05/
 ├── layer_k4.pt                    # Final layer state_dict only
 ├── layer_k8.pt
 ├── ...
-└── fine_tune_metadata.jsonl       # {k, final_loss, final_grad_norm, steps, l2_lambda}
+└── l2_calibrate_metadata.jsonl    # {k, final_loss, final_grad_norm, steps, l2_lambda}
 ```
 
 ### Evaluation (shared with Transformer, requires GPU)
 
-Computes original and fine-tuned test loss, test error, and ECE, parallelized across all available GPUs.
+Computes original and L2-calibrated test loss, test error, and ECE, parallelized across all available GPUs.
 Pass the layer directory directly:
 
 ```bash
-python -m jl.double_descent.fine_tune_evaluation --fine-tune \
+python -m jl.double_descent.l2_calibrate_evaluation --l2-calibrate \
     --resnet-path ./output/resnet18/03-01-1010 \
-    --resnet-layer-dir ./output/resnet18/03-01-1010/fine_tuned/lambda_1e-03 \
+    --resnet-layer-dir ./output/resnet18/03-01-1010/l2_calibrated/lambda_1e-03 \
     --data-path ./data
 ```
 
-Output: `fine_tune_evaluation.jsonl` in the layer directory, with schema:
+Output: `l2_calibrate_evaluation.jsonl` in the layer directory, with schema:
 ```json
-{"k": 4, "original_loss": 1.23, "fine_tuned_loss": 1.10, "original_error": 0.15, "fine_tuned_error": 0.14, "original_ece": 0.08, "fine_tuned_ece": 0.03}
+{"k": 4, "original_loss": 1.23, "l2_calibrated_loss": 1.10, "original_error": 0.15, "l2_calibrated_error": 0.14, "original_ece": 0.08, "l2_calibrated_ece": 0.03}
 ```
 
 ### Plotting (shared with Transformer, no GPU required)
 
 ```bash
-python -m jl.double_descent.plot_fine_tune \
-    --resnet-ft-eval ./data/resnet18/03-01-1010/fine_tuned/lambda_1e-03/fine_tune_evaluation.jsonl \
+python -m jl.double_descent.plot_l2_calibrate \
+    --resnet-l2-eval ./data/resnet18/03-01-1010/l2_calibrated/lambda_1e-03/l2_calibrate_evaluation.jsonl \
     --resnet-ts-eval ./data/resnet18/03-01-1010/temperature_scaled/temperature_scaled_evaluation.jsonl \
     --output-dir ./data
 ```
 
-Produces `fine_tune_comparison.png` with original vs fine-tuned vs temp-scaled test loss, error, and ECE.
+Produces `l2_calibrate_comparison.png` with original vs L2-calibrated vs temp-scaled test loss, error, and ECE.
 
 ---
 
