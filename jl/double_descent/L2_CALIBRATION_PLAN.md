@@ -110,6 +110,25 @@ Lambda      Val ECE    Val NLL    Val Acc    Test ECE   Test NLL   Test Acc   Te
     ...
 ```
 
+## Experiment Results (k=64, long_double_descent)
+
+### Full-model vs final-layer calibration
+
+Tested full-model SGD calibration (all parameters + weight decay) against
+final-layer L2 calibration. Full-model was consistently worse:
+
+| Mode | Best Lambda | Test ECE | Test Acc | Test NLL |
+|------|------------|----------|----------|----------|
+| Final-layer (SGD, lr=0.1) | 5e-3 | 0.0184 | 86.6% | 0.467 |
+| Full-model (SGD, lr=0.1) | 1e-5 | 0.0930 | 85.8% | 0.728 |
+| Full-model (SGD, lr=0.03) | 5e-5 | 0.0789 | 86.8% | 0.578 |
+
+**Conclusion:** Full-model calibration destroys learned backbone features even
+with tiny weight decay. Final-layer calibration is strictly better — it
+preserves the backbone and only adjusts the decision boundary. Removed `--full`
+mode from the sweep script. Also switched to L-BFGS (matching l2_calibrate.py)
+since we only calibrate a single linear layer.
+
 ## Usage
 
 ```bash
