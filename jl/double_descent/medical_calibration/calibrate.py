@@ -1,11 +1,13 @@
 """Calibration methods for RETFound ophthalmology models.
 
-Loads a pre-trained checkpoint, applies two calibration approaches:
+Loads a pre-trained checkpoint, applies calibration approaches:
 1. Temperature scaling (fit T on validation set)
-2. L2 calibration — L-BFGS + L2 refit of classifier head (fit on training set)
+2. Vector scaling (per-class weight+bias on validation logits)
+3. Histogram binning (15 bins on validation confidences)
+4. Dirichlet calibration L2 (ODIR, fit on validation log-probs)
+5. L2 calibration — L-BFGS + L2 refit of classifier head (fit on training set)
 
-Then evaluates all three modes (uncalibrated, temp-scaled, L2-calibrated)
-on the test set.
+Evaluates all methods on the test set.
 
 Usage:
     python -m jl.double_descent.medical_calibration.calibrate \
@@ -25,6 +27,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
+from jl.double_descent.calibration_baselines import (
+    apply_dirichlet_l2,
+    apply_histogram_binning,
+    apply_vector_scaling,
+    fit_dirichlet_l2,
+    fit_histogram_binning,
+    fit_vector_scaling,
+)
 from jl.double_descent.l2_calibrate_lib import l2_calibrate_final_layer
 from jl.double_descent.medical_calibration.config import MedCalConfig
 
@@ -203,6 +213,50 @@ def evaluate_logits(
     }
 
 
+def evaluate_probs(
+    probs: torch.Tensor, labels: torch.Tensor
+) -> Dict[str, float]:
+    """Compute all metrics from probabilities and labels.
+
+    Like evaluate_logits but takes pre-computed probabilities (e.g. from
+    histogram binning). NLL computed via -log(prob) of true class.
+    """
+    from sklearn.metrics import roc_auc_score, average_precision_score
+
+    probs = probs.clamp(min=1e-8)  # avoid log(0)
+    max_probs, predictions = probs.max(dim=1)
+    correct = (predictions == labels)
+
+    # NLL from probabilities: -log(p_true)
+    nll = -torch.log(probs[torch.arange(len(labels)), labels]).mean().item()
+    accuracy = correct.float().mean().item()
+    ece = compute_ece(max_probs, correct)
+    brier = compute_brier_score(probs, labels)
+
+    probs_np = probs.numpy()
+    labels_np = labels.numpy()
+
+    try:
+        auroc = roc_auc_score(labels_np, probs_np, multi_class="ovr", average="macro")
+    except ValueError:
+        auroc = 0.0
+
+    try:
+        labels_one_hot = F.one_hot(labels, num_classes=probs.size(1)).numpy()
+        aupr = average_precision_score(labels_one_hot, probs_np, average="macro")
+    except ValueError:
+        aupr = 0.0
+
+    return {
+        "nll": round(nll, 6),
+        "accuracy": round(accuracy, 6),
+        "ece": round(ece, 6),
+        "brier": round(brier, 6),
+        "auroc": round(auroc, 6),
+        "aupr": round(aupr, 6),
+    }
+
+
 # --- Data loading ---
 
 
@@ -343,11 +397,36 @@ def main():
         out_dir / "test_logits.pt",
     )
 
+    # Compute val logits for baseline calibration methods
+    with torch.no_grad():
+        val_logits = model.head(val_features.to(device)).cpu()
+
     # === Temperature scaling (fit on validation) ===
     logger.info("=== Temperature scaling ===")
     T = fit_temperature(model, val_loader, device)
     ts_metrics = evaluate_logits(test_logits / T, test_labels)
     logger.info(f"Temperature-scaled (T={T:.4f}): {ts_metrics}")
+
+    # === Vector scaling (fit on validation) ===
+    logger.info("=== Vector scaling ===")
+    vs_weights, vs_biases = fit_vector_scaling(val_logits, val_labels)
+    vs_test_logits = apply_vector_scaling(test_logits, vs_weights, vs_biases)
+    vs_metrics = evaluate_logits(vs_test_logits, test_labels)
+    logger.info(f"Vector-scaled: {vs_metrics}")
+
+    # === Histogram binning (fit on validation) ===
+    logger.info("=== Histogram binning ===")
+    bin_bounds, bin_accs = fit_histogram_binning(val_logits, val_labels)
+    hb_test_probs = apply_histogram_binning(test_logits, bin_bounds, bin_accs)
+    hb_metrics = evaluate_probs(hb_test_probs, test_labels)
+    logger.info(f"Histogram-binned: {hb_metrics}")
+
+    # === Dirichlet calibration L2 (fit on validation) ===
+    logger.info("=== Dirichlet calibration L2 ===")
+    dir_W, dir_b = fit_dirichlet_l2(val_logits, val_labels)
+    dir_test_logits = apply_dirichlet_l2(test_logits, dir_W, dir_b)
+    dir_metrics = evaluate_logits(dir_test_logits, test_labels)
+    logger.info(f"Dirichlet L2: {dir_metrics}")
 
     # === L2 calibration ===
     if args.sweep:
@@ -441,6 +520,9 @@ def main():
     results = {
         "uncalibrated": uncalibrated_metrics,
         "temperature_scaled": {**ts_metrics, "temperature": round(T, 6)},
+        "vector_scaled": vs_metrics,
+        "histogram_binning": hb_metrics,
+        "dirichlet_l2": dir_metrics,
         "l2_calibrated": {**ft_metrics, "l2_lambda": config.l2_lambda, "max_steps": config.lbfgs_max_steps},
     }
 
@@ -462,10 +544,11 @@ def main():
     print("=" * 70)
 
     # Print deltas
+    delta_methods = ["temperature_scaled", "vector_scaled", "histogram_binning", "dirichlet_l2", "l2_calibrated"]
     print(f"\n{'Method':<20} {'ΔNLL':>8} {'ΔAcc':>8} {'ΔECE':>8} {'ΔBrier':>8} {'ΔAUROC':>8} {'ΔAUPR':>8}")
     print("-" * 70)
     base = uncalibrated_metrics
-    for method in ["temperature_scaled", "l2_calibrated"]:
+    for method in delta_methods:
         m = results[method]
         print(
             f"{method:<20} {m['nll'] - base['nll']:>+8.4f} {m['accuracy'] - base['accuracy']:>+8.4f} "
