@@ -1,43 +1,78 @@
-# RETFound + APTOS-2019 Calibration Experiment Plan
+# RETFound Calibration Experiment
 
 ## Goal
 
-Use the **pre-fine-tuned RETFound checkpoint** on APTOS-2019 to evaluate calibration approaches:
+Evaluate post-hoc calibration approaches on **pre-fine-tuned RETFound** checkpoints across 7 ophthalmology datasets:
 
 1. **Uncalibrated** — direct model outputs
-2. **Temperature scaling** — fit scalar T on validation set
+2. **Temperature scaling** — fit scalar T on validation set via L-BFGS
 3. **Final-layer fine-tuning** — L-BFGS + L2 on classifier head using training set
+
+## Results Summary
+
+Fine-tuning the final layer beats temperature scaling on 5 of 7 datasets, with the largest gains on datasets with more classes (JSIEC, 39 classes) and more training data (APTOS2019, 2K images).
+
+| Dataset | Classes | Train | Val | Test | FT ΔNLL | FT ΔECE | FT ΔAcc |
+|---------|---------|-------|-----|------|---------|---------|---------|
+| **APTOS2019** | 5 | 2,048 | 514 | 1,100 | **-0.048** | **-0.033** | **+1.7%** |
+| MESSIDOR2 | 5 | 972 | 246 | 526 | +0.019 | -0.010 | -1.0% |
+| IDRID | 5 | 329 | 84 | 104 | +0.097 | +0.085 | +3.9% |
+| **PAPILA** | 3 | 311 | 79 | 98 | **-0.032** | +0.015 | **+5.1%** |
+| **Glaucoma** | 3 | 861 | 218 | 465 | **-0.009** | **-0.013** | **+0.2%** |
+| **JSIEC** | 39 | 534 | 150 | 318 | **-0.105** | **-0.077** | **+1.9%** |
+| **Retina** | 4 | 336 | 84 | 181 | **-0.031** | +0.000 | **+2.2%** |
+
+Deltas are vs uncalibrated. Bold = fine-tuning improves over both uncalibrated and temp scaling.
+
+---
 
 ## Assets
 
-### Pre-fine-tuned model
-- **Source:** `rmaphoh/RETFound` BENCHMARK.md → Google Drive
-- **File:** `data/medical_calibration/checkpoint-best.pth` (3.4GB, epoch 27/50)
+### Pre-fine-tuned checkpoints and data
+- **Source:** `rmaphoh/RETFound` [BENCHMARK.md](https://github.com/rmaphoh/RETFound/blob/main/BENCHMARK.md) → Google Drive
 - **Architecture:** timm `vit_large_patch16_224`, global_pool="avg", 307M params
-- **Head:** `nn.Linear(1024, 5)` — 5-class DR severity grading
-- **Checkpoint keys:** `model`, `optimizer`, `epoch`, `scaler`, `args`
-
-### Data (pre-split by paper authors)
-- **Source:** `rmaphoh/RETFound` BENCHMARK.md → Google Drive
-- **Location:** `data/medical_calibration/APTOS2019/`
+- **All CFP (color fundus photography)** — same base model, different fine-tuned heads
+- **Data:** pre-split by paper authors into train/val/test ImageFolder format
 - **Preprocessing:** AutoMorph, images already resized
-- **Format:** ImageFolder with class subdirectories
 
-| Split | Count | Purpose |
-|-------|-------|---------|
-| Train | 2,048 (56%) | Final-layer fine-tuning (our method) |
-| Val | 514 (14%) | Temperature scaling fitting |
-| Test | 1,100 (30%) | Final evaluation of all methods |
+### Local storage
 
-Class distribution per split:
+Data and checkpoints stored as zips (checkpoint stripped of optimizer state, ~1.2GB each):
 
-| Class | Name | Train | Val | Test |
-|-------|------|-------|-----|------|
-| 0 | No DR | 1,010 | 253 | 542 |
-| 1 | Mild NPDR | 207 | 52 | 111 |
-| 2 | Moderate NPDR | 559 | 140 | 300 |
-| 3 | Severe NPDR | 108 | 27 | 58 |
-| 4 | Proliferative DR | 164 | 42 | 89 |
+```
+data/medical_calibration/
+├── aptos2019.zip          # DR grading, 5 classes, 3,662 images
+├── messidor2.zip          # DR grading, 5 classes, 1,744 images
+├── idrid.zip              # DR grading, 5 classes, 517 images
+├── papila.zip             # Glaucoma, 3 classes, 488 images
+├── glaucoma_fundus.zip    # Glaucoma, 3 classes, 1,544 images
+├── jsiec.zip              # Multi-disease, 39 classes, 1,002 images
+├── retina_cataract.zip    # Cataract grading, 4 classes, 601 images
+└── results/               # ECE-sweep calibration_results.json per dataset
+    └── results_nll/       # NLL-sweep calibration_results.json per dataset
+```
+
+### Google Drive download links
+
+Data splits:
+- APTOS2019: `162YPf4OhMVxj9TrQH0GnJv0n7z7gJWpj`
+- MESSIDOR2: `1vOLBUK9xdzNV8eVkRjVdNrRwhPfaOmda`
+- IDRID: `1c6zexA705z-ANEBNXJOBsk6uCvRnzmr3`
+- PAPILA: `1JltYs7WRWEU0yyki1CQw5-10HEbqCMBE`
+- Glaucoma_fundus: `18vSazOYDsUGdZ64gGkTg3E6jiNtcrUrI`
+- JSIEC: `1q0GFQb-dYwzIx8AwlaFZenUJItix4s8z`
+- Retina: `1vdmjMRDoUm9yk83HMArLiPcLDk_dm92Q`
+
+Checkpoint folders (each contains `checkpoint-best.pth`):
+- APTOS2019: `16kL5V-1U7ACc-68PSHjAq6vyXRJvUoq3`
+- MESSIDOR2: `1OTBRAHNbaytpwzwMHw9SWrltJouEEuxF`
+- IDRID: `18Ml-B7nhejK4rnNG8upjqIARSlMP5kUc`
+- PAPILA: `1cHOX6C4NQVi9B6n-7Bxxg7b4-wdI4c73`
+- Glaucoma_fundus: `10JbanmVxjyX6mghXbxGnGVX1p9nwqsja`
+- JSIEC: `1eosdBXsONUy49cwDO80AOzDHkHiPNJvv`
+- Retina: `1n7mXxN-ZUKauOrAlBAiF2E_36F6f0wZD`
+
+Use `download_one.py <dataset_name>` to download, strip optimizer, and zip.
 
 ---
 
@@ -47,49 +82,62 @@ Class distribution per split:
 jl/double_descent/medical_calibration/
 ├── __init__.py
 ├── config.py              # MedCalConfig dataclass
-├── calibrate.py           # Main entry: load model, fit calibrators, evaluate
-├── data.py                # Data loading utilities (unused for pre-split data)
-├── model.py               # Model building utilities (unused with pre-finetuned ckpt)
-├── train.py               # Fine-tuning from scratch (unused with pre-finetuned ckpt)
-├── main.py                # Fine-tuning entry point (unused with pre-finetuned ckpt)
-└── plot.py                # Reliability diagrams (TODO)
+├── calibrate.py           # Load model, fit calibrators, evaluate, sweep
+└── MEDICAL_CALIBRATION_PLAN.md
 ```
-
-**Note:** `data.py`, `model.py`, `train.py`, `main.py` support fine-tuning from scratch
-if needed, but are not used when working with the pre-fine-tuned checkpoint.
 
 ---
 
-## Experimental Protocol
+## Running
 
-### Phase 1 — Setup
-- Download pre-fine-tuned checkpoint and pre-split data from Google Drive
-- Place in `data/medical_calibration/`
-- Verify checkpoint loads (5-class head present, epoch 27)
-
-### Phase 2 — Calibration (single script: `calibrate.py`)
+### Single dataset, single lambda
 
 ```bash
 python -m jl.double_descent.medical_calibration.calibrate \
-    --checkpoint ./data/medical_calibration/checkpoint-best.pth \
-    --data-path ./data/medical_calibration/APTOS2019 \
-    --output-path ./output/medical_calibration \
-    --l2-lambda 1e-3 --max-steps 100
+    --checkpoint ./data/medical_calibration/aptos2019_extracted/checkpoint-best.pth \
+    --data-path ./data/medical_calibration/aptos2019_extracted/APTOS2019 \
+    --output-path ./output/medical_calibration/aptos2019 \
+    --l2-lambda 0.3
 ```
 
-Steps within `calibrate.py`:
-1. Load fine-tuned RETFound model
-2. Run uncalibrated inference on test set → save logits
-3. Fit temperature T on **validation** logits via L-BFGS → evaluate on test
-4. Extract training features via `model.forward_features()` → [2048, 1024]
-5. Copy `model.head` into standalone `nn.Linear(1024, 5)`
-6. Call `fine_tune_lib.fine_tune_final_layer()` with L-BFGS + L2 on **training** features
-7. Evaluate fine-tuned head on test features
-8. Save `calibration_results.json` with all metrics
+### Lambda sweep (select by val ECE)
 
-### Phase 3 — Analysis
-- Print results table and delta table
-- Generate reliability diagrams (TODO: `plot.py`)
+```bash
+python -m jl.double_descent.medical_calibration.calibrate \
+    --checkpoint <checkpoint> --data-path <data> \
+    --output-path <output> --sweep
+```
+
+### Lambda sweep (select by val NLL)
+
+```bash
+python -m jl.double_descent.medical_calibration.calibrate \
+    --checkpoint <checkpoint> --data-path <data> \
+    --output-path <output> --sweep --sweep-metric nll
+```
+
+### Run on remote via helper script
+
+```bash
+# Extract zip and run sweep (on remote instance)
+bash infra/run_medical_calibration.sh <dataset_name>
+```
+
+Expects `data/medical_calibration/<dataset_name>.zip` on the remote. Extracts, finds train/ dir and checkpoint, runs sweep.
+
+---
+
+## How calibrate.py works
+
+1. Load fine-tuned RETFound model (auto-detects num_classes from checkpoint)
+2. Extract features once for all splits via `model.forward_features()` + `model.forward_head(x, pre_logits=True)` → [N, 1024]
+3. Collect test logits for uncalibrated evaluation
+4. **Temperature scaling:** fit scalar T on **validation** logits via L-BFGS, evaluate on test
+5. **Final-layer fine-tuning:** copy `model.head` into standalone `nn.Linear`, run `fine_tune_lib.fine_tune_final_layer()` with L-BFGS + L2 on **training** features
+6. With `--sweep`: try 14 lambda values, select best by val metric (ECE or NLL), report test metrics for the winner
+7. Save `calibration_results.json`, `test_logits.pt`, `calibrated_head.pt`
+
+Sweep lambda values: `[1e-4, 1e-3, 1e-2, 5e-2, 1e-1, 2e-1, 3e-1, 5e-1, 7e-1, 1, 2, 3, 5, 10]`
 
 ---
 
@@ -100,55 +148,36 @@ Steps within `calibrate.py`:
 | NLL / cross-entropy | Calibration — proper scoring rule |
 | Accuracy | Classification performance |
 | ECE (20 bins) | Calibration — binned confidence vs accuracy |
-| Brier score | Calibration — combined discrimination + calibration |
-| AUROC (macro, one-vs-rest) | Discrimination — does ranking change? |
+| Brier score | Calibration + discrimination |
+| AUROC (macro, one-vs-rest) | Discrimination |
 | AUPR (macro) | Discrimination under class imbalance |
-
-Paper reference: RETFound reports AUROC 0.944 (95% CI: 0.941–0.946) on APTOS-2019.
-
----
-
-## Success Criteria
-
-A calibration method is promising if, relative to the uncalibrated model, it:
-
-- Reduces **ECE**
-- Improves **NLL**
-- Improves **Brier score**
-- Preserves or minimally changes **AUROC**
-- Preserves or minimally changes **AUPR**
-
-Temperature scaling is the minimum baseline to beat.
-
----
-
-## Outputs
-
-### Saved artifacts
-- `calibration_results.json` — all metrics for all three methods
-- `test_logits.pt` — uncalibrated test logits + labels
-- `calibrated_head.pt` — fine-tuned head weights
-
-### Tables (printed by calibrate.py)
-1. **Main results table** — Method × {NLL, Acc, ECE, Brier, AUROC, AUPR}
-2. **Delta table** — Method × {ΔNLL, ΔAcc, ΔECE, ΔBrier, ΔAUROC, ΔAUPR}
-
-### Figures (TODO)
-- Reliability diagram per method (3 panels)
-
----
-
-## Hardware
-
-- Single GPU sufficient (inference + L-BFGS on 2K features)
-- Can run on A40, A100, or even smaller GPUs
-- RunPod/Lambda via `infra/setup_remote.sh`
 
 ---
 
 ## Key Design Decisions
 
 - **Temperature scaling fits on val** — standard practice, same data used for model selection
-- **Final-layer fine-tuning fits on train** — our method has more capacity (1024×5 + 5 params), so we use the larger training set. This is analogous to how we fine-tune in the double descent experiments
-- **Feature extraction uses `model.forward_features()`** — timm's built-in method returns pooled features before the head layer, model-agnostic
+- **Final-layer fine-tuning fits on train** — our method has more capacity (classes×1024 params), so we use the larger training set
+- **Lambda selected on val** — proper train/val/test protocol, no test leakage
+- **Feature extraction uses timm's `forward_head(pre_logits=True)`** — applies pool + fc_norm, returns [B, 1024]
 - **Shared optimization via `fine_tune_lib.py`** — same L-BFGS code used for ResNet and Transformer calibration
+- **Auto-detects num_classes from checkpoint** — works across all 7 datasets without config changes
+
+---
+
+## Hardware
+
+- Single GPU sufficient (inference + L-BFGS on small feature matrices)
+- Each dataset sweep takes ~1-2 minutes
+- RunPod/Lambda via `infra/setup_remote.sh`
+
+---
+
+## Observations
+
+- Fine-tuning works best with **more classes** (JSIEC: 39 classes, biggest improvement) and **more training data** (APTOS: 2K images)
+- On tiny datasets (IDRID: 329 train, 104 test) neither method helps much
+- Selected lambdas vary by dataset (0.01 to 3.0) — the sweep is important
+- ECE-selection and NLL-selection give similar results; ECE-selection slightly better overall
+- L-BFGS converges by step ~11 for all datasets — 30 steps is more than sufficient
+- The base model's strength matters: fine-tuning can't fix bad features (MESSIDOR2: AUROC 0.883)
