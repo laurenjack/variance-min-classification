@@ -7,6 +7,7 @@ Evaluate post-hoc calibration approaches on **pre-trained RETFound** checkpoints
 1. **Uncalibrated** — direct model outputs
 2. **Temperature scaling** — fit scalar T on validation set via L-BFGS
 3. **L2 calibration** — L-BFGS + L2 on classifier head using training set
+4. **L2 calibration (magnitude-only)** — learn one scalar α_c per class, `--magnitude-only`
 
 ## Results Summary
 
@@ -134,8 +135,9 @@ Expects `data/medical_calibration/<dataset_name>.zip` on the remote. Extracts, f
 3. Collect test logits for uncalibrated evaluation
 4. **Temperature scaling:** fit scalar T on **validation** logits via L-BFGS, evaluate on test
 5. **L2 calibration:** copy `model.head` into standalone `nn.Linear`, run `l2_calibrate_lib.l2_calibrate_final_layer()` with L-BFGS + L2 on **training** features
-6. With `--sweep`: try 14 lambda values, select best by val metric (ECE or NLL), report test metrics for the winner
-7. Save `calibration_results.json`, `test_logits.pt`, `calibrated_head.pt`
+6. **L2 calibration (magnitude-only):** with `--magnitude-only`, learn C scalars α_c (one per class) via L-BFGS. Logits = α_c * (W_c @ x + b_c), L2 penalty = λ * Σ_c α_c² * (||W_c||² + b_c²). Initialized at α=1.
+7. With `--sweep`: try 14 lambda values, select best by val metric (ECE or NLL), report test metrics for the winner
+8. Save `calibration_results.json`, `test_logits.pt`, `calibrated_head.pt` (or `calibrated_alpha.pt`)
 
 Sweep lambda values: `[1e-4, 1e-3, 1e-2, 5e-2, 1e-1, 2e-1, 3e-1, 5e-1, 7e-1, 1, 2, 3, 5, 10]`
 

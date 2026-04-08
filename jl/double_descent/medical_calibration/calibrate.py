@@ -31,6 +31,84 @@ from jl.double_descent.medical_calibration.config import MedCalConfig
 logger = logging.getLogger(__name__)
 
 
+# --- Magnitude-only calibration ---
+
+
+def magnitude_calibrate(
+    features: torch.Tensor,
+    targets: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    l2_lambda: float,
+    max_steps: int = 30,
+    device: torch.device = None,
+) -> Tuple[torch.Tensor, Dict[str, float]]:
+    """L2 calibration with one scalar per class (magnitude only).
+
+    Learns α ∈ R^C such that logit_c = α_c * (W_c @ x + b_c).
+    L2 penalty: λ * Σ_c α_c² * (||W_c||² + b_c²).
+
+    Args:
+        features: [N, d_in] pre-extracted features.
+        targets: [N] class indices.
+        weight: [C, d_in] frozen weight matrix.
+        bias: [C] frozen bias vector.
+        l2_lambda: L2 regularization strength.
+        max_steps: Number of L-BFGS steps.
+        device: Device to run on.
+
+    Returns:
+        (alpha [C], metadata dict)
+    """
+    if device is not None:
+        features = features.to(device)
+        targets = targets.to(device)
+        weight = weight.to(device)
+        bias = bias.to(device)
+
+    C = weight.shape[0]
+
+    # Precompute original logits [N, C] and per-class weight norms
+    with torch.no_grad():
+        base_logits = features @ weight.t() + bias  # [N, C]
+        weight_norm_sq = weight.pow(2).sum(dim=1) + bias.pow(2)  # [C]
+
+    alpha = nn.Parameter(torch.ones(C, device=device))
+    optimizer = torch.optim.LBFGS(
+        [alpha], lr=1.0, max_iter=20, history_size=100, line_search_fn="strong_wolfe"
+    )
+
+    last_loss = None
+
+    def closure():
+        nonlocal last_loss
+        optimizer.zero_grad()
+        scaled_logits = base_logits * alpha.unsqueeze(0)  # [N, C] * [1, C]
+        nll = F.cross_entropy(scaled_logits, targets)
+        l2 = l2_lambda * (alpha.pow(2) * weight_norm_sq).sum()
+        total = nll + l2
+        total.backward()
+        last_loss = total.item()
+        return total
+
+    for step in range(max_steps):
+        optimizer.step(closure)
+        if step % 10 == 0 or step == max_steps - 1:
+            grad_norm = alpha.grad.norm().item() if alpha.grad is not None else 0.0
+            logger.info(
+                f"  Step {step + 1}/{max_steps}: loss={last_loss:.6f}, "
+                f"grad_norm={grad_norm:.2e}, alpha range=[{alpha.min().item():.4f}, {alpha.max().item():.4f}]"
+            )
+
+    return alpha.detach(), {
+        "final_loss": last_loss,
+        "l2_lambda": l2_lambda,
+        "alpha_min": alpha.min().item(),
+        "alpha_max": alpha.max().item(),
+        "alpha_mean": alpha.mean().item(),
+    }
+
+
 # --- Model loading ---
 
 
@@ -294,6 +372,11 @@ def main():
         choices=["ece", "nll"],
         help="Metric to select best lambda on validation set (default: ece)",
     )
+    parser.add_argument(
+        "--magnitude-only",
+        action="store_true",
+        help="Learn one scalar per class instead of full weight matrix",
+    )
     args = parser.parse_args()
 
     config = MedCalConfig()
@@ -350,42 +433,66 @@ def main():
     logger.info(f"Temperature-scaled (T={T:.4f}): {ts_metrics}")
 
     # === L2 calibration ===
+    magnitude_only = args.magnitude_only
+    mode_label = "magnitude-only" if magnitude_only else "full"
+    original_weight = model.head.weight.data.clone()
+    original_bias = model.head.bias.data.clone()
+
+    def apply_alpha_to_logits(alpha, features_t):
+        """Compute logits scaled by per-class alpha."""
+        with torch.no_grad():
+            base = features_t.to(device) @ original_weight.to(device).t() + original_bias.to(device)
+            return (base * alpha.to(device).unsqueeze(0)).cpu()
+
     if args.sweep:
-        logger.info(f"=== Lambda sweep (selecting by val {args.sweep_metric}) ===")
+        logger.info(f"=== Lambda sweep ({mode_label}, selecting by val {args.sweep_metric}) ===")
         lambdas = [1e-4, 1e-3, 1e-2, 5e-2, 1e-1, 2e-1, 3e-1, 5e-1, 7e-1, 1.0, 2.0, 3.0, 5.0, 10.0]
         original_head_state = model.head.state_dict()
 
         sweep_results = []
         for lam in lambdas:
-            linear = nn.Linear(train_features.shape[1], config.num_classes).to(device)
-            linear.load_state_dict(original_head_state)
+            if magnitude_only:
+                alpha, meta = magnitude_calibrate(
+                    features=train_features,
+                    targets=train_labels,
+                    weight=original_weight,
+                    bias=original_bias,
+                    l2_lambda=lam,
+                    max_steps=config.lbfgs_max_steps,
+                    device=device,
+                )
+                val_logits = apply_alpha_to_logits(alpha, val_features)
+                val_metrics = evaluate_logits(val_logits, val_labels)
+                sweep_results.append((lam, val_metrics, alpha.cpu()))
+            else:
+                linear = nn.Linear(train_features.shape[1], config.num_classes).to(device)
+                linear.load_state_dict(original_head_state)
 
-            l2_calibrate_final_layer(
-                features=train_features,
-                targets=train_labels,
-                linear_layer=linear,
-                l2_lambda=lam,
-                max_steps=config.lbfgs_max_steps,
-                device=device,
-            )
+                l2_calibrate_final_layer(
+                    features=train_features,
+                    targets=train_labels,
+                    linear_layer=linear,
+                    l2_lambda=lam,
+                    max_steps=config.lbfgs_max_steps,
+                    device=device,
+                )
 
-            # Evaluate on val
-            linear.eval()
-            with torch.no_grad():
-                val_logits = linear(val_features.to(device)).cpu()
-            val_metrics = evaluate_logits(val_logits, val_labels)
+                linear.eval()
+                with torch.no_grad():
+                    val_logits = linear(val_features.to(device)).cpu()
+                val_metrics = evaluate_logits(val_logits, val_labels)
+                sweep_results.append((lam, val_metrics, linear.state_dict()))
 
-            sweep_results.append((lam, val_metrics, linear.state_dict()))
             logger.info(f"  λ={lam:.0e}: val_ece={val_metrics['ece']:.4f}, val_nll={val_metrics['nll']:.4f}")
 
         # Select best by val metric
         sweep_metric = args.sweep_metric
         best_idx = min(range(len(sweep_results)), key=lambda i: sweep_results[i][1][sweep_metric])
-        best_lambda, best_val_metrics, best_state = sweep_results[best_idx]
+        best_lambda, best_val_metrics, best_saved = sweep_results[best_idx]
         logger.info(f"Best λ={best_lambda:.0e} (val {sweep_metric}={best_val_metrics[sweep_metric]:.4f})")
 
         # Print sweep table
-        print(f"\n(Selecting by val {sweep_metric})")
+        print(f"\n({mode_label}, selecting by val {sweep_metric})")
         print("=" * 50)
         print(f"{'Lambda':<12} {'Val ECE':>10} {'Val NLL':>10} {'Val Acc':>10}")
         print("-" * 50)
@@ -395,14 +502,18 @@ def main():
         print("=" * 50)
 
         # Evaluate best on test
-        linear = nn.Linear(train_features.shape[1], config.num_classes).to(device)
-        linear.load_state_dict(best_state)
-        linear.eval()
-        with torch.no_grad():
-            ft_logits = linear(test_features.to(device)).cpu()
-        ft_metrics = evaluate_logits(ft_logits, test_labels)
+        if magnitude_only:
+            ft_logits = apply_alpha_to_logits(best_saved.to(device), test_features)
+            torch.save(best_saved, out_dir / "calibrated_alpha.pt")
+        else:
+            linear = nn.Linear(train_features.shape[1], config.num_classes).to(device)
+            linear.load_state_dict(best_saved)
+            linear.eval()
+            with torch.no_grad():
+                ft_logits = linear(test_features.to(device)).cpu()
+            torch.save(best_saved, out_dir / "calibrated_head.pt")
 
-        torch.save(best_state, out_dir / "calibrated_head.pt")
+        ft_metrics = evaluate_logits(ft_logits, test_labels)
         config.l2_lambda = best_lambda
 
         # Save sweep details
@@ -414,34 +525,49 @@ def main():
             )
 
     else:
-        logger.info("=== L2 calibration ===")
-        linear = nn.Linear(train_features.shape[1], config.num_classes).to(device)
-        linear.load_state_dict(model.head.state_dict())
+        logger.info(f"=== L2 calibration ({mode_label}) ===")
+        if magnitude_only:
+            alpha, meta = magnitude_calibrate(
+                features=train_features,
+                targets=train_labels,
+                weight=original_weight,
+                bias=original_bias,
+                l2_lambda=config.l2_lambda,
+                max_steps=config.lbfgs_max_steps,
+                device=device,
+            )
+            logger.info(f"Magnitude calibration metadata: {meta}")
+            torch.save(alpha, out_dir / "calibrated_alpha.pt")
+            ft_logits = apply_alpha_to_logits(alpha, test_features)
+        else:
+            linear = nn.Linear(train_features.shape[1], config.num_classes).to(device)
+            linear.load_state_dict(model.head.state_dict())
 
-        metadata = l2_calibrate_final_layer(
-            features=train_features,
-            targets=train_labels,
-            linear_layer=linear,
-            l2_lambda=config.l2_lambda,
-            max_steps=config.lbfgs_max_steps,
-            device=device,
-        )
-        logger.info(f"L2 calibration metadata: {metadata}")
+            metadata = l2_calibrate_final_layer(
+                features=train_features,
+                targets=train_labels,
+                linear_layer=linear,
+                l2_lambda=config.l2_lambda,
+                max_steps=config.lbfgs_max_steps,
+                device=device,
+            )
+            logger.info(f"L2 calibration metadata: {metadata}")
+            torch.save(linear.state_dict(), out_dir / "calibrated_head.pt")
 
-        torch.save(linear.state_dict(), out_dir / "calibrated_head.pt")
+            linear.eval()
+            with torch.no_grad():
+                ft_logits = linear(test_features.to(device)).cpu()
 
-        linear.eval()
-        with torch.no_grad():
-            ft_logits = linear(test_features.to(device)).cpu()
         ft_metrics = evaluate_logits(ft_logits, test_labels)
 
-    logger.info(f"L2-calibrated: {ft_metrics}")
+    logger.info(f"L2-calibrated ({mode_label}): {ft_metrics}")
 
     # === Save results ===
+    l2_meta = {"l2_lambda": config.l2_lambda, "max_steps": config.lbfgs_max_steps, "magnitude_only": magnitude_only}
     results = {
         "uncalibrated": uncalibrated_metrics,
         "temperature_scaled": {**ts_metrics, "temperature": round(T, 6)},
-        "l2_calibrated": {**ft_metrics, "l2_lambda": config.l2_lambda, "max_steps": config.lbfgs_max_steps},
+        "l2_calibrated": {**ft_metrics, **l2_meta},
     }
 
     results_path = out_dir / "calibration_results.json"
