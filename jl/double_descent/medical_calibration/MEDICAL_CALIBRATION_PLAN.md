@@ -7,7 +7,6 @@ Evaluate post-hoc calibration approaches on **pre-trained RETFound** checkpoints
 1. **Uncalibrated** — direct model outputs
 2. **Temperature scaling** — fit scalar T on validation set via L-BFGS
 3. **L2 calibration** — L-BFGS + L2 on classifier head using training set
-4. **L2 calibration (magnitude-only)** — learn one scalar α_c per class, `--magnitude-only`
 
 ## Results Summary
 
@@ -135,9 +134,8 @@ Expects `data/medical_calibration/<dataset_name>.zip` on the remote. Extracts, f
 3. Collect test logits for uncalibrated evaluation
 4. **Temperature scaling:** fit scalar T on **validation** logits via L-BFGS, evaluate on test
 5. **L2 calibration:** copy `model.head` into standalone `nn.Linear`, run `l2_calibrate_lib.l2_calibrate_final_layer()` with L-BFGS + L2 on **training** features
-6. **L2 calibration (magnitude-only):** with `--magnitude-only`, learn C scalars α_c (one per class) via L-BFGS. Logits = α_c * (W_c @ x + b_c), L2 penalty = λ * Σ_c α_c² * (||W_c||² + b_c²). Initialized at α=1.
-7. With `--sweep`: try 14 lambda values, select best by val metric (ECE or NLL), report test metrics for the winner
-8. Save `calibration_results.json`, `test_logits.pt`, `calibrated_head.pt` (or `calibrated_alpha.pt`)
+6. With `--sweep`: try 14 lambda values, select best by val metric (ECE or NLL), report test metrics for the winner
+7. Save `calibration_results.json`, `test_logits.pt`, `calibrated_head.pt`
 
 Sweep lambda values: `[1e-4, 1e-3, 1e-2, 5e-2, 1e-1, 2e-1, 3e-1, 5e-1, 7e-1, 1, 2, 3, 5, 10]`
 
@@ -184,3 +182,4 @@ Sweep lambda values: `[1e-4, 1e-3, 1e-2, 5e-2, 1e-1, 2e-1, 3e-1, 5e-1, 7e-1, 1, 
 - L-BFGS converges by step ~11 for all datasets — 30 steps is more than sufficient
 - The base model's strength matters: L2 calibration can't fix bad features (MESSIDOR2: AUROC 0.883)
 - **SGD vs L-BFGS:** Full-batch SGD (momentum=0.9) was tested as an alternative optimizer. At lr=0.1 it diverges badly (NLL +1 to +10). At lr=0.01 it nearly matches L-BFGS on most datasets but remains worse on JSIEC (39 classes): ΔNLL -0.065 vs -0.105, ΔECE -0.049 vs -0.077. L-BFGS is the right tool — the problem is small and convex (1024×C weights), and L-BFGS converges to grad_norm ~1e-6 in ~11 steps vs SGD still at ~0.04 after 100 epochs.
+- **Magnitude-only variant:** Tested learning one scalar α_c per class (C params) instead of the full weight matrix (1024×C params). Logit_c = α_c * (W_c @ x + b_c) with L2 penalty λ * Σ_c α_c² * (||W_c||² + b_c²). Results: better ECE than full L2 on JSIEC (-0.092 vs -0.077) and APTOS (-0.038 vs -0.033), but consistently worse NLL. Less harmful on weak datasets (IDRID, MESSIDOR2). Removed from code — full L2 is better overall. See commit `27daec0` for implementation.
