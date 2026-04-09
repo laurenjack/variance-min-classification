@@ -54,7 +54,8 @@ def _sweep_worker(
         evaluate_fn = evaluate_logits
     device = torch.device(f"cuda:{gpu_id}")
 
-    linear = nn.Linear(feature_dim, num_classes).to(device)
+    has_bias = "bias" in original_head_state
+    linear = nn.Linear(feature_dim, num_classes, bias=has_bias).to(device)
     linear.load_state_dict(original_head_state)
 
     l2_calibrate_final_layer(
@@ -149,9 +150,10 @@ def _run_lambda_sweep(
     else:
         # Single GPU / CPU: run sequentially
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        has_bias = "bias" in original_head_state
         sweep_results = []
         for lam in lambdas:
-            linear = nn.Linear(feature_dim, num_classes).to(device)
+            linear = nn.Linear(feature_dim, num_classes, bias=has_bias).to(device)
             linear.load_state_dict(original_head_state)
 
             l2_calibrate_final_layer(
@@ -224,7 +226,8 @@ def run_calibration_sweep(
         return name in skip_baselines
 
     # Compute logits from original head for baselines
-    head = nn.Linear(feature_dim, num_classes)
+    has_bias = "bias" in original_head_state
+    head = nn.Linear(feature_dim, num_classes, bias=has_bias)
     head.load_state_dict(original_head_state)
     head.eval()
     with torch.no_grad():
@@ -302,7 +305,7 @@ def run_calibration_sweep(
     print("=" * 50)
 
     # Evaluate best on test
-    linear = nn.Linear(feature_dim, num_classes).to(device)
+    linear = nn.Linear(feature_dim, num_classes, bias=has_bias).to(device)
     linear.load_state_dict(best_state)
     linear.eval()
     with torch.no_grad():
