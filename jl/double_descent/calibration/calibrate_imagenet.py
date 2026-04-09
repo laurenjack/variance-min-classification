@@ -1,17 +1,15 @@
 """Calibration for pre-trained ImageNet models (ResNet-152, ViT-B/16).
 
-Loads pre-trained models from timm, extracts features, splits ImageNet
-validation into val/test halves (Guo et al. protocol), and runs all
-calibration methods via the shared sweep module.
+Loads pre-trained models from timm, downloads ImageNet from HuggingFace,
+extracts features, splits validation into val/test halves (Guo et al.
+protocol), and runs all calibration methods via the shared sweep module.
 
 Usage:
     python -m jl.double_descent.calibration.calibrate_imagenet \
-        --model resnet152 --data-path ./data/imagenet \
-        --output-path ./output/imagenet/resnet152
+        --model resnet152 --output-path ./output/imagenet/resnet152
 
     python -m jl.double_descent.calibration.calibrate_imagenet \
-        --model vit_base_patch16_224 --data-path ./data/imagenet \
-        --output-path ./output/imagenet/vit_b16
+        --model vit_base_patch16_224 --output-path ./output/imagenet/vit_b16
 """
 
 import argparse
@@ -108,30 +106,48 @@ def extract_features(
     return torch.cat(all_features), torch.cat(all_labels)
 
 
+class HFImageNetDataset(torch.utils.data.Dataset):
+    """Wraps a HuggingFace ImageNet split with torchvision transforms."""
+
+    def __init__(self, hf_dataset, transform):
+        self.hf_dataset = hf_dataset
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.hf_dataset)
+
+    def __getitem__(self, idx):
+        example = self.hf_dataset[idx]
+        img = example["image"]
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        img = self.transform(img)
+        return img, example["label"]
+
+
 def build_imagenet_loaders(
-    data_path: str,
     batch_size: int = 64,
     num_workers: int = 8,
     seed: int = 42,
     train_subset: int = 0,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    """Build ImageNet train, val, and test loaders.
+    """Build ImageNet train, val, and test loaders from HuggingFace.
 
-    Guo et al. protocol: 50K ImageNet validation set split into
-    25K val / 25K test via random permutation with fixed seed.
+    Downloads ImageNet-1K from HuggingFace (cached via HF_HOME).
+    Guo et al. protocol: 50K validation set split into 25K val / 25K test
+    via random permutation with fixed seed.
 
     Args:
-        data_path: Path to ImageNet root (with train/ and val/ subdirs).
         batch_size: Batch size for data loaders.
         num_workers: Number of data loading workers.
-        seed: Random seed for val/test split.
+        seed: Random seed for val/test split and train subsampling.
         train_subset: If > 0, subsample training set to this many images.
 
     Returns:
         (train_loader, val_loader, test_loader)
     """
+    from datasets import load_dataset
     from torchvision import transforms
-    from torchvision.datasets import ImageFolder
 
     normalize = transforms.Normalize(
         mean=[0.485, 0.456, 0.406],
@@ -145,18 +161,20 @@ def build_imagenet_loaders(
         normalize,
     ])
 
-    # Training set (for L2 calibration features)
-    train_dataset = ImageFolder(
-        root=str(Path(data_path) / "train"),
-        transform=eval_transform,  # No augmentation — just extracting features
-    )
+    # Load from HuggingFace (cached via HF_HOME env var)
+    logger.info("Loading ImageNet-1K from HuggingFace (or cache)...")
+    train_hf = load_dataset("ILSVRC/imagenet-1k", split="train")
+    val_hf = load_dataset("ILSVRC/imagenet-1k", split="validation")
+    logger.info(f"HuggingFace: train={len(train_hf)}, val={len(val_hf)}")
 
-    if train_subset > 0 and train_subset < len(train_dataset):
+    # Training set
+    if train_subset > 0 and train_subset < len(train_hf):
         g = torch.Generator().manual_seed(seed)
-        indices = torch.randperm(len(train_dataset), generator=g)[:train_subset].tolist()
-        train_dataset = Subset(train_dataset, indices)
+        indices = torch.randperm(len(train_hf), generator=g)[:train_subset].tolist()
+        train_hf = train_hf.select(indices)
         logger.info(f"Subsampled training set to {train_subset} images")
 
+    train_dataset = HFImageNetDataset(train_hf, eval_transform)
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -166,19 +184,14 @@ def build_imagenet_loaders(
     )
     logger.info(f"Train: {len(train_dataset)} images")
 
-    # Validation set — split into val/test halves
-    full_val_dataset = ImageFolder(
-        root=str(Path(data_path) / "val"),
-        transform=eval_transform,
-    )
-
-    n_val = len(full_val_dataset)
+    # Split validation into val/test halves
+    n_val = len(val_hf)
     perm = torch.randperm(n_val, generator=torch.Generator().manual_seed(seed))
     val_indices = perm[: n_val // 2].tolist()
     test_indices = perm[n_val // 2:].tolist()
 
-    val_dataset = Subset(full_val_dataset, val_indices)
-    test_dataset = Subset(full_val_dataset, test_indices)
+    val_dataset = HFImageNetDataset(val_hf.select(val_indices), eval_transform)
+    test_dataset = HFImageNetDataset(val_hf.select(test_indices), eval_transform)
 
     val_loader = DataLoader(
         val_dataset,
@@ -197,7 +210,6 @@ def build_imagenet_loaders(
     )
 
     logger.info(f"Val: {len(val_dataset)} images, Test: {len(test_dataset)} images")
-    logger.info(f"Total classes: {len(full_val_dataset.classes)}")
 
     return train_loader, val_loader, test_loader
 
@@ -216,10 +228,6 @@ def main():
         "--model", type=str, required=True,
         choices=list(SUPPORTED_MODELS.keys()),
         help="Model architecture to calibrate",
-    )
-    parser.add_argument(
-        "--data-path", type=str, required=True,
-        help="Path to ImageNet root directory (with train/ and val/ subdirs)",
     )
     parser.add_argument(
         "--output-path", type=str, required=True,
@@ -257,9 +265,8 @@ def main():
     # Load model
     model, model_info = load_model(args.model, device)
 
-    # Build data loaders
+    # Build data loaders (downloads from HuggingFace, cached via HF_HOME)
     train_loader, val_loader, test_loader = build_imagenet_loaders(
-        data_path=args.data_path,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         seed=args.seed,

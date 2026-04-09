@@ -3,7 +3,7 @@
 #
 # Mirrors the local data path to the remote output path:
 #   local:  ./data/{experiment_type}/{timestamp}/
-#   remote: ~/variance-min-classification/output/{experiment_type}/{timestamp}/
+#   remote: /workspace/variance-min-classification/output/{experiment_type}/{timestamp}/
 #
 # Usage:
 #   ./infra/upload.sh <instance_ip> <local_folder> [--user <user>] [--port <port>]
@@ -42,7 +42,7 @@ if [[ ! -d "$LOCAL_FOLDER" ]]; then
 fi
 
 # Parse optional arguments
-SSH_USER="ubuntu"
+SSH_USER="root"
 SSH_PORT=""
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -82,7 +82,7 @@ LOCAL_FOLDER="${LOCAL_FOLDER%/}"
 TIMESTAMP=$(basename "$LOCAL_FOLDER")
 EXPERIMENT_TYPE=$(basename "$(dirname "$LOCAL_FOLDER")")
 
-REMOTE_DIR="~/variance-min-classification/output/$EXPERIMENT_TYPE/$TIMESTAMP"
+REMOTE_DIR="/workspace/variance-min-classification/output/$EXPERIMENT_TYPE/$TIMESTAMP"
 
 log_info "SSH user: $SSH_USER"
 if [[ -n "$SSH_PORT" ]]; then

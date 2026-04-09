@@ -140,15 +140,15 @@ The script selects the checkpoint matching `--dataset`.
 ```bash
 # ResNet-152 (pre-trained from timm, no training)
 python -m jl.double_descent.calibration.calibrate_imagenet \
-    --model resnet152 --data-path ./data/imagenet --output-path ./output/imagenet
+    --model resnet152 --output-path ./output/imagenet
 
 # ViT-B/16 (pre-trained from timm, no training)
 python -m jl.double_descent.calibration.calibrate_imagenet \
-    --model vit_base_patch16_224 --data-path ./data/imagenet --output-path ./output/imagenet
+    --model vit_base_patch16_224 --output-path ./output/imagenet
 ```
 
-Requires ImageNet downloaded locally. Download from HuggingFace (`ILSVRC/imagenet-1k`,
-requires HF token and terms acceptance) or use existing local copy.
+ImageNet downloads automatically from HuggingFace on first run (cached via `HF_HOME`).
+Requires HF token with terms accepted at https://huggingface.co/datasets/ILSVRC/imagenet-1k.
 
 ### RETFound with NLL selection
 
@@ -266,8 +266,7 @@ Both loaded pre-trained from **timm** — no training needed:
 
 - **ImageNet-1K (ILSVRC 2012)**: 1.28M train, 50K val, 1000 classes
 - Source: HuggingFace `ILSVRC/imagenet-1k` (gated, requires HF token + terms acceptance)
-- Download required (~150GB) before running experiments
-- Also supports `torchvision.datasets.ImageNet` if already on disk
+- Downloads automatically on first run, cached via `HF_HOME` (set to `/workspace/.cache/huggingface` on RunPod)
 
 ### Val/test split (Guo et al. protocol)
 
@@ -281,8 +280,9 @@ ImageNet has no public test labels, so Guo et al. split the 50K validation set:
 ### Implementation: `calibrate_imagenet.py`
 
 1. Load pre-trained model from timm (ResNet-152 or ViT-B/16)
-2. Extract features on train subset + val + test splits
-3. Run `sweep.py` with extracted features
+2. Load ImageNet from HuggingFace `datasets` library (auto-cached)
+3. Extract features on train + val + test splits
+4. Run `sweep.py` with extracted features
 
 
 ---
