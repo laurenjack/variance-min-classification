@@ -131,6 +131,7 @@ def sgd_l2_calibrate_final_layer(
     lr: float = 0.1,
     momentum: float = 0.9,
     device: Optional[torch.device] = None,
+    log_path: Optional[str] = None,
 ) -> Dict[str, float]:
     """L2 calibrate a linear layer with SGD and L2 regularization.
 
@@ -200,7 +201,13 @@ def sgd_l2_calibrate_final_layer(
             for p in linear_layer.parameters()
             if p.grad is not None
         )
-        history.append({"epoch": epoch + 1, "loss": last_loss, "grad_norm": grad_norm})
+        entry = {"epoch": epoch + 1, "loss": last_loss, "grad_norm": grad_norm}
+        history.append(entry)
+
+        if log_path is not None:
+            import json
+            with open(log_path, "a") as f:
+                f.write(json.dumps(entry) + "\n")
 
         if epoch % 10 == 0 or epoch == epochs - 1:
             logger.info(
