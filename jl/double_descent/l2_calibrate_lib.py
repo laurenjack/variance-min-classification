@@ -130,6 +130,7 @@ def sgd_l2_calibrate_final_layer(
     batch_size: int = 2048,
     lr: float = 0.1,
     momentum: float = 0.9,
+    warmup_epochs: int = 0,
     device: Optional[torch.device] = None,
     log_path: Optional[str] = None,
 ) -> Dict[str, float]:
@@ -144,8 +145,9 @@ def sgd_l2_calibrate_final_layer(
             (gradient 2 * l2_lambda * W vs PyTorch's weight_decay * W).
         epochs: Number of passes over the full dataset.
         batch_size: Mini-batch size.
-        lr: Learning rate.
-        momentum: SGD momentum (default: 0.0).
+        lr: Peak learning rate.
+        momentum: SGD momentum.
+        warmup_epochs: Linear warmup epochs before cosine decay. 0 = no schedule.
         device: Device to run on. If None, uses features' device.
 
     Returns:
@@ -172,6 +174,14 @@ def sgd_l2_calibrate_final_layer(
         weight_decay=2 * l2_lambda,
     )
 
+    # Learning rate schedule: linear warmup then cosine decay
+    scheduler = None
+    if warmup_epochs > 0:
+        from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
+        warmup = LinearLR(optimizer, start_factor=1e-3, total_iters=warmup_epochs)
+        cosine = CosineAnnealingLR(optimizer, T_max=epochs - warmup_epochs)
+        scheduler = SequentialLR(optimizer, [warmup, cosine], milestones=[warmup_epochs])
+
     last_loss = None
     history: List[Dict[str, float]] = []
 
@@ -195,13 +205,17 @@ def sgd_l2_calibrate_final_layer(
             epoch_loss += loss.item()
             num_batches += 1
 
+        if scheduler is not None:
+            scheduler.step()
+
         last_loss = epoch_loss / num_batches
+        current_lr = optimizer.param_groups[0]["lr"]
         grad_norm = max(
             p.grad.norm().item()
             for p in linear_layer.parameters()
             if p.grad is not None
         )
-        entry = {"epoch": epoch + 1, "loss": last_loss, "grad_norm": grad_norm}
+        entry = {"epoch": epoch + 1, "loss": last_loss, "grad_norm": grad_norm, "lr": current_lr}
         history.append(entry)
 
         if log_path is not None:
