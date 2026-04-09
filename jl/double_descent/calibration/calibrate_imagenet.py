@@ -281,6 +281,10 @@ def main():
     del model
     torch.cuda.empty_cache()
 
+    # ImageNet needs much smaller lambdas than medical/CIFAR datasets
+    # (2048x1000 or 768x1000 linear layer vs 1024x5 or 64x10)
+    imagenet_lambdas = [1e-7, 1e-6, 5e-6, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3]
+
     # Run calibration sweep
     run_calibration_sweep(
         train_features=train_features,
@@ -292,6 +296,7 @@ def main():
         original_head_state=original_head_state,
         num_classes=num_classes,
         feature_dim=feature_dim,
+        lambdas=imagenet_lambdas,
         max_steps=args.max_steps,
         sweep_metric=args.sweep_metric,
         device=device,
