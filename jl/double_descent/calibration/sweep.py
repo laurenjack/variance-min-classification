@@ -71,7 +71,9 @@ def _sweep_worker(
         val_cal_logits = linear(val_features.to(device)).cpu()
     val_cal_metrics = evaluate_fn(val_cal_logits, val_labels)
 
-    result_dict[lam] = (val_cal_metrics, linear.state_dict())
+    # Move state_dict to CPU for serialization through mp.Manager
+    cpu_state = {k: v.cpu() for k, v in linear.state_dict().items()}
+    result_dict[lam] = (val_cal_metrics, cpu_state)
 
 
 def _run_lambda_sweep(
