@@ -1,8 +1,10 @@
-# GPU training dependencies (Lambda Labs H100, etc.)
+# GPU training dependencies (RunPod)
 -r requirements-base.txt
 
 accelerate>=0.30
 torch==2.9.1
 torchvision
+timm
+datasets
 # Pre-built Flash Attention 3 wheels from HuggingFace Hub (no compilation needed)
 kernels
