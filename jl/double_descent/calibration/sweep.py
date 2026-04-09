@@ -51,6 +51,7 @@ def _sweep_worker(
     use_sgd: bool = False,
     sgd_lr: float = 0.1,
     sgd_epochs: int = 100,
+    sgd_warmup_epochs: int = 0,
 ) -> None:
     """Worker that runs L2 calibration for a single lambda on one GPU."""
     if evaluate_fn is None:
@@ -70,6 +71,7 @@ def _sweep_worker(
             epochs=sgd_epochs,
             lr=sgd_lr,
             momentum=0.9,
+            warmup_epochs=sgd_warmup_epochs,
             device=device,
         )
     else:
@@ -106,6 +108,7 @@ def _run_lambda_sweep(
     use_sgd: bool = False,
     sgd_lr: float = 0.1,
     sgd_epochs: int = 100,
+    sgd_warmup_epochs: int = 0,
 ) -> List[Tuple[float, Dict, dict]]:
     """Run L2 calibration across lambdas, parallelizing across GPUs.
 
@@ -152,6 +155,7 @@ def _run_lambda_sweep(
                         use_sgd,
                         sgd_lr,
                         sgd_epochs,
+                        sgd_warmup_epochs,
                     ),
                 )
                 p.start()
@@ -186,6 +190,7 @@ def _run_lambda_sweep(
                     epochs=sgd_epochs,
                     lr=sgd_lr,
                     momentum=0.9,
+                    warmup_epochs=sgd_warmup_epochs,
                     device=device,
                 )
             else:
@@ -229,6 +234,7 @@ def run_calibration_sweep(
     use_sgd: bool = False,
     sgd_lr: float = 0.1,
     sgd_epochs: int = 100,
+    sgd_warmup_epochs: int = 0,
 ) -> Dict:
     """Run all calibration methods and L2 lambda sweep.
 
@@ -326,6 +332,7 @@ def run_calibration_sweep(
         use_sgd=use_sgd,
         sgd_lr=sgd_lr,
         sgd_epochs=sgd_epochs,
+        sgd_warmup_epochs=sgd_warmup_epochs,
     )
 
     # Select best by val metric
