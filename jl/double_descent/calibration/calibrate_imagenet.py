@@ -281,9 +281,13 @@ def main():
     del model
     torch.cuda.empty_cache()
 
-    # ImageNet needs much smaller lambdas than medical/CIFAR datasets
-    # (2048x1000 or 768x1000 linear layer vs 1024x5 or 64x10)
-    imagenet_lambdas = [1e-7, 1e-6, 5e-6, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3]
+    # Lambda ranges tuned per architecture:
+    # ResNet-152 (2048x1000): needs very small lambdas, collapses above 1e-3
+    # ViT-B/16 (768x1000): tolerates more regularization, sweet spot higher
+    if args.model == "resnet152":
+        lambdas = [1e-7, 1e-6, 5e-6, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3]
+    else:  # vit_base_patch16_224
+        lambdas = [1e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2, 1e-1]
 
     # Run calibration sweep
     run_calibration_sweep(
@@ -296,7 +300,7 @@ def main():
         original_head_state=original_head_state,
         num_classes=num_classes,
         feature_dim=feature_dim,
-        lambdas=imagenet_lambdas,
+        lambdas=lambdas,
         max_steps=args.max_steps,
         sweep_metric=args.sweep_metric,
         device=device,
