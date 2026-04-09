@@ -67,41 +67,25 @@ def load_model(model_name: str, device: torch.device) -> Tuple[nn.Module, dict]:
 def extract_features(
     model: nn.Module,
     loader: DataLoader,
-    model_info: dict,
     device: torch.device,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Extract features from the frozen backbone (before the classifier head).
 
-    Uses timm's forward_features() + forward_head(pre_logits=True) for ViT,
-    or a forward hook on the avgpool layer for ResNet.
+    Uses timm's forward_features() + forward_head(pre_logits=True) which
+    works uniformly for both ResNet and ViT models — applies global pool
+    and any pre-classifier layers, returning the final feature vector.
     """
     model.eval()
     all_features = []
     all_labels = []
 
-    head_attr = model_info["head_attr"]
-
-    if head_attr == "head":
-        # ViT-style: use timm's forward_head with pre_logits=True
-        with torch.no_grad():
-            for images, labels in loader:
-                images = images.to(device)
-                x = model.forward_features(images)
-                features = model.forward_head(x, pre_logits=True)
-                all_features.append(features.cpu())
-                all_labels.append(labels)
-    else:
-        # ResNet-style: hook before the fc layer
-        # timm ResNet: forward_features returns pooled features
-        with torch.no_grad():
-            for images, labels in loader:
-                images = images.to(device)
-                x = model.forward_features(images)
-                # forward_features returns [N, C, 1, 1] for ResNet after global pool
-                # or [N, C] depending on timm version — flatten to be safe
-                features = x.flatten(1)
-                all_features.append(features.cpu())
-                all_labels.append(labels)
+    with torch.no_grad():
+        for images, labels in loader:
+            images = images.to(device)
+            x = model.forward_features(images)
+            features = model.forward_head(x, pre_logits=True)
+            all_features.append(features.cpu())
+            all_labels.append(labels)
 
     return torch.cat(all_features), torch.cat(all_labels)
 
@@ -275,15 +259,15 @@ def main():
 
     # Extract features
     logger.info("Extracting training features...")
-    train_features, train_labels = extract_features(model, train_loader, model_info, device)
+    train_features, train_labels = extract_features(model, train_loader, device)
     logger.info(f"Train features: {train_features.shape}")
 
     logger.info("Extracting val features...")
-    val_features, val_labels = extract_features(model, val_loader, model_info, device)
+    val_features, val_labels = extract_features(model, val_loader, device)
     logger.info(f"Val features: {val_features.shape}")
 
     logger.info("Extracting test features...")
-    test_features, test_labels = extract_features(model, test_loader, model_info, device)
+    test_features, test_labels = extract_features(model, test_loader, device)
     logger.info(f"Test features: {test_features.shape}")
 
     # Get original head state
