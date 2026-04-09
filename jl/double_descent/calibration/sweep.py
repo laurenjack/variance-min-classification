@@ -2,12 +2,17 @@
 
 Given pre-extracted features and logits, runs all calibration baselines
 and an L2 lambda sweep, then reports results.
+
+The L2 lambda sweep parallelizes across available GPUs using
+spawn-based multiprocessing (one lambda per GPU, batched).
+Works transparently on a single GPU.
 """
 
 import json
 import logging
+import torch.multiprocessing as mp
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -28,6 +33,136 @@ from jl.double_descent.l2_calibrate_lib import l2_calibrate_final_layer
 logger = logging.getLogger(__name__)
 
 DEFAULT_LAMBDAS = [1e-4, 1e-3, 1e-2, 5e-2, 1e-1, 2e-1, 3e-1, 5e-1, 7e-1, 1.0, 2.0, 3.0, 5.0, 10.0]
+
+
+def _sweep_worker(
+    gpu_id: int,
+    lam: float,
+    train_features: torch.Tensor,
+    train_labels: torch.Tensor,
+    val_features: torch.Tensor,
+    val_labels: torch.Tensor,
+    original_head_state: dict,
+    num_classes: int,
+    feature_dim: int,
+    max_steps: int,
+    result_dict: dict,
+) -> None:
+    """Worker that runs L2 calibration for a single lambda on one GPU."""
+    device = torch.device(f"cuda:{gpu_id}")
+
+    linear = nn.Linear(feature_dim, num_classes).to(device)
+    linear.load_state_dict(original_head_state)
+
+    l2_calibrate_final_layer(
+        features=train_features,
+        targets=train_labels,
+        linear_layer=linear,
+        l2_lambda=lam,
+        max_steps=max_steps,
+        device=device,
+    )
+
+    linear.eval()
+    with torch.no_grad():
+        val_cal_logits = linear(val_features.to(device)).cpu()
+    val_cal_metrics = evaluate_logits(val_cal_logits, val_labels)
+
+    result_dict[lam] = (val_cal_metrics, linear.state_dict())
+
+
+def _run_lambda_sweep(
+    lambdas: List[float],
+    train_features: torch.Tensor,
+    train_labels: torch.Tensor,
+    val_features: torch.Tensor,
+    val_labels: torch.Tensor,
+    original_head_state: dict,
+    num_classes: int,
+    feature_dim: int,
+    max_steps: int,
+) -> List[Tuple[float, Dict, dict]]:
+    """Run L2 calibration across lambdas, parallelizing across GPUs.
+
+    Returns:
+        List of (lambda, val_metrics, state_dict) tuples.
+    """
+    num_gpus = max(torch.cuda.device_count(), 1)
+    use_multiprocessing = torch.cuda.is_available() and num_gpus > 1
+
+    if use_multiprocessing:
+        try:
+            mp.set_start_method("spawn", force=True)
+        except RuntimeError:
+            pass
+
+        manager = mp.Manager()
+        result_dict = manager.dict()
+
+        for batch_start in range(0, len(lambdas), num_gpus):
+            batch = lambdas[batch_start: batch_start + num_gpus]
+            batch_num = batch_start // num_gpus + 1
+            total_batches = (len(lambdas) + num_gpus - 1) // num_gpus
+            logger.info(f"Lambda batch {batch_num}/{total_batches}: λ = {[f'{l:.0e}' for l in batch]}")
+
+            processes = []
+            for gpu_id, lam in enumerate(batch):
+                p = mp.Process(
+                    target=_sweep_worker,
+                    args=(
+                        gpu_id,
+                        lam,
+                        train_features,
+                        train_labels,
+                        val_features,
+                        val_labels,
+                        original_head_state,
+                        num_classes,
+                        feature_dim,
+                        max_steps,
+                        result_dict,
+                    ),
+                )
+                p.start()
+                processes.append(p)
+
+            for p in processes:
+                p.join()
+                if p.exitcode != 0:
+                    logger.error(f"Worker exited with code {p.exitcode}")
+
+        sweep_results = []
+        for lam in lambdas:
+            val_metrics, state = result_dict[lam]
+            sweep_results.append((lam, val_metrics, state))
+            logger.info(f"  λ={lam:.0e}: val_ece={val_metrics['ece']:.4f}, val_nll={val_metrics['nll']:.4f}")
+
+    else:
+        # Single GPU / CPU: run sequentially
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        sweep_results = []
+        for lam in lambdas:
+            linear = nn.Linear(feature_dim, num_classes).to(device)
+            linear.load_state_dict(original_head_state)
+
+            l2_calibrate_final_layer(
+                features=train_features,
+                targets=train_labels,
+                linear_layer=linear,
+                l2_lambda=lam,
+                max_steps=max_steps,
+                device=device,
+            )
+
+            linear.eval()
+            with torch.no_grad():
+                val_cal_logits = linear(val_features.to(device)).cpu()
+            val_cal_metrics = evaluate_logits(val_cal_logits, val_labels)
+
+            sweep_results.append((lam, val_cal_metrics, linear.state_dict()))
+            logger.info(f"  λ={lam:.0e}: val_ece={val_cal_metrics['ece']:.4f}, val_nll={val_cal_metrics['nll']:.4f}")
+
+    return sweep_results
 
 
 def run_calibration_sweep(
@@ -51,8 +186,9 @@ def run_calibration_sweep(
     Baselines (fit on val logits): temperature scaling, vector scaling,
     histogram binning, Dirichlet L2.
 
-    L2 calibration (fit on train features): sweep over lambda values,
-    select best by val metric, report on test.
+    L2 calibration (fit on train features): sweep over lambda values
+    in parallel across available GPUs, select best by val metric,
+    report on test.
 
     Returns:
         Dict with all results keyed by method name.
@@ -100,28 +236,23 @@ def run_calibration_sweep(
     logger.info(f"Dirichlet L2: {dir_metrics}")
 
     # === L2 calibration sweep (fit on train, select by val) ===
-    logger.info(f"=== L2 calibration sweep (selecting by val {sweep_metric}) ===")
-    sweep_results = []
-    for lam in lambdas:
-        linear = nn.Linear(feature_dim, num_classes).to(device)
-        linear.load_state_dict(original_head_state)
+    num_gpus = max(torch.cuda.device_count(), 1) if torch.cuda.is_available() else 1
+    logger.info(
+        f"=== L2 calibration sweep (selecting by val {sweep_metric}, "
+        f"{len(lambdas)} lambdas, {num_gpus} GPU(s)) ==="
+    )
 
-        l2_calibrate_final_layer(
-            features=train_features,
-            targets=train_labels,
-            linear_layer=linear,
-            l2_lambda=lam,
-            max_steps=max_steps,
-            device=device,
-        )
-
-        linear.eval()
-        with torch.no_grad():
-            val_cal_logits = linear(val_features.to(device)).cpu()
-        val_cal_metrics = evaluate_logits(val_cal_logits, val_labels)
-
-        sweep_results.append((lam, val_cal_metrics, linear.state_dict()))
-        logger.info(f"  λ={lam:.0e}: val_ece={val_cal_metrics['ece']:.4f}, val_nll={val_cal_metrics['nll']:.4f}")
+    sweep_results = _run_lambda_sweep(
+        lambdas=lambdas,
+        train_features=train_features,
+        train_labels=train_labels,
+        val_features=val_features,
+        val_labels=val_labels,
+        original_head_state=original_head_state,
+        num_classes=num_classes,
+        feature_dim=feature_dim,
+        max_steps=max_steps,
+    )
 
     # Select best by val metric
     best_idx = min(range(len(sweep_results)), key=lambda i: sweep_results[i][1][sweep_metric])
