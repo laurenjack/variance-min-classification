@@ -2,9 +2,9 @@
 
 ## Goal
 
-Create `resnet18/l2_calibrate_sweep.py` that sweeps over L2 lambda values for a
-single ResNet18 model (specified by `k`), using SGD to calibrate the final linear
-layer. Selects best lambda by validation ECE and reports test metrics.
+Sweep over L2 lambda values for a single ResNet18 model (specified by `k`),
+calibrating the final linear layer. Selects best lambda by validation ECE
+and reports test metrics. Now lives in `calibration/calibrate_resnet.py`.
 
 ## Key Decisions
 
@@ -45,14 +45,14 @@ Per-lambda, evaluated on both val and test halves:
 
 ### 1. `l2_calibrate_lib.py` — add `compute_brier_score`
 
-Reuse the Brier score formula from `medical_calibration/calibrate.py`:
+Reuse the Brier score formula from `calibration/evaluate.py`:
 ```python
 def compute_brier_score(probs: torch.Tensor, labels: torch.Tensor) -> float:
     one_hot = F.one_hot(labels, num_classes=probs.size(1)).float()
     return ((probs - one_hot) ** 2).sum(dim=1).mean().item()
 ```
 
-### 2. `resnet18/l2_calibrate_sweep.py` — new file
+### 2. `calibration/calibrate_resnet.py` (was `resnet18/l2_calibrate_sweep.py`)
 
 **CLI args:**
 - `--model-path` (required) — directory containing `model_k*.pt` files
@@ -133,7 +133,7 @@ since we only calibrate a single linear layer.
 
 ```bash
 source venv/bin/activate
-python -m jl.double_descent.resnet18.l2_calibrate_sweep \
+python -m jl.double_descent.calibration.calibrate_resnet \
     --model-path ./output/resnet18/03-01-1010 \
     --data-path ./data \
     --k 12

@@ -1,12 +1,13 @@
 """Post-hoc calibration baselines.
 
 Implements standard calibration methods that fit on validation logits:
-1. Vector scaling (multi-class Platt scaling)
-2. Histogram binning
-3. Dirichlet calibration L2 (ODIR regularization, Kull et al. 2019)
+1. Temperature scaling (single scalar T)
+2. Vector scaling (multi-class Platt scaling)
+3. Histogram binning
+4. Dirichlet calibration L2 (ODIR regularization, Kull et al. 2019)
 
-All methods fit on (val_logits, val_labels) and return a callable that
-transforms logits -> calibrated probabilities.
+All methods fit on (val_logits, val_labels) and return parameters that
+can be applied to transform logits.
 """
 
 import logging
@@ -17,6 +18,39 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 logger = logging.getLogger(__name__)
+
+
+# --- Temperature Scaling ---
+
+
+def fit_temperature(
+    val_logits: torch.Tensor,
+    val_labels: torch.Tensor,
+    max_iter: int = 50,
+) -> float:
+    """Fit scalar temperature T on validation logits via L-BFGS.
+
+    Returns:
+        Temperature T (float).
+    """
+    temperature = nn.Parameter(torch.ones(1))
+    optimizer = torch.optim.LBFGS([temperature], lr=0.01, max_iter=max_iter)
+
+    def closure():
+        optimizer.zero_grad()
+        loss = F.cross_entropy(val_logits / temperature, val_labels)
+        loss.backward()
+        return loss
+
+    optimizer.step(closure)
+    T = temperature.item()
+    logger.info(f"Temperature scaling: T={T:.4f}")
+    return T
+
+
+def apply_temperature(logits: torch.Tensor, T: float) -> torch.Tensor:
+    """Apply temperature scaling to logits."""
+    return logits / T
 
 
 # --- Vector Scaling (multi-class Platt scaling) ---
