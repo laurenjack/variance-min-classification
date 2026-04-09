@@ -53,8 +53,7 @@ echo "Data: $DATA_DIR"
 echo "Checkpoint: $CHECKPOINT"
 
 # Run calibration sweep
-python -m jl.double_descent.medical_calibration.calibrate \
+python -m jl.double_descent.calibration.calibrate_retfound \
     --checkpoint "$CHECKPOINT" \
     --data-path "$DATA_DIR" \
-    --output-path "./output/medical_calibration/${DATASET}" \
-    --sweep
+    --output-path "./output/medical_calibration/${DATASET}"

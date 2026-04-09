@@ -79,41 +79,43 @@ Use `download_one.py <dataset_name>` to download, strip optimizer, and zip.
 ## Package Structure
 
 ```
-jl/double_descent/medical_calibration/
+jl/double_descent/calibration/
 ├── __init__.py
-├── config.py              # MedCalConfig dataclass
-├── calibrate.py           # Load model, fit calibrators, evaluate, sweep
-└── MEDICAL_CALIBRATION_PLAN.md
+├── baselines.py             # Temp scaling, vector scaling, histogram binning, Dirichlet L2
+├── evaluate.py              # evaluate_logits, evaluate_probs, compute_ece, compute_brier_score
+├── sweep.py                 # run_calibration_sweep() — shared core logic
+├── config.py                # MedCalConfig dataclass
+├── calibrate_retfound.py    # CLI: RETFound ophthalmology models
+├── calibrate_resnet.py      # CLI: ResNet18k on CIFAR-10
+└── CALIBRATION_PLAN.md
 ```
 
 ---
 
 ## Running
 
-### Single dataset, single lambda
+### RETFound (ophthalmology datasets)
 
 ```bash
-python -m jl.double_descent.medical_calibration.calibrate \
-    --checkpoint ./data/medical_calibration/aptos2019_extracted/checkpoint-best.pth \
-    --data-path ./data/medical_calibration/aptos2019_extracted/APTOS2019 \
-    --output-path ./output/medical_calibration/aptos2019 \
-    --l2-lambda 0.3
+python -m jl.double_descent.calibration.calibrate_retfound \
+    --checkpoint <checkpoint> --data-path <data> \
+    --output-path <output>
 ```
 
-### Lambda sweep (select by val ECE)
+### ResNet18k (CIFAR-10)
 
 ```bash
-python -m jl.double_descent.medical_calibration.calibrate \
-    --checkpoint <checkpoint> --data-path <data> \
-    --output-path <output> --sweep
+python -m jl.double_descent.calibration.calibrate_resnet \
+    --model-path ./data/resnet18/long_double_descent \
+    --data-path ./data --k 64
 ```
 
-### Lambda sweep (select by val NLL)
+### RETFound with NLL selection
 
 ```bash
-python -m jl.double_descent.medical_calibration.calibrate \
+python -m jl.double_descent.calibration.calibrate_retfound \
     --checkpoint <checkpoint> --data-path <data> \
-    --output-path <output> --sweep --sweep-metric nll
+    --output-path <output> --sweep-metric nll
 ```
 
 ### Run on remote via helper script
@@ -127,15 +129,14 @@ Expects `data/medical_calibration/<dataset_name>.zip` on the remote. Extracts, f
 
 ---
 
-## How calibrate.py works
+## How sweep.py works
 
-1. Load trained RETFound model (auto-detects num_classes from checkpoint)
-2. Extract features once for all splits via `model.forward_features()` + `model.forward_head(x, pre_logits=True)` → [N, 1024]
-3. Collect test logits for uncalibrated evaluation
-4. **Temperature scaling:** fit scalar T on **validation** logits via L-BFGS, evaluate on test
-5. **L2 calibration:** copy `model.head` into standalone `nn.Linear`, run `l2_calibrate_lib.l2_calibrate_final_layer()` with L-BFGS + L2 on **training** features
-6. With `--sweep`: try 14 lambda values, select best by val metric (ECE or NLL), report test metrics for the winner
-7. Save `calibration_results.json`, `test_logits.pt`, `calibrated_head.pt`
+1. Dataset-specific script loads model, extracts features for train/val/test
+2. `run_calibration_sweep()` receives features + original head state
+3. Computes val/test logits from original head
+4. **Baselines (fit on val):** temperature scaling, vector scaling, histogram binning, Dirichlet L2
+5. **L2 calibration (fit on train):** sweep lambda values, select best by val metric (ECE or NLL), report on test
+6. Save `calibration_results.json`, `sweep_results.json`, `test_logits.pt`, `calibrated_head.pt`
 
 Sweep lambda values: `[1e-4, 1e-3, 1e-2, 5e-2, 1e-1, 2e-1, 3e-1, 5e-1, 7e-1, 1, 2, 3, 5, 10]`
 
@@ -156,12 +157,13 @@ Sweep lambda values: `[1e-4, 1e-3, 1e-2, 5e-2, 1e-1, 2e-1, 3e-1, 5e-1, 7e-1, 1, 
 
 ## Key Design Decisions
 
-- **Temperature scaling fits on val** — standard practice, same data used for model selection
-- **L2 calibration fits on train** — our method has more capacity (classes×1024 params), so we use the larger training set
+- **All baselines fit on val** — temperature scaling, vector scaling, histogram binning, Dirichlet L2
+- **L2 calibration fits on train** — our method has more capacity (classes×d params), so we use the larger training set
 - **Lambda selected on val** — proper train/val/test protocol, no test leakage
-- **Feature extraction uses timm's `forward_head(pre_logits=True)`** — applies pool + fc_norm, returns [B, 1024]
+- **Shared sweep logic in `sweep.py`** — same code for RETFound, ResNet18, and future models
+- **Feature extraction is model-specific** — `calibrate_retfound.py` uses timm's `forward_head(pre_logits=True)`, `calibrate_resnet.py` uses ResNet18k's penultimate layer
 - **Shared optimization via `l2_calibrate_lib.py`** — same L-BFGS code used for ResNet and Transformer calibration
-- **Auto-detects num_classes from checkpoint** — works across all 7 datasets without config changes
+- **Auto-detects num_classes from checkpoint** — works across all datasets without config changes
 
 ---
 
