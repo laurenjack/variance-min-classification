@@ -307,7 +307,7 @@ def main():
         output_dir=Path(args.output_path),
         use_sgd=True,
         sgd_lr=1.0,
-        sgd_epochs=100,
+        sgd_epochs=150,
         sgd_warmup_epochs=10,
     )
 
