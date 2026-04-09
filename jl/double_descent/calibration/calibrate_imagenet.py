@@ -285,7 +285,7 @@ def main():
     # ResNet-152 (2048x1000): needs very small lambdas, collapses above 1e-3
     # ViT-B/16 (768x1000): tolerates more regularization, sweet spot higher
     if args.model == "resnet152":
-        lambdas = [1e-7, 1e-6, 5e-6, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3]
+        lambdas = [0, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2]
     else:  # vit_base_patch16_224
         lambdas = [1e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2, 1e-1]
 
@@ -306,7 +306,7 @@ def main():
         device=device,
         output_dir=Path(args.output_path),
         use_sgd=True,
-        sgd_lr=0.3,
+        sgd_lr=1.0,
         sgd_epochs=100,
         sgd_warmup_epochs=10,
     )
