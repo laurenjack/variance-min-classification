@@ -146,9 +146,8 @@ python -m jl.double_descent.calibration.calibrate_imagenet \
     --model vit_base_patch16_224 --data-path ./data/imagenet --output-path ./output/imagenet
 ```
 
-ImageNet data can be stored locally or streamed from HuggingFace (`ILSVRC/imagenet-1k`,
-requires HF token and terms acceptance). Pass `--streaming` to use HuggingFace streaming
-instead of local ImageFolder.
+Requires ImageNet downloaded locally. Download from HuggingFace (`ILSVRC/imagenet-1k`,
+requires HF token and terms acceptance) or use existing local copy.
 
 ### RETFound with NLL selection
 
@@ -175,10 +174,18 @@ Expects `data/medical_calibration/<dataset_name>.zip` on the remote. Extracts, f
 2. `run_calibration_sweep()` receives features + original head state
 3. Computes val/test logits from original head
 4. **Baselines (fit on val):** temperature scaling, vector scaling, histogram binning, Dirichlet L2
-5. **L2 calibration (fit on train):** sweep lambda values, select best by val metric (ECE or NLL), report on test
+5. **L2 calibration (fit on train):** sweep lambda values in parallel across available GPUs,
+   select best by val metric (ECE or NLL), report on test
 6. Save `calibration_results.json`, `sweep_results.json`, `test_logits.pt`, `calibrated_head.pt`
 
 Sweep lambda values: `[1e-4, 1e-3, 1e-2, 5e-2, 1e-1, 2e-1, 3e-1, 5e-1, 7e-1, 1, 2, 3, 5, 10]`
+
+### Multi-GPU lambda sweep
+
+The L2 lambda sweep parallelizes across available GPUs using the same spawn-based pattern
+as the rest of the codebase (one task per GPU, batched in groups of `num_gpus`). Each lambda
+gets its own GPU and runs L-BFGS independently. With 8 GPUs and 14 lambdas, this is 2 batches
+instead of 14 sequential runs. Works transparently on a single GPU (runs sequentially).
 
 ---
 
@@ -258,7 +265,7 @@ Both loaded pre-trained from **timm** — no training needed:
 
 - **ImageNet-1K (ILSVRC 2012)**: 1.28M train, 50K val, 1000 classes
 - Source: HuggingFace `ILSVRC/imagenet-1k` (gated, requires HF token + terms acceptance)
-- Download recommended (~150GB) — avoids streaming latency for repeated experiments
+- Download required (~150GB) before running experiments
 - Also supports `torchvision.datasets.ImageNet` if already on disk
 
 ### Val/test split (Guo et al. protocol)
@@ -267,8 +274,8 @@ ImageNet has no public test labels, so Guo et al. split the 50K validation set:
 
 - **Train**: 1.28M (full training set) — L2 calibration uses all training features by default.
   Optional `--train-subset N` to subsample (e.g. 50K) for faster iteration
-- **Val**: 25K (first half of 50K val, fixed seed) — calibration fitting + lambda selection
-- **Test**: 25K (second half of 50K val, fixed seed) — final evaluation
+- **Val**: 25K (random permutation of 50K val, fixed seed) — calibration fitting + lambda selection
+- **Test**: 25K (remaining half) — final evaluation
 
 ### Implementation: `calibrate_imagenet.py`
 
@@ -288,15 +295,14 @@ ImageNet has no public test labels, so Guo et al. split the 50K validation set:
 - **Feature extraction is model-specific** — `calibrate_retfound.py` uses timm's `forward_head(pre_logits=True)`, `calibrate_resnet.py` uses ResNet18k's penultimate layer
 - **Shared optimization via `l2_calibrate_lib.py`** — same L-BFGS code used for ResNet and Transformer calibration
 - **Auto-detects num_classes from checkpoint** — works across all datasets without config changes
-- **Multi-GPU feature extraction** — `DataParallel` or sharded `DataLoader` across available GPUs; works transparently on single GPU too
+- **Multi-GPU lambda sweep** — L2 sweep parallelizes across GPUs (one lambda per GPU, batched); works on single GPU too
 
 ---
 
 ## Hardware
 
-- Works on single GPU; auto-parallelizes feature extraction across all available GPUs
-- Multi-GPU speeds up feature extraction (the bottleneck for large datasets like ImageNet)
-- L-BFGS sweep itself is CPU-bound on small feature matrices — fast regardless of GPU count
+- Works on single GPU; auto-parallelizes lambda sweep across all available GPUs
+- With 8 GPUs and 14 lambdas, sweep completes in 2 batches instead of 14 sequential runs
 - RunPod/Lambda via `infra/setup_remote.sh`
 
 ---
