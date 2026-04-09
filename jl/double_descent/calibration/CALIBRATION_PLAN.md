@@ -86,8 +86,9 @@ jl/double_descent/calibration/
 ├── sweep.py                 # run_calibration_sweep() — shared core logic
 ├── config.py                # MedCalConfig dataclass
 ├── calibrate_retfound.py    # CLI: RETFound ophthalmology models
-├── calibrate_resnet.py      # CLI: ResNet18k on CIFAR-10 (double descent)
+├── calibrate_resnet18k.py   # CLI: ResNet18k on CIFAR-10 (double descent)
 ├── calibrate_cifar.py       # CLI: ResNet-110 on CIFAR-10/100 (Guo et al. recipe)
+├── train_resnet110.py       # CLI: Train ResNet-110 on CIFAR-10/100 (~20 min GPU)
 ├── calibrate_imagenet.py    # CLI: ResNet-152 / ViT-B/16 on ImageNet (pre-trained from timm)
 ├── resnet110.py             # ResNet-110 model definition (CIFAR variant, 6n+2 layers)
 └── CALIBRATION_PLAN.md
@@ -108,7 +109,7 @@ python -m jl.double_descent.calibration.calibrate_retfound \
 ### ResNet18k (CIFAR-10)
 
 ```bash
-python -m jl.double_descent.calibration.calibrate_resnet \
+python -m jl.double_descent.calibration.calibrate_resnet18k \
     --model-path ./data/resnet18/long_double_descent \
     --data-path ./data --k 64
 ```

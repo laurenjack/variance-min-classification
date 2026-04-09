@@ -4,7 +4,7 @@
 
 Sweep over L2 lambda values for a single ResNet18 model (specified by `k`),
 calibrating the final linear layer. Selects best lambda by validation ECE
-and reports test metrics. Now lives in `calibration/calibrate_resnet.py`.
+and reports test metrics. Now lives in `calibration/calibrate_resnet18k.py`.
 
 ## Key Decisions
 
@@ -52,7 +52,7 @@ def compute_brier_score(probs: torch.Tensor, labels: torch.Tensor) -> float:
     return ((probs - one_hot) ** 2).sum(dim=1).mean().item()
 ```
 
-### 2. `calibration/calibrate_resnet.py` (was `resnet18/l2_calibrate_sweep.py`)
+### 2. `calibration/calibrate_resnet18k.py` (was `resnet18/l2_calibrate_sweep.py`)
 
 **CLI args:**
 - `--model-path` (required) — directory containing `model_k*.pt` files
