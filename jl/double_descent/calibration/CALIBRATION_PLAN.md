@@ -89,6 +89,7 @@ jl/double_descent/calibration/
 ├── calibrate_resnet18k.py   # CLI: ResNet18k on CIFAR-10 (double descent)
 ├── calibrate_cifar.py       # CLI: ResNet-110 on CIFAR-10/100 (Guo et al. recipe)
 ├── train_resnet110.py       # CLI: Train ResNet-110 on CIFAR-10/100 (~20 min GPU)
+├── calibrate_transformer.py  # CLI: Transformer on IWSLT'14 (double descent, multi-GPU BLEU)
 ├── calibrate_imagenet.py    # CLI: ResNet-152 / ViT-B/16 on ImageNet (pre-trained from timm)
 ├── resnet110.py             # ResNet-110 model definition (CIFAR variant, 6n+2 layers)
 └── CALIBRATION_PLAN.md
@@ -134,6 +135,24 @@ python -m jl.double_descent.calibration.calibrate_cifar \
 
 The `--model-path` directory contains `resnet110_cifar10.pt` and/or `resnet110_cifar100.pt`.
 The script selects the checkpoint matching `--dataset`.
+
+### Transformer (IWSLT'14 de-en)
+
+Uses pre-trained models from double descent runs. Requires 8 GPUs for
+multi-GPU BLEU evaluation (parallelizes across lambda values).
+
+```bash
+python -m jl.double_descent.calibration.calibrate_transformer \
+    --model-path ./output/transformer/03-01-1010 \
+    --data-path ./data/iwslt14.tokenized.de-en \
+    --d-model 128
+```
+
+Optional: `--sweep-metric bleu` to select best lambda by BLEU instead of ECE.
+
+Metrics: NLL, token-level accuracy, token-level ECE, BLEU (greedy decoding).
+Baselines: uncalibrated, temperature scaling, vector scaling (no Dirichlet/binning
+— infeasible with ~10K vocab).
 
 ### ImageNet (ResNet-152 / ViT-B/16)
 

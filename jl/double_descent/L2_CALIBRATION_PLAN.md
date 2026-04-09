@@ -133,8 +133,101 @@ since we only calibrate a single linear layer.
 
 ```bash
 source venv/bin/activate
-python -m jl.double_descent.calibration.calibrate_resnet \
+python -m jl.double_descent.calibration.calibrate_resnet18k \
     --model-path ./output/resnet18/03-01-1010 \
     --data-path ./data \
     --k 12
+```
+
+---
+
+## Transformer Calibration Sweep (IWSLT'14)
+
+### Goal
+
+Sweep over L2 lambda values for a single Transformer model (specified by
+`--d-model`), calibrating the output projection layer. Baselines fit on val,
+L2 calibration fit on train, best lambda selected by val metric, final
+evaluation on test.
+
+### Key Decisions
+
+- **Single d_model** — `--d-model` is required, no default
+- **L-BFGS only** — same as other calibration sweeps
+- **Untied output projection** — the Transformer ties `output_proj.weight`
+  to `embedding.weight`. L2 calibration creates an untied copy, same as
+  `transformer/l2_calibrate.py`
+- **Baselines**: uncalibrated, temperature scaling, vector scaling. No
+  histogram binning (useless for NLL on large vocab), no Dirichlet L2
+  (K×K matrix infeasible with ~10K vocab)
+- **Multi-GPU parallelism** — L-BFGS fitting is sequential (fast), but BLEU
+  evaluation requires autoregressive decoding so we parallelize across
+  lambdas: each GPU loads the full model, swaps in a calibrated head, and
+  runs greedy decoding on the test set
+
+### Metrics
+
+- **NLL** (token-level cross-entropy, primary calibration metric)
+- **Token-level accuracy**
+- **Token-level ECE** (top-1 confidence vs correctness, 20 bins)
+- **BLEU** (corpus-level via sacrebleu, greedy decoding — task quality)
+
+No Brier score (uninformative with ~10K vocab), no AUROC/AUPR.
+
+### Data Split
+
+Uses the existing IWSLT'14 train/valid/test splits:
+- **Train**: subsampled training set (same `train_samples` as original training) — used for L2 calibration feature extraction
+- **Val**: IWSLT'14 valid split (~7K sentences) — baselines fit here, lambda selection
+- **Test**: IWSLT'14 test split (~7K sentences) — final evaluation
+
+### Implementation: `calibration/calibrate_transformer.py`
+
+**CLI args:**
+- `--model-path` (required) — directory containing `model_d*_*k.pt` files
+- `--data-path` (required) — IWSLT'14 preprocessed data directory
+- `--d-model` (required) — which model dimension to calibrate
+- `--output-path` (optional) — output directory
+- `--max-steps` (default: 100) — L-BFGS steps per lambda
+- `--sweep-metric` (default: ece) — `ece`, `nll`, or `bleu`
+- `--train-samples` (default: 36000) — must match original training
+
+**Flow (hybrid: sweep.py + multi-GPU BLEU pass):**
+
+1. Load model for given `d_model`, freeze, untie output projection
+2. Extract decoder features for train/val/test using forward hook on
+   `decoder_norm` (same approach as `transformer/l2_calibrate.py`)
+3. **Phase 1 — sweep.py (modified):** Run baselines (temperature, vector
+   scaling) + L2 lambda sweep. Computes token-level NLL, accuracy, ECE on
+   val and test. `sweep.py` needs a `skip_baselines` option to skip
+   histogram binning and Dirichlet L2.
+4. **Phase 2 — multi-GPU BLEU pass:** For each lambda (+ uncalibrated +
+   temperature + vector scaling), spawn a worker per GPU. Each worker:
+   a. Loads full model on its GPU
+   b. Unties output projection, swaps in calibrated weights
+   c. Runs `compute_bleu()` on the test set (greedy decoding)
+   d. Returns BLEU score
+5. Combine Phase 1 + Phase 2 results. Select best lambda by val metric.
+6. Print summary table, save results.
+
+**Swapping calibrated weights for BLEU:**
+```python
+# Untie output_proj from embedding
+model.output_proj = nn.Linear(d_model, vocab_size, bias=False).to(device)
+# Load calibrated weights
+model.output_proj.load_state_dict(calibrated_state)
+```
+
+### Lambda Values
+
+Same as default: `[1e-4, 1e-3, 1e-2, 5e-2, 1e-1, 2e-1, 3e-1, 5e-1, 7e-1, 1.0, 2.0, 3.0, 5.0, 10.0]`
+
+### Usage
+
+```bash
+source venv/bin/activate
+python -m jl.double_descent.calibration.calibrate_transformer \
+    --model-path ./output/transformer/03-01-1010 \
+    --data-path ./data/iwslt14.tokenized.de-en \
+    --d-model 128
 ```
