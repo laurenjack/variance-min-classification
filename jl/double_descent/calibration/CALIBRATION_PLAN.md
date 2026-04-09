@@ -115,18 +115,24 @@ python -m jl.double_descent.calibration.calibrate_resnet \
 
 ### ResNet-110 (CIFAR-10 / CIFAR-100, Guo et al. recipe)
 
-```bash
-# CIFAR-10
-python -m jl.double_descent.calibration.calibrate_cifar \
-    --dataset cifar10 --output-path ./output/cifar10_resnet110 --data-path ./data
+Training and calibration are separate steps (same pattern as ResNet18k):
 
-# CIFAR-100
+```bash
+# 1. Train ResNet-110 on remote (~20 min single GPU)
+python -m jl.double_descent.calibration.train_resnet110 \
+    --dataset cifar100 --data-path ./data --output-path ./output
+
+# 2. Download to local
+./infra/download.sh $IP
+
+# 3. Calibrate (local or remote)
 python -m jl.double_descent.calibration.calibrate_cifar \
-    --dataset cifar100 --output-path ./output/cifar100_resnet110 --data-path ./data
+    --dataset cifar100 --model-path ./data/resnet110/04-09-1200 \
+    --data-path ./data --output-path ./output/cifar100_calibration
 ```
 
-Trains ResNet-110 from scratch (~20 min on single GPU), then runs calibration sweep.
-If a trained checkpoint already exists at `--output-path/resnet110.pt`, training is skipped.
+The `--model-path` directory contains `resnet110_cifar10.pt` and/or `resnet110_cifar100.pt`.
+The script selects the checkpoint matching `--dataset`.
 
 ### ImageNet (ResNet-152 / ViT-B/16)
 
