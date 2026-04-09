@@ -75,6 +75,33 @@ def evaluate_logits(
     }
 
 
+def evaluate_logits_lightweight(
+    logits: torch.Tensor, labels: torch.Tensor
+) -> Dict[str, float]:
+    """Compute lightweight metrics from logits and labels.
+
+    Like evaluate_logits but skips Brier score, AUROC, and AUPR.
+    Suitable for large-vocabulary models (~10K classes) where those
+    metrics are either meaningless or prohibitively slow.
+
+    Returns:
+        Dict with nll, accuracy, ece.
+    """
+    probs = F.softmax(logits, dim=-1)
+    max_probs, predictions = probs.max(dim=1)
+    correct = (predictions == labels)
+
+    nll = F.cross_entropy(logits, labels).item()
+    accuracy = correct.float().mean().item()
+    ece = compute_ece(max_probs, correct)
+
+    return {
+        "nll": round(nll, 6),
+        "accuracy": round(accuracy, 6),
+        "ece": round(ece, 6),
+    }
+
+
 def evaluate_probs(
     probs: torch.Tensor, labels: torch.Tensor
 ) -> Dict[str, float]:
