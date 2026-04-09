@@ -86,7 +86,10 @@ jl/double_descent/calibration/
 ├── sweep.py                 # run_calibration_sweep() — shared core logic
 ├── config.py                # MedCalConfig dataclass
 ├── calibrate_retfound.py    # CLI: RETFound ophthalmology models
-├── calibrate_resnet.py      # CLI: ResNet18k on CIFAR-10
+├── calibrate_resnet.py      # CLI: ResNet18k on CIFAR-10 (double descent)
+├── calibrate_cifar.py       # CLI: ResNet-110 on CIFAR-10/100 (Guo et al. recipe)
+├── calibrate_imagenet.py    # CLI: ResNet-152 / ViT-B/16 on ImageNet (pre-trained from timm)
+├── resnet110.py             # ResNet-110 model definition (CIFAR variant, 6n+2 layers)
 └── CALIBRATION_PLAN.md
 ```
 
@@ -109,6 +112,37 @@ python -m jl.double_descent.calibration.calibrate_resnet \
     --model-path ./data/resnet18/long_double_descent \
     --data-path ./data --k 64
 ```
+
+### ResNet-110 (CIFAR-10 / CIFAR-100, Guo et al. recipe)
+
+```bash
+# CIFAR-10
+python -m jl.double_descent.calibration.calibrate_cifar \
+    --dataset cifar10 --output-path ./output/cifar10_resnet110 --data-path ./data
+
+# CIFAR-100
+python -m jl.double_descent.calibration.calibrate_cifar \
+    --dataset cifar100 --output-path ./output/cifar100_resnet110 --data-path ./data
+```
+
+Trains ResNet-110 from scratch (~20 min on single GPU), then runs calibration sweep.
+If a trained checkpoint already exists at `--output-path/resnet110.pt`, training is skipped.
+
+### ImageNet (ResNet-152 / ViT-B/16)
+
+```bash
+# ResNet-152 (pre-trained from timm, no training)
+python -m jl.double_descent.calibration.calibrate_imagenet \
+    --model resnet152 --data-path ./data/imagenet --output-path ./output/imagenet
+
+# ViT-B/16 (pre-trained from timm, no training)
+python -m jl.double_descent.calibration.calibrate_imagenet \
+    --model vit_base_patch16_224 --data-path ./data/imagenet --output-path ./output/imagenet
+```
+
+ImageNet data can be stored locally or streamed from HuggingFace (`ILSVRC/imagenet-1k`,
+requires HF token and terms acceptance). Pass `--streaming` to use HuggingFace streaming
+instead of local ImageFolder.
 
 ### RETFound with NLL selection
 
@@ -155,6 +189,90 @@ Sweep lambda values: `[1e-4, 1e-3, 1e-2, 5e-2, 1e-1, 2e-1, 3e-1, 5e-1, 7e-1, 1, 
 
 ---
 
+## CIFAR-10/100 + ResNet-110 (Guo et al. recipe)
+
+### Goal
+
+Replicate the canonical calibration benchmark from Guo et al. 2017 ("On Calibration of
+Modern Neural Networks"): ResNet-110 on CIFAR-10 and CIFAR-100. This is the standard
+experimental setup used by most calibration papers (Kull et al. 2019, Kumar et al. 2019,
+Mukhoti et al. 2020, Nixon et al. 2019).
+
+### Model
+
+- **ResNet-110**: 6×18+2 = 110 layers, ~1.7M params, 3 groups of basic blocks (16→32→64 channels)
+- **Train from scratch** — no pre-trained checkpoint available on HuggingFace
+- Training recipe (He et al. 2015 / Guo et al. 2017): 200 epochs, SGD momentum 0.9,
+  weight decay 1e-4, batch size 128, LR 0.1 dropped by 10x at epochs 100 and 150
+- Standard data augmentation: random crop (32×32 with 4px padding), random horizontal flip
+- Expected accuracy: ~93-94% (CIFAR-10), ~74-76% (CIFAR-100)
+- Training time: ~20 min on a single H100/A100
+
+### Dataset
+
+- **CIFAR-10**: 50K train / 10K test, 10 classes, 32×32 RGB
+- **CIFAR-100**: 50K train / 10K test, 100 classes (500 images/class), 32×32 RGB
+- Auto-downloads via `torchvision.datasets.CIFAR10` / `CIFAR100`
+
+### Val/test split (Guo et al. protocol)
+
+Guo et al. hold out validation from the **training set**, leaving the test set untouched:
+
+- **Train**: 45K (from 50K training set) — used for model training + L2 calibration features
+- **Val**: 5K (held out from training set) — used for calibration fitting (baselines) + lambda selection
+- **Test**: 10K (original test set, untouched) — used for final evaluation
+
+This differs from our existing `calibrate_resnet.py` which splits the 10K test set in half.
+
+### Implementation: `calibrate_cifar.py`
+
+1. Train ResNet-110 on 45K training subset (or load existing checkpoint)
+2. Extract features from penultimate layer (64-dim after global avg pool)
+3. Run `sweep.py` with 45K train features / 5K val features / 10K test features
+
+---
+
+## ImageNet + ResNet-152 + ViT-B/16
+
+### Goal
+
+Evaluate L2 calibration on ImageNet-1K with two canonical architectures: ResNet-152
+(Guo et al. 2017 standard) and ViT-B/16 (modern standard from Minderer et al. 2021).
+
+### Models
+
+Both loaded pre-trained from **timm** — no training needed:
+
+- **ResNet-152**: `timm.create_model("resnet152", pretrained=True)` — 60.2M params,
+  2048-dim features before head. Standard ImageNet calibration model (Guo et al., Kull et al.)
+- **ViT-B/16**: `timm.create_model("vit_base_patch16_224", pretrained=True)` — 86.6M params,
+  768-dim features before head. Modern calibration benchmark (Minderer et al. 2021)
+
+### Dataset
+
+- **ImageNet-1K (ILSVRC 2012)**: 1.28M train, 50K val, 1000 classes
+- Source: HuggingFace `ILSVRC/imagenet-1k` (gated, requires HF token + terms acceptance)
+- Download recommended (~150GB) — avoids streaming latency for repeated experiments
+- Also supports `torchvision.datasets.ImageNet` if already on disk
+
+### Val/test split (Guo et al. protocol)
+
+ImageNet has no public test labels, so Guo et al. split the 50K validation set:
+
+- **Train**: 1.28M (full training set) — L2 calibration uses all training features by default.
+  Optional `--train-subset N` to subsample (e.g. 50K) for faster iteration
+- **Val**: 25K (first half of 50K val, fixed seed) — calibration fitting + lambda selection
+- **Test**: 25K (second half of 50K val, fixed seed) — final evaluation
+
+### Implementation: `calibrate_imagenet.py`
+
+1. Load pre-trained model from timm (ResNet-152 or ViT-B/16)
+2. Extract features on train subset + val + test splits
+3. Run `sweep.py` with extracted features
+
+
+---
+
 ## Key Design Decisions
 
 - **All baselines fit on val** — temperature scaling, vector scaling, histogram binning, Dirichlet L2
@@ -164,13 +282,15 @@ Sweep lambda values: `[1e-4, 1e-3, 1e-2, 5e-2, 1e-1, 2e-1, 3e-1, 5e-1, 7e-1, 1, 
 - **Feature extraction is model-specific** — `calibrate_retfound.py` uses timm's `forward_head(pre_logits=True)`, `calibrate_resnet.py` uses ResNet18k's penultimate layer
 - **Shared optimization via `l2_calibrate_lib.py`** — same L-BFGS code used for ResNet and Transformer calibration
 - **Auto-detects num_classes from checkpoint** — works across all datasets without config changes
+- **Multi-GPU feature extraction** — `DataParallel` or sharded `DataLoader` across available GPUs; works transparently on single GPU too
 
 ---
 
 ## Hardware
 
-- Single GPU sufficient (inference + L-BFGS on small feature matrices)
-- Each dataset sweep takes ~1-2 minutes
+- Works on single GPU; auto-parallelizes feature extraction across all available GPUs
+- Multi-GPU speeds up feature extraction (the bottleneck for large datasets like ImageNet)
+- L-BFGS sweep itself is CPU-bound on small feature matrices — fast regardless of GPU count
 - RunPod/Lambda via `infra/setup_remote.sh`
 
 ---
