@@ -35,7 +35,7 @@ INSTANCE_IP="$1"
 shift
 
 # Parse optional arguments
-SSH_USER="ubuntu"
+SSH_USER="root"
 SSH_PORT=""
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -77,14 +77,14 @@ log_info "Discovering experiment folders on $INSTANCE_IP..."
 
 # List remote output structure
 REMOTE_STRUCTURE=$(ssh -i "$SSH_KEY_PATH" $SSH_OPTS "$SSH_USER@$INSTANCE_IP" \
-    'find ~/variance-min-classification/output -mindepth 2 -maxdepth 2 -type d 2>/dev/null || echo ""')
+    'find /workspace/variance-min-classification/output -mindepth 2 -maxdepth 2 -type d 2>/dev/null || echo ""')
 
 if [[ -z "$REMOTE_STRUCTURE" ]]; then
     log_warn "No structured output folders found. Checking for legacy flat output..."
 
     # Fallback: check for flat metrics files
     ssh -i "$SSH_KEY_PATH" $SSH_OPTS "$SSH_USER@$INSTANCE_IP" \
-        'ls ~/variance-min-classification/output/*.jsonl 2>/dev/null || echo "No metrics files found"'
+        'ls /workspace/variance-min-classification/output/*.jsonl 2>/dev/null || echo "No metrics files found"'
     exit 1
 fi
 
@@ -103,7 +103,7 @@ for EXPERIMENT_TYPE in resnet18 resnet18_variance transformer transformer_varian
     log_info "Downloading $EXPERIMENT_TYPE experiments..."
 
     for REMOTE_FOLDER in $FOLDERS; do
-        # Extract timestamp from path (e.g., ~/variance-min-classification/output/transformer/03-01-1010)
+        # Extract timestamp from path (e.g., /workspace/variance-min-classification/output/transformer/03-01-1010)
         TIMESTAMP=$(basename "$REMOTE_FOLDER")
         LOCAL_FOLDER="$LOCAL_DATA/$EXPERIMENT_TYPE/$TIMESTAMP"
 
@@ -127,7 +127,7 @@ if [[ -n "$LATEST_FOLDER" ]]; then
     LOCAL_FOLDER="$LOCAL_DATA/$EXPERIMENT_TYPE/$TIMESTAMP"
 
     scp -i "$SSH_KEY_PATH" $SCP_OPTS \
-        "$SSH_USER@$INSTANCE_IP:~/variance-min-classification/training.log" \
+        "$SSH_USER@$INSTANCE_IP:/workspace/variance-min-classification/training.log" \
         "$LOCAL_FOLDER/" 2>/dev/null || log_warn "No training.log found"
 fi
 

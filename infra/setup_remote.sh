@@ -37,7 +37,7 @@ INSTANCE_IP="$1"
 shift
 
 # Parse optional arguments
-SSH_USER="ubuntu"
+SSH_USER="root"
 SSH_PORT=""
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -76,11 +76,12 @@ REMOTE_ENV=""
 [[ -n "${HF_TOKEN:-}" ]] && REMOTE_ENV="${REMOTE_ENV}export HF_TOKEN='${HF_TOKEN}'\n"
 [[ -n "${KAGGLE_USERNAME:-}" ]] && REMOTE_ENV="${REMOTE_ENV}export KAGGLE_USERNAME='${KAGGLE_USERNAME}'\n"
 [[ -n "${KAGGLE_KEY:-}" ]] && REMOTE_ENV="${REMOTE_ENV}export KAGGLE_KEY='${KAGGLE_KEY}'\n"
+REMOTE_ENV="${REMOTE_ENV}export HF_HOME='/workspace/.cache/huggingface'\n"
 
 ssh -i "$SSH_KEY_PATH" $SSH_OPTS "$SSH_USER@$INSTANCE_IP" bash <<SETUP_EOF
 set -ex
 
-cd ~
+cd /workspace
 
 # Clone or pull repo
 if [[ -d 'variance-min-classification' ]]; then
@@ -115,4 +116,4 @@ SETUP_EOF
 
 log_info "Remote setup complete."
 log_info "SSH in with: ssh -i $SSH_KEY_PATH ${SSH_PORT:+-p $SSH_PORT} $SSH_USER@$INSTANCE_IP"
-log_info "Then: cd ~/variance-min-classification && source venv/bin/activate && source .env"
+log_info "Then: cd /workspace/variance-min-classification && source venv/bin/activate && source .env"

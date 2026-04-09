@@ -50,7 +50,7 @@ K_START=""
 COSINE_DECAY_EPOCH=""
 VARIANCE=""
 MODULE="jl.reward_model.reward_main"
-SSH_USER="ubuntu"
+SSH_USER="root"
 SSH_PORT=""
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -214,7 +214,7 @@ log_info "Running training command..."
 # Build the remote run script (setup already done)
 REMOTE_SCRIPT="
 set -ex
-cd ~/variance-min-classification
+cd /workspace/variance-min-classification
 source venv/bin/activate
 source .env
 
@@ -238,7 +238,7 @@ ls -la output/
 
 REMOTE_SCRIPT_BG="
 set -ex
-cd ~/variance-min-classification
+cd /workspace/variance-min-classification
 source venv/bin/activate
 source .env
 
@@ -257,14 +257,14 @@ fi
 nohup $PYTHON_CMD > training.log 2>&1 &
 
 echo \"Training started in background. PID: \\\$!\"
-echo \"Monitor with: ssh -i $SSH_KEY_PATH ${SSH_PORT:+-p $SSH_PORT} $SSH_USER@$INSTANCE_IP 'tail -f ~/variance-min-classification/training.log'\"
+echo \"Monitor with: ssh -i $SSH_KEY_PATH ${SSH_PORT:+-p $SSH_PORT} $SSH_USER@$INSTANCE_IP 'tail -f /workspace/variance-min-classification/training.log'\"
 "
 
 if [[ "$BACKGROUND" == "true" ]]; then
     log_info "Starting training in background mode..."
     ssh -i "$SSH_KEY_PATH" $SSH_OPTS "$SSH_USER@$INSTANCE_IP" bash <<< "$REMOTE_SCRIPT_BG"
     log_info "Training started in background on $INSTANCE_IP"
-    log_info "Check progress: ssh -i $SSH_KEY_PATH ${SSH_PORT:+-p $SSH_PORT} $SSH_USER@$INSTANCE_IP 'tail -f ~/variance-min-classification/training.log'"
+    log_info "Check progress: ssh -i $SSH_KEY_PATH ${SSH_PORT:+-p $SSH_PORT} $SSH_USER@$INSTANCE_IP 'tail -f /workspace/variance-min-classification/training.log'"
 else
     log_info "Starting training (foreground mode)..."
     ssh -i "$SSH_KEY_PATH" $SSH_OPTS "$SSH_USER@$INSTANCE_IP" bash <<< "$REMOTE_SCRIPT"
