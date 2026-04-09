@@ -28,7 +28,7 @@ from jl.double_descent.calibration.baselines import (
     fit_vector_scaling,
 )
 from jl.double_descent.calibration.evaluate import evaluate_logits, evaluate_probs, evaluate_logits_lightweight
-from jl.double_descent.l2_calibrate_lib import l2_calibrate_final_layer
+from jl.double_descent.l2_calibrate_lib import l2_calibrate_final_layer, sgd_l2_calibrate_final_layer
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,9 @@ def _sweep_worker(
     max_steps: int,
     result_dict: dict,
     evaluate_fn=None,
+    use_sgd: bool = False,
+    sgd_lr: float = 0.1,
+    sgd_epochs: int = 100,
 ) -> None:
     """Worker that runs L2 calibration for a single lambda on one GPU."""
     if evaluate_fn is None:
@@ -58,14 +61,26 @@ def _sweep_worker(
     linear = nn.Linear(feature_dim, num_classes, bias=has_bias).to(device)
     linear.load_state_dict(original_head_state)
 
-    l2_calibrate_final_layer(
-        features=train_features,
-        targets=train_labels,
-        linear_layer=linear,
-        l2_lambda=lam,
-        max_steps=max_steps,
-        device=device,
-    )
+    if use_sgd:
+        sgd_l2_calibrate_final_layer(
+            features=train_features,
+            targets=train_labels,
+            linear_layer=linear,
+            l2_lambda=lam,
+            epochs=sgd_epochs,
+            lr=sgd_lr,
+            momentum=0.9,
+            device=device,
+        )
+    else:
+        l2_calibrate_final_layer(
+            features=train_features,
+            targets=train_labels,
+            linear_layer=linear,
+            l2_lambda=lam,
+            max_steps=max_steps,
+            device=device,
+        )
 
     linear.eval()
     with torch.no_grad():
@@ -88,6 +103,9 @@ def _run_lambda_sweep(
     feature_dim: int,
     max_steps: int,
     evaluate_fn=None,
+    use_sgd: bool = False,
+    sgd_lr: float = 0.1,
+    sgd_epochs: int = 100,
 ) -> List[Tuple[float, Dict, dict]]:
     """Run L2 calibration across lambdas, parallelizing across GPUs.
 
@@ -131,6 +149,9 @@ def _run_lambda_sweep(
                         max_steps,
                         result_dict,
                         evaluate_fn,
+                        use_sgd,
+                        sgd_lr,
+                        sgd_epochs,
                     ),
                 )
                 p.start()
@@ -156,14 +177,26 @@ def _run_lambda_sweep(
             linear = nn.Linear(feature_dim, num_classes, bias=has_bias).to(device)
             linear.load_state_dict(original_head_state)
 
-            l2_calibrate_final_layer(
-                features=train_features,
-                targets=train_labels,
-                linear_layer=linear,
-                l2_lambda=lam,
-                max_steps=max_steps,
-                device=device,
-            )
+            if use_sgd:
+                sgd_l2_calibrate_final_layer(
+                    features=train_features,
+                    targets=train_labels,
+                    linear_layer=linear,
+                    l2_lambda=lam,
+                    epochs=sgd_epochs,
+                    lr=sgd_lr,
+                    momentum=0.9,
+                    device=device,
+                )
+            else:
+                l2_calibrate_final_layer(
+                    features=train_features,
+                    targets=train_labels,
+                    linear_layer=linear,
+                    l2_lambda=lam,
+                    max_steps=max_steps,
+                    device=device,
+                )
 
             linear.eval()
             with torch.no_grad():
@@ -193,6 +226,9 @@ def run_calibration_sweep(
     output_dir: Optional[Path] = None,
     skip_baselines: Optional[List[str]] = None,
     evaluate_fn=None,
+    use_sgd: bool = False,
+    sgd_lr: float = 0.1,
+    sgd_epochs: int = 100,
 ) -> Dict:
     """Run all calibration methods and L2 lambda sweep.
 
@@ -287,6 +323,9 @@ def run_calibration_sweep(
         feature_dim=feature_dim,
         max_steps=max_steps,
         evaluate_fn=evaluate_fn,
+        use_sgd=use_sgd,
+        sgd_lr=sgd_lr,
+        sgd_epochs=sgd_epochs,
     )
 
     # Select best by val metric

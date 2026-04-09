@@ -289,7 +289,7 @@ def main():
     else:  # vit_base_patch16_224
         lambdas = [1e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2, 1e-1]
 
-    # Run calibration sweep
+    # Run calibration sweep (SGD with momentum for ImageNet-scale data)
     run_calibration_sweep(
         train_features=train_features,
         train_labels=train_labels,
@@ -305,6 +305,9 @@ def main():
         sweep_metric=args.sweep_metric,
         device=device,
         output_dir=Path(args.output_path),
+        use_sgd=True,
+        sgd_lr=0.03,
+        sgd_epochs=100,
     )
 
 
