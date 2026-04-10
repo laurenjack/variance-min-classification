@@ -116,19 +116,18 @@ def build_imagenet_loaders(
     batch_size: int = 64,
     num_workers: int = 8,
     seed: int = 42,
-    train_subset: int = 0,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """Build ImageNet train, val, and test loaders from HuggingFace.
 
     Downloads ImageNet-1K from HuggingFace (cached via HF_HOME).
-    Guo et al. protocol: 50K validation set split into 25K val / 25K test
-    via random permutation with fixed seed.
+    Guo et al. 2017 protocol: 50K validation set split into 5K val / 45K test
+    via random permutation with fixed seed. L2 calibration uses the full
+    1.28M training set.
 
     Args:
         batch_size: Batch size for data loaders.
         num_workers: Number of data loading workers.
-        seed: Random seed for val/test split and train subsampling.
-        train_subset: If > 0, subsample training set to this many images.
+        seed: Random seed for val/test split.
 
     Returns:
         (train_loader, val_loader, test_loader)
@@ -154,13 +153,7 @@ def build_imagenet_loaders(
     val_hf = load_dataset("ILSVRC/imagenet-1k", split="validation")
     logger.info(f"HuggingFace: train={len(train_hf)}, val={len(val_hf)}")
 
-    # Training set
-    if train_subset > 0 and train_subset < len(train_hf):
-        g = torch.Generator().manual_seed(seed)
-        indices = torch.randperm(len(train_hf), generator=g)[:train_subset].tolist()
-        train_hf = train_hf.select(indices)
-        logger.info(f"Subsampled training set to {train_subset} images")
-
+    # Full training set (no subsampling) — L2 calibration needs lots of data
     train_dataset = HFImageNetDataset(train_hf, eval_transform)
     train_loader = DataLoader(
         train_dataset,
@@ -171,11 +164,11 @@ def build_imagenet_loaders(
     )
     logger.info(f"Train: {len(train_dataset)} images")
 
-    # Split validation into val/test halves
+    # Split validation into 5K val + 45K test (Guo et al. 2017 protocol)
     n_val = len(val_hf)
     perm = torch.randperm(n_val, generator=torch.Generator().manual_seed(seed))
-    val_indices = perm[: n_val // 2].tolist()
-    test_indices = perm[n_val // 2:].tolist()
+    val_indices = perm[:5000].tolist()
+    test_indices = perm[5000:].tolist()
 
     val_dataset = HFImageNetDataset(val_hf.select(val_indices), eval_transform)
     test_dataset = HFImageNetDataset(val_hf.select(test_indices), eval_transform)
@@ -240,10 +233,6 @@ def main():
         "--seed", type=int, default=42,
         help="Random seed for val/test split (default: 42)",
     )
-    parser.add_argument(
-        "--train-subset", type=int, default=0,
-        help="Subsample training set to N images for L2 calibration (default: 0 = use all)",
-    )
     args = parser.parse_args()
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -257,7 +246,6 @@ def main():
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         seed=args.seed,
-        train_subset=args.train_subset,
     )
 
     # Extract features
@@ -287,10 +275,8 @@ def main():
     # Lambda ranges tuned per architecture:
     # ResNet-152 (2048x1000): needs very small lambdas, collapses above 1e-3
     # ViT-B/16 (768x1000): tolerates more regularization, sweet spot higher
-    if args.model == "resnet152":
-        lambdas = [0, 1e-7, 1e-5, 1e-3]
-    else:  # vit_base_patch16_224
-        lambdas = [1e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2, 1e-1]
+    # Single lambda for now — full 1.28M training set is expensive to sweep
+    lambdas = [1e-4]
 
     # Run calibration sweep (SGD with momentum for ImageNet-scale data)
     run_calibration_sweep(
