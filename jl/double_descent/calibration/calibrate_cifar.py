@@ -70,39 +70,67 @@ def main():
 
     original_head_state = model.fc.state_dict()
 
-    # Load data with the same split as training
-    train_dataset, val_dataset, test_dataset = get_cifar_splits(
-        args.dataset, args.data_path, args.seed
+    # Feature cache: invalidated when checkpoint is newer than cached features
+    cache_dir = checkpoint_path.parent / f"features_{args.dataset}_seed{args.seed}"
+    feat_files = ["train_features.pt", "train_labels.pt",
+                  "val_features.pt", "val_labels.pt",
+                  "test_features.pt", "test_labels.pt"]
+    cache_valid = (
+        cache_dir.exists()
+        and all((cache_dir / f).exists() for f in feat_files)
+        and min((cache_dir / f).stat().st_mtime for f in feat_files) > checkpoint_path.stat().st_mtime
     )
 
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=128, shuffle=False, num_workers=2, pin_memory=True
-    )
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset, batch_size=128, shuffle=False, num_workers=2, pin_memory=True
-    )
-    test_loader = torch.utils.data.DataLoader(
-        test_dataset, batch_size=128, shuffle=False, num_workers=2, pin_memory=True
-    )
+    if cache_valid:
+        logger.info(f"Loading cached features from {cache_dir}")
+        train_features = torch.load(cache_dir / "train_features.pt", map_location="cpu")
+        train_labels = torch.load(cache_dir / "train_labels.pt", map_location="cpu")
+        val_features = torch.load(cache_dir / "val_features.pt", map_location="cpu")
+        val_labels = torch.load(cache_dir / "val_labels.pt", map_location="cpu")
+        test_features = torch.load(cache_dir / "test_features.pt", map_location="cpu")
+        test_labels = torch.load(cache_dir / "test_labels.pt", map_location="cpu")
+        logger.info(f"Train: {train_features.shape}, Val: {val_features.shape}, Test: {test_features.shape}")
+    else:
+        # Load data with the same split as training
+        train_dataset, val_dataset, test_dataset = get_cifar_splits(
+            args.dataset, args.data_path, args.seed
+        )
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset, batch_size=128, shuffle=False, num_workers=2, pin_memory=True
+        )
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset, batch_size=128, shuffle=False, num_workers=2, pin_memory=True
+        )
+        test_loader = torch.utils.data.DataLoader(
+            test_dataset, batch_size=128, shuffle=False, num_workers=2, pin_memory=True
+        )
 
-    # Extract features for all three sets
-    def extract_all(loader, name):
-        all_features = []
-        all_labels = []
-        with torch.no_grad():
-            for images, labels in loader:
-                feats = extract_features(model, images.to(device))
-                all_features.append(feats.cpu())
-                all_labels.append(labels)
-        features = torch.cat(all_features)
-        labels = torch.cat(all_labels)
-        logger.info(f"{name} features: {features.shape}")
-        return features, labels
+        def extract_all(loader, name):
+            all_features = []
+            all_labels = []
+            with torch.no_grad():
+                for images, labels in loader:
+                    feats = extract_features(model, images.to(device))
+                    all_features.append(feats.cpu())
+                    all_labels.append(labels)
+            features = torch.cat(all_features)
+            labels = torch.cat(all_labels)
+            logger.info(f"{name} features: {features.shape}")
+            return features, labels
 
-    logger.info("Extracting features...")
-    train_features, train_labels = extract_all(train_loader, "Train")
-    val_features, val_labels = extract_all(val_loader, "Val")
-    test_features, test_labels = extract_all(test_loader, "Test")
+        logger.info("Extracting features...")
+        train_features, train_labels = extract_all(train_loader, "Train")
+        val_features, val_labels = extract_all(val_loader, "Val")
+        test_features, test_labels = extract_all(test_loader, "Test")
+
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        torch.save(train_features, cache_dir / "train_features.pt")
+        torch.save(train_labels, cache_dir / "train_labels.pt")
+        torch.save(val_features, cache_dir / "val_features.pt")
+        torch.save(val_labels, cache_dir / "val_labels.pt")
+        torch.save(test_features, cache_dir / "test_features.pt")
+        torch.save(test_labels, cache_dir / "test_labels.pt")
+        logger.info(f"Saved features to {cache_dir}")
 
     # Free model memory
     del model
@@ -113,7 +141,10 @@ def main():
     if output_dir is None:
         output_dir = str(Path(args.model_path) / f"calibration_{args.dataset}")
 
-    # Run calibration sweep (use default lambdas from sweep.py)
+    # Lambda range shifted downward — best λ from default range was 1e-3
+    # (the second-smallest), suggesting the sweet spot is below the old range.
+    lambdas = [1e-7, 1e-6, 1e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2]
+
     run_calibration_sweep(
         train_features=train_features,
         train_labels=train_labels,
@@ -124,6 +155,7 @@ def main():
         original_head_state=original_head_state,
         num_classes=num_classes,
         feature_dim=feature_dim,
+        lambdas=lambdas,
         max_steps=args.max_steps,
         sweep_metric=args.sweep_metric,
         device=device,
