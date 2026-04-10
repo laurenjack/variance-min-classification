@@ -141,8 +141,9 @@ def main():
     scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[100, 150], gamma=0.1)
     criterion = nn.CrossEntropyLoss()
 
-    # Training loop
-    best_val_acc = 0.0
+    # Training loop — save final epoch model (matches Guo et al. 2017 setup,
+    # which does NOT early-stop. Early stopping produces better-calibrated
+    # baselines that don't reflect typical "overconfident" behavior).
     for epoch in range(1, args.epochs + 1):
         start = time.time()
         model.train()
@@ -177,12 +178,9 @@ def main():
             f"lr={optimizer.param_groups[0]['lr']:.0e}"
         )
 
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            torch.save(model.state_dict(), checkpoint_path)
-            logger.info(f"  -> New best val_acc={val_acc:.4f}, saved to {checkpoint_path}")
-
-    logger.info(f"Training complete. Best val_acc={best_val_acc:.4f}")
+    # Save final epoch (not best-val) — overconfident baseline matches literature
+    torch.save(model.state_dict(), checkpoint_path)
+    logger.info(f"Training complete. Final val_acc={val_acc:.4f}, saved to {checkpoint_path}")
 
 
 if __name__ == "__main__":
