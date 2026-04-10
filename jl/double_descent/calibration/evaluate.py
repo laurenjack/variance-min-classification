@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 
 def compute_ece(
-    confidences: torch.Tensor, correct: torch.Tensor, num_bins: int = 20
+    confidences: torch.Tensor, correct: torch.Tensor, num_bins: int = 15
 ) -> float:
     """Expected Calibration Error with equal-width bins."""
     bin_boundaries = torch.linspace(0, 1, num_bins + 1)
