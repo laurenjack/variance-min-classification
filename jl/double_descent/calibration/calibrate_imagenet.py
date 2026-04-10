@@ -15,15 +15,20 @@ Usage:
 import argparse
 import logging
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader
 
 from jl.double_descent.calibration.sweep import run_calibration_sweep
 
 logger = logging.getLogger(__name__)
+
+def info_to_cache_key(timm_name: str) -> str:
+    """Sanitize a timm model name into a filesystem-safe cache directory name."""
+    return timm_name.replace("/", "_").replace(".", "_")
+
 
 SUPPORTED_MODELS = {
     "resnet152": {
@@ -115,22 +120,16 @@ class HFImageNetDataset(torch.utils.data.Dataset):
 def build_imagenet_loaders(
     batch_size: int = 64,
     num_workers: int = 8,
-    seed: int = 42,
-) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    """Build ImageNet train, val, and test loaders from HuggingFace.
+) -> Tuple[DataLoader, DataLoader]:
+    """Build ImageNet train and full-validation loaders from HuggingFace.
 
-    Downloads ImageNet-1K from HuggingFace (cached via HF_HOME).
-    Guo et al. 2017 protocol: 50K validation set split into 5K val / 45K test
-    via random permutation with fixed seed. L2 calibration uses the full
-    1.28M training set.
-
-    Args:
-        batch_size: Batch size for data loaders.
-        num_workers: Number of data loading workers.
-        seed: Random seed for val/test split.
+    Downloads ImageNet-1K from HuggingFace (cached via HF_HOME). Returns the
+    full 1.28M training set and full 50K validation set (no val/test split —
+    the split is applied later on cached features, so changing the seed
+    doesn't force re-extraction).
 
     Returns:
-        (train_loader, val_loader, test_loader)
+        (train_loader, val_loader)  # val_loader covers all 50K HF val images
     """
     from datasets import load_dataset
     from torchvision import transforms
@@ -147,14 +146,14 @@ def build_imagenet_loaders(
         normalize,
     ])
 
-    # Load from HuggingFace (cached via HF_HOME env var)
     logger.info("Loading ImageNet-1K from HuggingFace (or cache)...")
     train_hf = load_dataset("ILSVRC/imagenet-1k", split="train")
     val_hf = load_dataset("ILSVRC/imagenet-1k", split="validation")
     logger.info(f"HuggingFace: train={len(train_hf)}, val={len(val_hf)}")
 
-    # Full training set (no subsampling) — L2 calibration needs lots of data
     train_dataset = HFImageNetDataset(train_hf, eval_transform)
+    val_dataset = HFImageNetDataset(val_hf, eval_transform)
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -162,17 +161,6 @@ def build_imagenet_loaders(
         num_workers=num_workers,
         pin_memory=True,
     )
-    logger.info(f"Train: {len(train_dataset)} images")
-
-    # Split validation into 5K val + 45K test (Guo et al. 2017 protocol)
-    n_val = len(val_hf)
-    perm = torch.randperm(n_val, generator=torch.Generator().manual_seed(seed))
-    val_indices = perm[:5000].tolist()
-    test_indices = perm[5000:].tolist()
-
-    val_dataset = HFImageNetDataset(val_hf.select(val_indices), eval_transform)
-    test_dataset = HFImageNetDataset(val_hf.select(test_indices), eval_transform)
-
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
@@ -180,18 +168,49 @@ def build_imagenet_loaders(
         num_workers=num_workers,
         pin_memory=True,
     )
+    logger.info(f"Train: {len(train_dataset)} images, Val: {len(val_dataset)} images")
 
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True,
-    )
+    return train_loader, val_loader
 
-    logger.info(f"Val: {len(val_dataset)} images, Test: {len(test_dataset)} images")
 
-    return train_loader, val_loader, test_loader
+def load_or_extract_features(
+    cache_dir: Path,
+    split: str,
+    model: nn.Module,
+    loader: Optional[DataLoader],
+    device: torch.device,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Load cached features if present, otherwise extract and save.
+
+    Features are a deterministic function of (model weights, dataset), so we
+    cache them under cache_dir/{split}_{features,labels}.pt. Re-running with
+    a different --seed or different --output-path reuses the same cache.
+    """
+    feat_path = cache_dir / f"{split}_features.pt"
+    label_path = cache_dir / f"{split}_labels.pt"
+
+    if feat_path.exists() and label_path.exists():
+        logger.info(f"Loading cached {split} features from {feat_path}")
+        features = torch.load(feat_path, map_location="cpu")
+        labels = torch.load(label_path, map_location="cpu")
+        logger.info(f"{split.capitalize()} features: {tuple(features.shape)}")
+        return features, labels
+
+    if loader is None:
+        raise RuntimeError(
+            f"No cached {split} features at {cache_dir} and no loader provided."
+        )
+
+    logger.info(f"Extracting {split} features...")
+    features, labels = extract_features(model, loader, device)
+    logger.info(f"{split.capitalize()} features: {tuple(features.shape)}")
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    torch.save(features, feat_path)
+    torch.save(labels, label_path)
+    logger.info(f"Saved {split} features to {feat_path}")
+
+    return features, labels
 
 
 def main():
@@ -233,50 +252,69 @@ def main():
         "--seed", type=int, default=42,
         help="Random seed for val/test split (default: 42)",
     )
+    parser.add_argument(
+        "--feature-cache-dir", type=str, default="./data/imagenet_features",
+        help="Directory for cached extracted features (default: ./data/imagenet_features)",
+    )
     args = parser.parse_args()
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     logger.info(f"Device: {device}")
 
-    # Load model
+    # Load model (needed for head state even when features are cached)
     model, model_info = load_model(args.model, device)
-
-    # Build data loaders (downloads from HuggingFace, cached via HF_HOME)
-    train_loader, val_loader, test_loader = build_imagenet_loaders(
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        seed=args.seed,
-    )
-
-    # Extract features
-    logger.info("Extracting training features...")
-    train_features, train_labels = extract_features(model, train_loader, device)
-    logger.info(f"Train features: {train_features.shape}")
-
-    logger.info("Extracting val features...")
-    val_features, val_labels = extract_features(model, val_loader, device)
-    logger.info(f"Val features: {val_features.shape}")
-
-    logger.info("Extracting test features...")
-    test_features, test_labels = extract_features(model, test_loader, device)
-    logger.info(f"Test features: {test_features.shape}")
-
-    # Get original head state
     head_attr = model_info["head_attr"]
     original_head = getattr(model, head_attr)
-    original_head_state = original_head.state_dict()
+    original_head_state = {k: v.cpu() for k, v in original_head.state_dict().items()}
     feature_dim = model_info["feature_dim"]
     num_classes = original_head.out_features
 
-    # Free model memory
-    del model
-    torch.cuda.empty_cache()
+    # Feature cache keyed by timm name (sanitized), independent of --seed and --output-path
+    cache_key = info_to_cache_key(model_info["timm_name"])
+    cache_dir = Path(args.feature_cache_dir) / cache_key
+    logger.info(f"Feature cache: {cache_dir}")
 
-    # Lambda ranges tuned per architecture:
-    # ResNet-152 (2048x1000): needs very small lambdas, collapses above 1e-3
-    # ViT-B/16 (768x1000): tolerates more regularization, sweet spot higher
-    # Single lambda for now — full 1.28M training set is expensive to sweep
-    lambdas = [1e-4]
+    train_feat_path = cache_dir / "train_features.pt"
+    val_feat_path = cache_dir / "val_features.pt"
+    need_data = not (train_feat_path.exists() and val_feat_path.exists())
+
+    if need_data:
+        train_loader, val_loader = build_imagenet_loaders(
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+        )
+    else:
+        train_loader = val_loader = None  # type: ignore[assignment]
+        logger.info("All features cached — skipping ImageNet download and loader build")
+
+    # Load or extract features (train + full 50K val; val/test split applied below)
+    train_features, train_labels = load_or_extract_features(
+        cache_dir, "train", model, train_loader, device
+    )
+    val_all_features, val_all_labels = load_or_extract_features(
+        cache_dir, "val", model, val_loader, device
+    )
+
+    # Free model memory — features are cached on CPU, no need for the backbone
+    del model
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    # Apply Guo et al. 2017 val/test split on cached 50K val features (seed-dependent)
+    n_val = val_all_features.shape[0]
+    perm = torch.randperm(n_val, generator=torch.Generator().manual_seed(args.seed))
+    val_idx = perm[:5000]
+    test_idx = perm[5000:]
+    val_features = val_all_features[val_idx]
+    val_labels = val_all_labels[val_idx]
+    test_features = val_all_features[test_idx]
+    test_labels = val_all_labels[test_idx]
+    logger.info(
+        f"Split (seed={args.seed}): val={val_features.shape[0]}, test={test_features.shape[0]}"
+    )
+
+    # Lambda sweep — cheap now that features are cached (SGD only, ~1 min each)
+    lambdas = [1e-5, 1e-4, 1e-3, 1e-2]
 
     # Run calibration sweep (SGD with momentum for ImageNet-scale data)
     run_calibration_sweep(
