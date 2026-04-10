@@ -97,7 +97,7 @@ def apply_vector_scaling(
     return logits * weights.unsqueeze(0) + biases.unsqueeze(0)
 
 
-# --- Histogram Binning ---
+# --- Histogram Binning (per-class, Zadrozny & Elkan / Guo et al.) ---
 
 
 def fit_histogram_binning(
@@ -105,75 +105,70 @@ def fit_histogram_binning(
     val_labels: torch.Tensor,
     num_bins: int = 15,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Fit histogram binning on validation set.
+    """Fit per-class histogram binning on validation set.
 
-    For each confidence bin, compute the empirical accuracy.
+    Standard multiclass histogram binning (Zadrozny & Elkan 2002):
+    For each class k, treat as a binary problem (y == k vs y != k).
+    Bin the marginal probability p_k and compute the empirical positive
+    rate per bin. At test time, replace p_k with the bin's positive rate
+    and renormalize so probabilities sum to 1.
 
     Returns:
-        (bin_boundaries [num_bins+1], bin_accuracies [num_bins])
+        (bin_boundaries [num_bins+1], bin_rates [num_classes, num_bins])
     """
     probs = F.softmax(val_logits, dim=-1)
-    max_probs, predictions = probs.max(dim=1)
-    correct = (predictions == val_labels).float()
+    num_classes = probs.shape[1]
 
     bin_boundaries = torch.linspace(0, 1, num_bins + 1)
-    bin_accuracies = torch.zeros(num_bins)
+    bin_rates = torch.zeros(num_classes, num_bins)
 
-    for i in range(num_bins):
-        lo, hi = bin_boundaries[i].item(), bin_boundaries[i + 1].item()
-        mask = (max_probs > lo) & (max_probs <= hi)
-        if i == 0:
-            mask = mask | (max_probs == lo)
-        n_bin = mask.sum().item()
-        if n_bin > 0:
-            bin_accuracies[i] = correct[mask].mean()
-        else:
-            # Empty bin: use midpoint as fallback
-            bin_accuracies[i] = (lo + hi) / 2
+    for k in range(num_classes):
+        p_k = probs[:, k]
+        is_k = (val_labels == k).float()
 
-    logger.info(
-        f"Histogram binning: {num_bins} bins, "
-        f"non-empty bins: {sum(1 for i in range(num_bins) if ((max_probs > bin_boundaries[i]) & (max_probs <= bin_boundaries[i+1])).any())}"
-    )
-    return bin_boundaries, bin_accuracies
+        for i in range(num_bins):
+            lo, hi = bin_boundaries[i].item(), bin_boundaries[i + 1].item()
+            mask = (p_k > lo) & (p_k <= hi)
+            if i == 0:
+                mask = mask | (p_k == lo)
+            n_bin = mask.sum().item()
+            if n_bin > 0:
+                bin_rates[k, i] = is_k[mask].mean()
+            else:
+                # Empty bin: use midpoint as fallback
+                bin_rates[k, i] = (lo + hi) / 2
+
+    logger.info(f"Histogram binning: {num_bins} bins per class, {num_classes} classes")
+    return bin_boundaries, bin_rates
 
 
 def apply_histogram_binning(
     logits: torch.Tensor,
     bin_boundaries: torch.Tensor,
-    bin_accuracies: torch.Tensor,
+    bin_rates: torch.Tensor,
 ) -> torch.Tensor:
-    """Apply histogram binning to logits, return calibrated probabilities.
+    """Apply per-class histogram binning to logits, return calibrated probabilities.
 
-    Replaces top-class confidence with bin accuracy, redistributes
-    remaining probability mass proportionally among other classes.
+    For each class k, look up the bin index for p_k and replace with the
+    fitted positive rate. Renormalize so probabilities sum to 1.
     """
     probs = F.softmax(logits, dim=-1)
-    max_probs, top_classes = probs.max(dim=1)
-    num_bins = len(bin_accuracies)
+    num_classes = probs.shape[1]
+    num_bins = bin_rates.shape[1]
 
-    # Find bin index for each sample
-    bin_indices = torch.bucketize(max_probs, bin_boundaries[1:-1])  # [N]
+    # Vectorized bin lookup per class
+    # bin_indices[n, k] = bin for sample n, class k
+    bin_indices = torch.bucketize(probs, bin_boundaries[1:-1])  # [N, K]
     bin_indices = bin_indices.clamp(0, num_bins - 1)
 
-    calibrated_top = bin_accuracies[bin_indices]  # [N]
+    # Gather rates: calibrated[n, k] = bin_rates[k, bin_indices[n, k]]
+    # bin_rates is [K, B], we need to index per (n, k) pair
+    k_idx = torch.arange(num_classes).unsqueeze(0).expand_as(bin_indices)  # [N, K]
+    calibrated = bin_rates[k_idx, bin_indices]  # [N, K]
 
-    # Redistribute remaining mass proportionally
-    calibrated = probs.clone()
-    for i in range(len(logits)):
-        top_c = top_classes[i]
-        old_top = probs[i, top_c].item()
-        new_top = calibrated_top[i].item()
-
-        if old_top < 1.0 - 1e-8:
-            # Scale non-top classes proportionally
-            scale = (1.0 - new_top) / (1.0 - old_top)
-            calibrated[i] = probs[i] * scale
-        else:
-            # Model was ~100% confident, distribute uniformly
-            calibrated[i] = (1.0 - new_top) / (probs.shape[1] - 1)
-
-        calibrated[i, top_c] = new_top
+    # Renormalize so each row sums to 1
+    row_sums = calibrated.sum(dim=1, keepdim=True).clamp(min=1e-8)
+    calibrated = calibrated / row_sums
 
     return calibrated
 
