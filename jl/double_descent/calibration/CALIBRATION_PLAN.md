@@ -291,17 +291,21 @@ Both loaded pre-trained from **timm** — no training needed:
 
 ImageNet has no public test labels, so Guo et al. split the 50K validation set:
 
-- **Train**: 1.28M (full training set) — L2 calibration uses all training features by default.
-  Optional `--train-subset N` to subsample (e.g. 50K) for faster iteration
-- **Val**: 25K (random permutation of 50K val, fixed seed) — calibration fitting + lambda selection
-- **Test**: 25K (remaining half) — final evaluation
+- **Train**: 1.28M (full training set) — L2 calibration always uses the full training set
+- **Val**: 5K (random permutation of 50K val, fixed seed) — calibration fitting + lambda selection
+- **Test**: 45K (remaining) — final evaluation
 
 ### Implementation: `calibrate_imagenet.py`
 
 1. Load pre-trained model from timm (ResNet-152 or ViT-B/16)
 2. Load ImageNet from HuggingFace `datasets` library (auto-cached)
-3. Extract features on train + val + test splits
-4. Run `sweep.py` with extracted features
+3. Extract features on the full 1.28M train set and full 50K HF val set,
+   caching them to `./data/imagenet_features/{timm_name}/` so subsequent
+   runs (different `--seed`, `--output-path`, or lambda sweeps) skip
+   extraction. Disk cost: ~10.5 GB (ResNet-152) / ~3.9 GB (ViT-B/16).
+4. Apply the 5K/45K val/test split on the cached features (seed-dependent,
+   no re-extraction needed when changing seed).
+5. Run `sweep.py` with the features
 
 
 ---
