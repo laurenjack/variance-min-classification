@@ -27,7 +27,10 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_MODELS = {
     "resnet152": {
-        "timm_name": "resnet152",
+        # Use the original He et al. 2015 recipe weights (~78.3% top-1, SGD+CE),
+        # not the modern "ResNet Strikes Back" recipe (LAMB+BCE+heavy aug).
+        # Matches Guo et al. 2017 calibration paper setup.
+        "timm_name": "resnet152.tv_in1k",
         "feature_dim": 2048,
         "head_attr": "fc",
     },
@@ -285,7 +288,7 @@ def main():
     # ResNet-152 (2048x1000): needs very small lambdas, collapses above 1e-3
     # ViT-B/16 (768x1000): tolerates more regularization, sweet spot higher
     if args.model == "resnet152":
-        lambdas = [0, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2]
+        lambdas = [0, 1e-7, 1e-5, 1e-3]
     else:  # vit_base_patch16_224
         lambdas = [1e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2, 1e-1]
 
