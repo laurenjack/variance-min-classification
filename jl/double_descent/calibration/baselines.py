@@ -26,15 +26,20 @@ logger = logging.getLogger(__name__)
 def fit_temperature(
     val_logits: torch.Tensor,
     val_labels: torch.Tensor,
-    max_iter: int = 50,
+    max_iter: int = 200,
 ) -> float:
     """Fit scalar temperature T on validation logits via L-BFGS.
+
+    NOTE: We use lr=1.0 (PyTorch default), not the lr=0.01 from Guo et al.'s
+    reference implementation. Their lr=0.01 fails to converge from T=1 when
+    the optimum is far away (e.g. T~2.5 for overconfident CIFAR-100 ResNet-110),
+    returning T~1.2 in 50 iterations. lr=1.0 reliably finds the global optimum.
 
     Returns:
         Temperature T (float).
     """
     temperature = nn.Parameter(torch.ones(1))
-    optimizer = torch.optim.LBFGS([temperature], lr=0.01, max_iter=max_iter)
+    optimizer = torch.optim.LBFGS([temperature], lr=1.0, max_iter=max_iter)
 
     def closure():
         optimizer.zero_grad()
