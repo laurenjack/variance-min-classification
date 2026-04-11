@@ -18,7 +18,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -97,6 +97,43 @@ def read_final_train_metrics(metrics_path: Path) -> Dict[str, float]:
     }
 
 
+def _metrics_pass(
+    model: torch.nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+) -> Tuple[float, float, float]:
+    """Forward a loader and return (avg_loss, error_rate, ECE)."""
+    total_loss = 0.0
+    total_correct = 0
+    total_samples = 0
+    all_confidences = []
+    all_correct = []
+
+    with torch.no_grad():
+        for images, labels in loader:
+            images = images.to(device)
+            labels = labels.to(device)
+            batch_size = images.size(0)
+
+            logits = model(images)
+            loss = F.cross_entropy(logits, labels, reduction='sum')
+            total_loss += loss.item()
+
+            probs = F.softmax(logits, dim=-1)
+            max_probs, predictions = probs.max(dim=-1)
+            correct = predictions == labels
+
+            total_correct += correct.sum().item()
+            total_samples += batch_size
+            all_confidences.append(max_probs.cpu())
+            all_correct.append(correct.cpu())
+
+    avg_loss = total_loss / total_samples
+    error = 1.0 - (total_correct / total_samples)
+    ece = compute_ece(torch.cat(all_confidences), torch.cat(all_correct))
+    return avg_loss, error, ece
+
+
 def compute_final_metrics(
     model: torch.nn.Module,
     test_loader: DataLoader,
@@ -105,12 +142,15 @@ def compute_final_metrics(
     model_label: str,
     model_params: Dict,
     device: torch.device,
+    val_loader: "Optional[DataLoader]" = None,
 ) -> Dict:
     """Compute final metrics for a trained model.
 
     1. Runs forward pass on test set to compute test_loss, test_error, ECE
-    2. Reads final train_loss, train_error from metrics_path
-    3. Appends one JSON line to output_path/evaluation.jsonl
+    2. (Optional) Runs forward pass on val set to compute val_loss, val_error,
+       val_ece — only when val_loader is provided (val-split mode).
+    3. Reads final train_loss, train_error from metrics_path
+    4. Appends one JSON line to output_path/evaluation.jsonl
 
     Args:
         model: Trained model (already on device, in eval mode).
@@ -120,49 +160,16 @@ def compute_final_metrics(
         model_label: Label for logging, e.g. "k4" or "n3".
         model_params: Dict of model params to include in result, e.g. {"k": 4}.
         device: Device model is on.
+        val_loader: Optional DataLoader for the held-out val split. When
+            provided, val_loss / val_error / val_ece are added to the
+            evaluation row.
 
     Returns:
         Dict of computed metrics.
     """
     model.eval()
 
-    total_loss = 0.0
-    total_correct = 0
-    total_samples = 0
-    all_confidences = []
-    all_correct = []
-
-    with torch.no_grad():
-        for images, labels in test_loader:
-            images = images.to(device)
-            labels = labels.to(device)
-            batch_size = images.size(0)
-
-            logits = model(images)
-
-            # Compute loss
-            loss = F.cross_entropy(logits, labels, reduction='sum')
-            total_loss += loss.item()
-
-            # Compute accuracy
-            probs = F.softmax(logits, dim=-1)
-            max_probs, predictions = probs.max(dim=-1)
-            correct = predictions == labels
-
-            total_correct += correct.sum().item()
-            total_samples += batch_size
-
-            # Collect ECE inputs
-            all_confidences.append(max_probs.cpu())
-            all_correct.append(correct.cpu())
-
-    test_loss = total_loss / total_samples
-    test_error = 1.0 - (total_correct / total_samples)
-
-    # Compute ECE
-    confidences = torch.cat(all_confidences)
-    correct = torch.cat(all_correct)
-    ece = compute_ece(confidences, correct)
+    test_loss, test_error, ece = _metrics_pass(model, test_loader, device)
 
     # Read train metrics from metrics file
     train_metrics = read_final_train_metrics(metrics_path)
@@ -176,14 +183,26 @@ def compute_final_metrics(
         'ece': round(ece, 6),
     }
 
+    if val_loader is not None:
+        val_loss, val_error, val_ece = _metrics_pass(model, val_loader, device)
+        result['val_loss'] = round(val_loss, 6)
+        result['val_error'] = round(val_error, 6)
+        result['val_ece'] = round(val_ece, 6)
+
     # Append to evaluation.jsonl
     eval_file = output_path / 'evaluation.jsonl'
     with open(eval_file, 'a') as f:
         f.write(json.dumps(result) + '\n')
 
+    val_str = ""
+    if val_loader is not None:
+        val_str = (
+            f", val_loss={result['val_loss']:.4f}, "
+            f"val_error={result['val_error']:.4f}, val_ece={result['val_ece']:.6f}"
+        )
     logger.info(
         f"{model_label}: test_loss={test_loss:.4f}, test_error={test_error:.4f}, "
-        f"ece={ece:.6f}"
+        f"ece={ece:.6f}{val_str}"
     )
 
     return result

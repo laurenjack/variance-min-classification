@@ -24,5 +24,13 @@ class DDConfig:
     label_noise: float = 0.15
     data_augmentation: bool = True
 
+    # Validation split
+    # When True, training carves a deterministic 5000-sample validation set
+    # out of the noised 50K training set (via seed=73132), trains on the
+    # remaining 45K, and the main process saves val.pt to the output folder.
+    # Per-epoch val_loss/val_error are also logged to metrics_k*.jsonl.
+    # When False, the full 50K noised training set is used (legacy path).
+    use_val_split: bool = False
+
     # Logging
     log_interval: int = 1  # Every epoch

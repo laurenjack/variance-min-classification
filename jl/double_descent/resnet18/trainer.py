@@ -16,7 +16,11 @@ import torch.nn.functional as F
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 
-from jl.double_descent.resnet18.resnet18_data import load_cifar10_split, load_cifar10_with_noise
+from jl.double_descent.resnet18.resnet18_data import (
+    load_cifar10_split,
+    load_cifar10_with_noise,
+    load_cifar10_with_noise_val_split,
+)
 
 
 def make_cosine_decay_scheduler(
@@ -126,10 +130,18 @@ def train_single_model(
         print(f"[GPU {gpu_id}] Training {model_label} on {device}")
 
     # Load data (each process loads independently)
+    val_loader: Optional[DataLoader] = None
     if variance_mode:
         train_loader, test_loader = load_cifar10_split(
             split_id=split_id,
             num_splits=num_splits,
+            noise_prob=config.label_noise,
+            batch_size=config.batch_size,
+            data_augmentation=config.data_augmentation,
+            data_dir=data_path,
+        )
+    elif getattr(config, "use_val_split", False):
+        train_loader, val_loader, test_loader = load_cifar10_with_noise_val_split(
             noise_prob=config.label_noise,
             batch_size=config.batch_size,
             data_augmentation=config.data_augmentation,
@@ -213,6 +225,12 @@ def train_single_model(
         # Only evaluate on test set (separate pass required)
         test_error, test_loss = evaluate(model, test_loader, device)
 
+        # Val metrics (only when use_val_split is enabled)
+        val_error: Optional[float] = None
+        val_loss: Optional[float] = None
+        if val_loader is not None:
+            val_error, val_loss = evaluate(model, val_loader, device)
+
         # Step the scheduler if using cosine decay
         if scheduler is not None:
             scheduler.step()
@@ -227,6 +245,9 @@ def train_single_model(
             "train_loss": train_loss,
             "test_loss": test_loss,
         }
+        if val_loader is not None:
+            metrics["val_error"] = val_error
+            metrics["val_loss"] = val_loss
         if variance_mode:
             metrics["split_id"] = split_id
         with open(metrics_path, 'a') as f:
@@ -235,9 +256,14 @@ def train_single_model(
         # Print progress
         if (epoch + 1) % config.log_interval == 0 or epoch == 0:
             split_str = f", split={split_id}" if variance_mode else ""
+            val_str = (
+                f" val_err={val_error:.4f} val_loss={val_loss:.4f} |"
+                if val_loader is not None
+                else ""
+            )
             print(
                 f"[GPU {gpu_id}] {model_label}{split_str} Epoch {epoch + 1:4d}/{config.epochs} | "
-                f"train_err={train_error:.4f} test_err={test_error:.4f} | "
+                f"train_err={train_error:.4f} test_err={test_error:.4f} |{val_str} "
                 f"train_loss={train_loss:.4f} test_loss={test_loss:.4f} | "
                 f"{epoch_time:.1f}s"
             )
@@ -255,4 +281,7 @@ def train_single_model(
     if not variance_mode:
         from jl.double_descent.resnet18.evaluation import compute_final_metrics
         eval_output = Path(output_path)
-        compute_final_metrics(model, test_loader, metrics_path, eval_output, model_label, model_params, device)
+        compute_final_metrics(
+            model, test_loader, metrics_path, eval_output, model_label,
+            model_params, device, val_loader=val_loader,
+        )

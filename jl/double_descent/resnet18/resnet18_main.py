@@ -4,27 +4,40 @@
 Reproduces Figure 1 from Nakkiran et al. (2019) "Deep Double Descent":
 ResNet18 with varying width parameter k trained on CIFAR-10 with 15% label noise.
 
-Requires exactly 8 GPUs. Trains 8 models in parallel using torch.multiprocessing.
+Requires exactly 10 GPUs in default mode. Trains 10 models in parallel
+using torch.multiprocessing across 2 batches (20 k values total).
 
 Two modes:
 
 1. DEFAULT MODE (no flags):
-   - Trains 16 models across 2 batches (8 models per batch)
-   - k values: 4, 8, 12, ..., 64 (increment by 4)
-   - Batch 1: k=4,8,12,16,20,24,28,32
-   - Batch 2: k=36,40,44,48,52,56,60,64
+   - Trains 20 models across 2 batches (10 models per batch)
+   - Hardcoded k values: 2, 3, 4, 5, 6, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44,
+     48, 52, 56, 60, 64
+   - Batch 1: k = 2, 3, 4, 5, 6, 8, 12, 16, 20, 24
+   - Batch 2: k = 28, 32, 36, 40, 44, 48, 52, 56, 60, 64
 
 2. VARIANCE MODE (--variance):
-   - Trains models for variance analysis: 16 k values x 4 disjoint splits
-   - k values: 4, 8, 12, ..., 64 (increment by 4)
-   - Each split is a disjoint 12.5K subset from the 50K training data
-   - 8 batches total (2 k values x 4 splits per batch)
+   - Trains models for variance analysis: disjoint-split experiment.
+   - See run_variance(). Unchanged from the previous behavior.
+
+Optional flag:
+  --val-split
+     Hold out a deterministic 5K validation split from the noised 50K
+     training set (seed=73132, see resnet18_data.save_val_set). Train on the
+     remaining 45K. Per-epoch val_loss / val_error are logged to
+     metrics_k*.jsonl, and the final evaluation.jsonl row gets
+     val_loss / val_error / val_ece. The main process saves val.pt to the
+     output folder before spawning workers. Cannot be combined with
+     --variance.
 
 Usage:
-    # Default mode (k=4-64 in 2 batches)
+    # Default mode (k=2..64, 20 models in 2 batches of 10)
     python -m jl.double_descent.resnet18.resnet18_main --output-path ./output
 
-    # Variance experiment
+    # Default mode with validation split (45K train / 5K val)
+    python -m jl.double_descent.resnet18.resnet18_main --output-path ./output --val-split
+
+    # Variance experiment (unchanged)
     python -m jl.double_descent.resnet18.resnet18_main --variance --output-path ./output
 """
 
@@ -38,14 +51,20 @@ import torch
 import torch.multiprocessing as mp
 
 from jl.double_descent.resnet18.resnet18_config import DDConfig
-from jl.double_descent.resnet18.resnet18_data import download_cifar10
+from jl.double_descent.resnet18.resnet18_data import download_cifar10, save_val_set
 from jl.double_descent.resnet18.resnet18k import make_resnet18k
 from jl.double_descent.resnet18.trainer import train_single_model
 
-# Hardcoded experiment parameters
-REQUIRED_GPUS = 6
-K_INCREMENT = 1
-NUM_BATCHES = 1  # Default mode runs 1 batch: k=1-6
+# Hardcoded experiment parameters (default mode)
+REQUIRED_GPUS = 10
+# The 20 target k values for the main sweep. First 10 go in batch 1, last 10
+# in batch 2. 10 GPUs × 2 batches = 20 models.
+K_VALUES = [2, 3, 4, 5, 6, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 64]
+NUM_BATCHES = 2
+assert len(K_VALUES) == REQUIRED_GPUS * NUM_BATCHES, (
+    f"K_VALUES length {len(K_VALUES)} must equal "
+    f"REQUIRED_GPUS * NUM_BATCHES = {REQUIRED_GPUS * NUM_BATCHES}"
+)
 
 # Variance experiment parameters
 VARIANCE_K_VALUES = [2, 6, 10, 14]  # Temporary: fill in gaps for first/second descent
@@ -78,28 +97,22 @@ def parse_args():
         help="Path to store CIFAR-10 data"
     )
     parser.add_argument(
-        "--k-start",
-        type=int,
-        default=None,
-        help="Starting width parameter k. Will train k, k+8, k+16, ..., k+8*(N-1) where N is GPU count. (default: 72)"
-    )
-    parser.add_argument(
         "--epochs",
         type=int,
         default=None,
-        help="Number of training epochs (overrides config default of 4000)"
+        help="Number of training epochs (overrides config default)"
     )
     parser.add_argument(
         "--batch-size",
         type=int,
         default=None,
-        help="Batch size (overrides config default of 128)"
+        help="Batch size (overrides config default)"
     )
     parser.add_argument(
         "--learning-rate",
         type=float,
         default=None,
-        help="Learning rate (overrides config default of 0.0001)"
+        help="Learning rate (overrides config default)"
     )
     parser.add_argument(
         "--label-noise",
@@ -121,21 +134,30 @@ def parse_args():
     parser.add_argument(
         "--variance",
         action="store_true",
-        help="Run variance experiment (16 k values x 4 disjoint splits) instead of default mode"
+        help="Run variance experiment instead of default mode"
+    )
+    parser.add_argument(
+        "--val-split",
+        action="store_true",
+        help="Hold out a deterministic 5K validation split from the noised "
+             "50K training set (seed=73132). Train on 45K. Saves val.pt to "
+             "the output folder and logs per-epoch val metrics. Not "
+             "compatible with --variance.",
     )
     return parser.parse_args()
 
 
 def run_default(args, config):
-    """Run the default training mode (2 batches of 8 k values each, k=4-64)."""
+    """Run default training: 2 batches × 10 models, hardcoded K_VALUES."""
     total_start = time.time()
 
-    # Compute all k values across both batches
-    all_k_values = [config.k_start + K_INCREMENT * i for i in range(REQUIRED_GPUS * NUM_BATCHES)]
-
     logger.info("Deep Double Descent Training - Default Mode")
-    logger.info(f"Width values: k={all_k_values}")
-    logger.info(f"Batches: {NUM_BATCHES} (8 models per batch)")
+    logger.info(f"Width values: k={K_VALUES}")
+    logger.info(f"Batches: {NUM_BATCHES} ({REQUIRED_GPUS} models per batch)")
+    logger.info(
+        f"Validation split: "
+        f"{'enabled (45K train / 5K val, seed=73132)' if config.use_val_split else 'disabled (full 50K train)'}"
+    )
     logger.info(f"Epochs: {config.epochs}, Batch size: {config.batch_size}")
     logger.info(f"Learning rate: {config.learning_rate}")
     if config.cosine_decay_epoch is not None:
@@ -148,7 +170,7 @@ def run_default(args, config):
 
     # Run batches sequentially
     for batch_idx in range(NUM_BATCHES):
-        batch_k_values = all_k_values[batch_idx * REQUIRED_GPUS:(batch_idx + 1) * REQUIRED_GPUS]
+        batch_k_values = K_VALUES[batch_idx * REQUIRED_GPUS:(batch_idx + 1) * REQUIRED_GPUS]
         batch_num = batch_idx + 1
 
         logger.info(f"\n{'='*60}")
@@ -185,17 +207,15 @@ def run_default(args, config):
 
 
 def run_variance(args, config):
-    """Run the variance experiment (16 k values x 4 disjoint splits)."""
+    """Run the variance experiment (disjoint-split mode). Unchanged."""
     total_start = time.time()
 
-    # 2 k values per batch x 4 splits = 8 GPUs
-    k_per_batch = REQUIRED_GPUS // VARIANCE_NUM_SPLITS  # 2
+    k_per_batch = max(1, REQUIRED_GPUS // VARIANCE_NUM_SPLITS)
 
     logger.info("Deep Double Descent - Variance Experiment")
     logger.info(f"k values: {VARIANCE_K_VALUES}")
     logger.info(f"Disjoint splits: {VARIANCE_NUM_SPLITS} x 12500 samples each")
-    logger.info(f"Total models: {len(VARIANCE_K_VALUES) * VARIANCE_NUM_SPLITS} = 64")
-    logger.info(f"Batches: {len(VARIANCE_K_VALUES) // k_per_batch} (2 k per batch x 4 splits)")
+    logger.info(f"Total models: {len(VARIANCE_K_VALUES) * VARIANCE_NUM_SPLITS}")
     logger.info(f"Epochs: {config.epochs}, Batch size: {config.batch_size}")
     logger.info(f"Learning rate: {config.learning_rate}")
     if config.cosine_decay_epoch is not None:
@@ -203,8 +223,7 @@ def run_variance(args, config):
     logger.info(f"Label noise: {config.label_noise} (applied independently per split)")
     logger.info(f"Data augmentation: {config.data_augmentation}")
 
-    # Process k values in batches of 2
-    num_batches = len(VARIANCE_K_VALUES) // k_per_batch
+    num_batches = max(1, len(VARIANCE_K_VALUES) // k_per_batch)
     for batch_idx in range(num_batches):
         batch_k_values = VARIANCE_K_VALUES[batch_idx * k_per_batch:(batch_idx + 1) * k_per_batch]
         batch_num = batch_idx + 1
@@ -214,10 +233,8 @@ def run_variance(args, config):
         logger.info(f"Training {len(batch_k_values) * VARIANCE_NUM_SPLITS} models")
         logger.info(f"{'='*60}")
 
-        # Set multiprocessing start method
         mp.set_start_method('spawn', force=True)
 
-        # Spawn processes: 2 k values x 4 splits = 8 processes
         processes = []
         gpu_id = 0
         for k in batch_k_values:
@@ -235,7 +252,6 @@ def run_variance(args, config):
                 logger.info(f"Started k={k}, split={split_id} on GPU {gpu_id}")
                 gpu_id += 1
 
-        # Wait for batch to complete
         for p, k, split_id in processes:
             p.join()
             logger.info(f"Completed k={k}, split={split_id}")
@@ -267,17 +283,25 @@ def main():
         config.label_noise = args.label_noise
     if args.no_augmentation:
         config.data_augmentation = False
-    if args.k_start is not None:
-        config.k_start = args.k_start
     if args.cosine_decay_epoch is not None:
         config.cosine_decay_epoch = args.cosine_decay_epoch
+    if args.val_split:
+        config.use_val_split = True
 
-    # Require exactly 8 GPUs
+    # Reject incompatible combinations
+    if args.val_split and args.variance:
+        raise RuntimeError(
+            "--val-split and --variance are mutually exclusive. "
+            "Variance mode uses disjoint training splits; val-split mode "
+            "uses a 45K/5K train/val cut from the full noised 50K."
+        )
+
+    # Require exactly REQUIRED_GPUS GPUs
     num_gpus = torch.cuda.device_count()
     if num_gpus != REQUIRED_GPUS:
         raise RuntimeError(
             f"This experiment requires exactly {REQUIRED_GPUS} GPUs, "
-            f"but found {num_gpus}. Please run on an 8-GPU instance."
+            f"but found {num_gpus}. Please run on a {REQUIRED_GPUS}-GPU instance."
         )
 
     # Create output directory
@@ -287,6 +311,17 @@ def main():
     logger.info("Downloading CIFAR-10 if needed...")
     download_cifar10(args.data_path)
     logger.info("Data ready.")
+
+    # Save held-out validation set once in the parent process, so every
+    # run folder has a reproducible val.pt artifact downstream TS can load.
+    if config.use_val_split and not args.variance:
+        logger.info("Saving held-out validation set (45K/5K split, seed=73132)...")
+        val_path = save_val_set(
+            output_path=args.output_path,
+            data_dir=args.data_path,
+            noise_prob=config.label_noise,
+        )
+        logger.info(f"Saved val set to {val_path}")
 
     # Run appropriate mode
     if args.variance:
