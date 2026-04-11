@@ -86,6 +86,10 @@ while [[ $# -gt 0 ]]; do
             VARIANCE="true"
             shift
             ;;
+        --val-split)
+            VAL_SPLIT="true"
+            shift
+            ;;
         --m2m100-variance)
             M2M100_VARIANCE="true"
             shift
@@ -139,6 +143,10 @@ fi
 if [[ -n "$VARIANCE" ]]; then
     EXTRA_FLAGS="$EXTRA_FLAGS --variance"
     log_info "Using variance mode"
+fi
+if [[ -n "${VAL_SPLIT:-}" ]]; then
+    EXTRA_FLAGS="$EXTRA_FLAGS --val-split"
+    log_info "Using val-split mode (45K train / 5K val, seed=73132)"
 fi
 if [[ -n "${M2M100_VARIANCE:-}" ]]; then
     EXTRA_FLAGS="$EXTRA_FLAGS --m2m100-variance"
