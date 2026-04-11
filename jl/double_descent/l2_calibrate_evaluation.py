@@ -94,135 +94,45 @@ def _resnet_test_metrics(model, test_loader, device) -> Tuple[float, float, floa
     return test_loss, test_error, ece
 
 
-def _resnet_test_metrics_with_temperature(
-    model, test_loader, temperature: float, device
+def _resnet_metrics_from_logits(
+    logits: torch.Tensor, labels: torch.Tensor, temperature: float = 1.0
 ) -> Tuple[float, float, float]:
-    """Compute test metrics with temperature-scaled logits.
+    """Compute (test_loss, test_error, ece) from precomputed logits/labels.
 
-    Returns:
-        (test_loss, test_error, ece)
+    Applies optional temperature scaling. Used for both the original
+    (T=1.0) and temperature-scaled evaluation on a held-out split.
     """
     from jl.double_descent.resnet18.evaluation import compute_ece
 
-    model.eval()
-    total_loss = 0.0
-    total_correct = 0
-    total_samples = 0
-    all_confidences = []
-    all_correct = []
-    with torch.no_grad():
-        for images, labels in test_loader:
-            images, labels = images.to(device), labels.to(device)
-            logits = model(images) / temperature
-            loss = F.cross_entropy(logits, labels, reduction="sum")
-            total_loss += loss.item()
-
-            probs = F.softmax(logits, dim=-1)
-            max_probs, predictions = probs.max(dim=-1)
-            correct = predictions == labels
-
-            total_correct += correct.sum().item()
-            total_samples += labels.size(0)
-            all_confidences.append(max_probs.cpu())
-            all_correct.append(correct.cpu())
-
-    test_loss = total_loss / total_samples
-    test_error = 1.0 - (total_correct / total_samples)
-    ece = compute_ece(torch.cat(all_confidences), torch.cat(all_correct))
-    return test_loss, test_error, ece
+    scaled = logits / temperature
+    loss = F.cross_entropy(scaled, labels).item()
+    probs = F.softmax(scaled, dim=-1)
+    max_probs, preds = probs.max(dim=-1)
+    correct = preds == labels
+    error = 1.0 - correct.float().mean().item()
+    ece = compute_ece(max_probs, correct)
+    return loss, error, ece
 
 
-def _fit_resnet_temperature(model, test_loader, device) -> float:
-    """Fit scalar temperature T via L-BFGS to minimize NLL on test set."""
-    model.eval()
-    all_logits = []
-    all_labels = []
-    with torch.no_grad():
-        for images, labels in test_loader:
-            all_logits.append(model(images.to(device)).cpu())
-            all_labels.append(labels)
-    all_logits = torch.cat(all_logits)
-    all_labels = torch.cat(all_labels)
+def _fit_resnet_temperature(logits: torch.Tensor, labels: torch.Tensor) -> float:
+    """Fit scalar temperature T via L-BFGS on precomputed logits/labels.
 
+    Takes a held-out fit split (not the full test set) so callers can
+    reserve the rest of the test set for evaluation.
+    """
     temperature = nn.Parameter(torch.ones(1))
-    optimizer = torch.optim.LBFGS([temperature], lr=0.01, max_iter=50)
+    # lr=1.0, max_iter=200 (see ca412cc): lr=0.01 bails out at T~1.2 when the
+    # true optimum is far away (e.g. T~2.5 for overconfident models).
+    optimizer = torch.optim.LBFGS([temperature], lr=1.0, max_iter=200)
 
     def closure():
         optimizer.zero_grad()
-        loss = F.cross_entropy(all_logits / temperature, all_labels)
+        loss = F.cross_entropy(logits / temperature, labels)
         loss.backward()
         return loss
 
     optimizer.step(closure)
     return temperature.item()
-
-
-def _resnet_ts_worker(
-    gpu_id: int,
-    k: int,
-    orig_model_path: str,
-    data_path: str,
-    batch_size: int,
-    eval_entry: Optional[Dict],
-    result_dict: dict,
-) -> None:
-    """Fit temperature and evaluate one ResNet18 model on a single GPU."""
-    from jl.double_descent.resnet18.resnet18_data import NoisyCIFAR10
-    from jl.double_descent.resnet18.resnet18k import make_resnet18k
-    import torchvision.transforms as transforms
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(name)s] %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
-    device = torch.device(f"cuda:{gpu_id}")
-
-    normalize = transforms.Normalize(
-        mean=[0.4914, 0.4822, 0.4465], std=[0.2023, 0.1994, 0.2010]
-    )
-    test_dataset = NoisyCIFAR10(
-        root=data_path,
-        train=False,
-        noise_prob=0.0,
-        transform=transforms.Compose([transforms.ToTensor(), normalize]),
-    )
-    test_loader = DataLoader(
-        test_dataset, batch_size=batch_size, shuffle=False, num_workers=4
-    )
-
-    # Original test metrics
-    if eval_entry and "test_loss" in eval_entry and "test_error" in eval_entry and "ece" in eval_entry:
-        orig_loss = eval_entry["test_loss"]
-        orig_error = eval_entry["test_error"]
-        orig_ece = eval_entry["ece"]
-    else:
-        model = make_resnet18k(k=k, num_classes=10).to(device)
-        model.load_state_dict(
-            torch.load(orig_model_path, map_location=device, weights_only=True)
-        )
-        orig_loss, orig_error, orig_ece = _resnet_test_metrics(model, test_loader, device)
-        del model
-
-    # Fit temperature and evaluate
-    model = make_resnet18k(k=k, num_classes=10).to(device)
-    model.load_state_dict(
-        torch.load(orig_model_path, map_location=device, weights_only=True)
-    )
-    temp = _fit_resnet_temperature(model, test_loader, device)
-    ts_loss, ts_error, ts_ece = _resnet_test_metrics_with_temperature(
-        model, test_loader, temp, device
-    )
-    del model
-    torch.cuda.empty_cache()
-
-    result_dict[k] = (orig_loss, ts_loss, orig_error, ts_error, orig_ece, ts_ece, temp)
-    logger.info(
-        f"  [GPU {gpu_id}] k={k}: T={temp:.4f}, orig_loss={orig_loss:.4f}, ts_loss={ts_loss:.4f}, "
-        f"orig_error={orig_error:.4f}, ts_error={ts_error:.4f}, "
-        f"orig_ece={orig_ece:.4f}, ts_ece={ts_ece:.4f}"
-    )
 
 
 def _resnet_worker(
@@ -385,12 +295,23 @@ def ts_evaluate_resnet(
 ) -> Path:
     """Temperature-scale all ResNet18 models and write temperature_scaled_evaluation.jsonl.
 
+    Single-process, single-GPU implementation. The CIFAR-10 test set is
+    loaded once into GPU memory and reused across every model — avoiding the
+    per-model mp.Process + DataLoader respawn overhead that dominated the
+    previous implementation for this small workload.
+
+    Fits T on a deterministic 5K half of the test set and evaluates on the
+    other 5K half (see RESNET18_PLAN.md "Future Fixes for Temperature
+    Scaling" — proper val-split fix requires model retraining).
+
     Returns:
         Path to the written JSONL file.
     """
     from jl.double_descent.resnet18.evaluation import discover_models
-    from jl.double_descent.resnet18.resnet18_config import DDConfig
+    from jl.double_descent.resnet18.resnet18_data import NoisyCIFAR10
+    from jl.double_descent.resnet18.resnet18k import make_resnet18k
     import torchvision
+    import torchvision.transforms as transforms
 
     torchvision.datasets.CIFAR10(root=data_path, train=False, download=True)
 
@@ -399,44 +320,103 @@ def ts_evaluate_resnet(
     if not models:
         raise FileNotFoundError(f"No model_k*.pt files in {model_dir}")
 
-    eval_results = _load_evaluation_jsonl(model_path / "evaluation.jsonl")
-    config = DDConfig()
-    num_gpus = torch.cuda.device_count()
-    logger.info(f"ResNet TS evaluation: {len(models)} models across {num_gpus} GPUs")
+    if torch.cuda.device_count() == 0:
+        raise RuntimeError("ts_evaluate_resnet requires a CUDA GPU")
+    device = torch.device("cuda:0")
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    # Load the entire CIFAR-10 test set once into GPU memory (30 MB).
+    normalize = transforms.Normalize(
+        mean=[0.4914, 0.4822, 0.4465], std=[0.2023, 0.1994, 0.2010]
+    )
+    test_dataset = NoisyCIFAR10(
+        root=data_path,
+        train=False,
+        noise_prob=0.0,
+        transform=transforms.Compose([transforms.ToTensor(), normalize]),
+    )
+    # num_workers=0: we only pay this cost once, so the sync loader is fine.
+    loader = DataLoader(test_dataset, batch_size=1000, shuffle=False, num_workers=0)
+    all_images = []
+    all_labels = []
+    for images, labels in loader:
+        all_images.append(images)
+        all_labels.append(labels)
+    all_images = torch.cat(all_images).to(device)  # [10000, 3, 32, 32]
+    all_labels = torch.cat(all_labels).to(device)  # [10000]
+    n = all_images.size(0)
+
+    # Deterministic 5K/5K split for fit / eval. Fixed seed so results are
+    # reproducible and the same split is used for every k.
+    gen = torch.Generator()
+    gen.manual_seed(42)
+    perm = torch.randperm(n, generator=gen)
+    half = n // 2
+    fit_idx = perm[:half]
+    eval_idx = perm[half:]
 
     sorted_models = sorted(models.items())
-    manager = mp.Manager()
-    result_dict = manager.dict()
+    logger.info(
+        f"ResNet TS evaluation: {len(sorted_models)} models on {device} "
+        f"(single-process, test set loaded once)"
+    )
 
-    for batch_start in range(0, len(sorted_models), num_gpus):
-        batch = sorted_models[batch_start : batch_start + num_gpus]
-        processes = []
-        for gpu_id, (k, orig_model_path) in enumerate(batch):
-            p = mp.Process(
-                target=_resnet_ts_worker,
-                args=(
-                    gpu_id,
-                    k,
-                    str(orig_model_path),
-                    data_path,
-                    config.batch_size,
-                    eval_results.get(k),
-                    result_dict,
-                ),
-            )
-            p.start()
-            processes.append(p)
-        for p in processes:
-            p.join()
-            if p.exitcode != 0:
-                logger.error(f"ResNet TS worker exited with code {p.exitcode}")
+    results: List[Tuple[int, float, float, float, float, float, float, float]] = []
+    forward_batch = 512
+    for k, orig_model_path in sorted_models:
+        model = make_resnet18k(k=k, num_classes=10).to(device)
+        model.load_state_dict(
+            torch.load(str(orig_model_path), map_location=device, weights_only=True)
+        )
+        model.eval()
+
+        # Forward pass over all 10K test images in one model.
+        all_logits = []
+        with torch.no_grad():
+            for i in range(0, n, forward_batch):
+                all_logits.append(model(all_images[i : i + forward_batch]))
+        all_logits = torch.cat(all_logits)  # [10000, 10] on GPU
+
+        # Move to CPU for the LBFGS fit and the metric computation. Keeping
+        # logits on GPU for the fit works too but L-BFGS + small tensors
+        # don't benefit and this keeps `_fit_resnet_temperature` GPU-agnostic.
+        logits_cpu = all_logits.cpu()
+        labels_cpu = all_labels.cpu()
+
+        temp = _fit_resnet_temperature(logits_cpu[fit_idx], labels_cpu[fit_idx])
+
+        # Both original and TS metrics computed on the held-out eval half.
+        # NOTE: these "original_*" values are NOT directly comparable to the
+        # full-10K-test metrics in evaluation.jsonl. See RESNET18_PLAN.md.
+        orig_loss, orig_error, orig_ece = _resnet_metrics_from_logits(
+            logits_cpu[eval_idx], labels_cpu[eval_idx], temperature=1.0
+        )
+        ts_loss, ts_error, ts_ece = _resnet_metrics_from_logits(
+            logits_cpu[eval_idx], labels_cpu[eval_idx], temperature=temp
+        )
+
+        results.append(
+            (k, orig_loss, ts_loss, orig_error, ts_error, orig_ece, ts_ece, temp)
+        )
+        logger.info(
+            f"  k={k}: T={temp:.4f}, orig_loss={orig_loss:.4f}, ts_loss={ts_loss:.4f}, "
+            f"orig_error={orig_error:.4f}, ts_error={ts_error:.4f}, "
+            f"orig_ece={orig_ece:.4f}, ts_ece={ts_ece:.4f}"
+        )
+
+        del model, all_logits, logits_cpu
+        torch.cuda.empty_cache()
 
     output_dir = model_path / "temperature_scaled"
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "temperature_scaled_evaluation.jsonl"
     with open(output_path, "w") as f:
-        for k, _ in sorted_models:
-            orig_loss, ts_loss, orig_error, ts_error, orig_ece, ts_ece, temp = result_dict[k]
+        for k, orig_loss, ts_loss, orig_error, ts_error, orig_ece, ts_ece, temp in results:
             entry = {
                 "k": k,
                 "original_loss": round(orig_loss, 6),
@@ -449,7 +429,7 @@ def ts_evaluate_resnet(
             }
             f.write(json.dumps(entry) + "\n")
 
-    logger.info(f"Wrote {len(sorted_models)} entries to {output_path}")
+    logger.info(f"Wrote {len(results)} entries to {output_path}")
     return output_path
 
 
@@ -487,159 +467,42 @@ def _transformer_test_metrics(model, test_loader, pad_idx, device) -> Tuple[floa
     return test_loss, test_error
 
 
-def _transformer_test_metrics_with_temperature(
-    model, test_loader, pad_idx, temperature: float, device
-) -> Tuple[float, float]:
-    """Compute test metrics with temperature-scaled logits.
+def _collect_transformer_flat_logits(
+    model, loader, pad_idx: int, device
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Forward a transformer loader, return flat (non-pad) logits & targets.
 
     Returns:
-        (test_loss, test_error)
+        logits: [N, V] on `device` — logit vectors at non-pad target positions
+        targets: [N] on `device` — target token ids at non-pad positions
     """
     model.eval()
-    total_loss = 0.0
-    total_correct = 0
-    total_tokens = 0
+    all_logits = []
+    all_targets = []
     with torch.no_grad():
-        for src, tgt in test_loader:
+        for src, tgt in loader:
             src, tgt = src.to(device), tgt.to(device)
-            logits = model(src, tgt[:, :-1]) / temperature
-            target = tgt[:, 1:].contiguous()
-            mask = target != pad_idx
-            loss = F.cross_entropy(
-                logits.view(-1, logits.size(-1)),
-                target.view(-1),
-                ignore_index=pad_idx,
-                reduction="sum",
-            )
-            total_loss += loss.item()
-            predictions = logits.argmax(dim=-1)
-            total_correct += ((predictions == target) & mask).sum().item()
-            total_tokens += mask.sum().item()
-    test_loss = total_loss / total_tokens
-    test_error = 1.0 - (total_correct / total_tokens) if total_tokens > 0 else 1.0
-    return test_loss, test_error
+            logits = model(src, tgt[:, :-1])   # [B, L-1, V]
+            target = tgt[:, 1:].contiguous()    # [B, L-1]
+            mask = target != pad_idx            # [B, L-1]
+            all_logits.append(logits[mask])     # [K_batch, V]
+            all_targets.append(target[mask])    # [K_batch]
+    return torch.cat(all_logits), torch.cat(all_targets)
 
 
-def _fit_transformer_temperature(model, test_loader, pad_idx, device) -> float:
-    """Fit scalar temperature T via L-BFGS to minimize NLL on test set.
+def _transformer_metrics_from_logits(
+    logits: torch.Tensor, targets: torch.Tensor, temperature: float = 1.0
+) -> Tuple[float, float]:
+    """Compute (loss, token-level error) on flat non-pad logits/targets.
 
-    Runs model forward per batch with no_grad, scales detached logits by
-    temperature (which keeps grad), and accumulates a scalar loss.
-    No logits are collected to CPU.
+    No ECE — token-level ECE over a large vocabulary is not meaningful here
+    (see user note / TRANSFORMER_PLAN.md).
     """
-    model.eval()
-    temperature = nn.Parameter(torch.ones(1, device=device))
-    optimizer = torch.optim.LBFGS([temperature], lr=0.01, max_iter=50)
-
-    def closure():
-        optimizer.zero_grad()
-        total_loss = torch.zeros(1, device=device)
-        total_tokens = 0
-        for src, tgt in test_loader:
-            src, tgt = src.to(device), tgt.to(device)
-            with torch.no_grad():
-                logits = model(src, tgt[:, :-1])
-            scaled = logits.detach() / temperature
-            target = tgt[:, 1:].contiguous()
-            mask = target != pad_idx
-            loss = F.cross_entropy(
-                scaled.view(-1, scaled.size(-1)),
-                target.view(-1),
-                ignore_index=pad_idx,
-                reduction="sum",
-            )
-            total_loss = total_loss + loss
-            total_tokens += mask.sum().item()
-        avg = total_loss / total_tokens
-        avg.backward()
-        return avg
-
-    optimizer.step(closure)
-    return temperature.item()
-
-
-def _transformer_ts_worker(
-    gpu_id: int,
-    d_model: int,
-    train_samples: int,
-    orig_model_path: str,
-    data_path: str,
-    eval_entry: Optional[Dict],
-    result_dict: dict,
-) -> None:
-    """Fit temperature and evaluate one Transformer model on a single GPU."""
-    from jl.double_descent.transformer.transformer_config import TDDConfig
-    from jl.double_descent.transformer.transformer_data import (
-        build_vocab,
-        collate_fn,
-        load_split,
-        TranslationDataset,
-    )
-    from jl.double_descent.transformer.transformer_model import TransformerModel
-    from jl.double_descent.transformer.bleu import compute_bleu
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(name)s] %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
-    device = torch.device(f"cuda:{gpu_id}")
-    config = TDDConfig()
-    vocab = build_vocab(data_path)
-    test_src, test_tgt = load_split(data_path, "test")
-    test_dataset = TranslationDataset(test_src, test_tgt, vocab)
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=64,
-        shuffle=False,
-        collate_fn=partial(collate_fn, pad_idx=vocab.pad_idx),
-    )
-
-    def _make_model():
-        return TransformerModel(
-            vocab_size=len(vocab),
-            d_model=d_model,
-            n_layers=config.n_layers,
-            n_heads=config.n_heads,
-            d_ff_multiplier=config.d_ff_multiplier,
-            pad_idx=vocab.pad_idx,
-        ).to(device)
-
-    # Original test metrics
-    if eval_entry and "test_loss" in eval_entry and "test_acc" in eval_entry and "test_bleu" in eval_entry:
-        orig_loss = eval_entry["test_loss"]
-        orig_error = 1.0 - eval_entry["test_acc"]
-        orig_bleu = eval_entry["test_bleu"]
-    else:
-        model = _make_model()
-        model.load_state_dict(
-            torch.load(orig_model_path, map_location=device, weights_only=True)
-        )
-        orig_loss, orig_error = _transformer_test_metrics(model, test_loader, vocab.pad_idx, device)
-        orig_bleu = compute_bleu(model, test_dataset, vocab, device, max_len=128)
-        del model
-
-    # Fit temperature and evaluate
-    model = _make_model()
-    model.load_state_dict(
-        torch.load(orig_model_path, map_location=device, weights_only=True)
-    )
-    model.eval()
-    temp = _fit_transformer_temperature(model, test_loader, vocab.pad_idx, device)
-    ts_loss, ts_error = _transformer_test_metrics_with_temperature(
-        model, test_loader, vocab.pad_idx, temp, device
-    )
-    # BLEU uses greedy argmax from generate() — temperature doesn't change argmax, so BLEU is same
-    ts_bleu = orig_bleu if (eval_entry and "test_bleu" in eval_entry) else compute_bleu(model, test_dataset, vocab, device, max_len=128)
-    del model
-    torch.cuda.empty_cache()
-
-    result_dict[(d_model, train_samples)] = (orig_loss, ts_loss, orig_error, ts_error, orig_bleu, ts_bleu, temp)
-    logger.info(
-        f"  [GPU {gpu_id}] d_model={d_model}: T={temp:.4f}, orig_loss={orig_loss:.4f}, ts_loss={ts_loss:.4f}, "
-        f"orig_bleu={orig_bleu:.2f}, ts_bleu={ts_bleu:.2f}"
-    )
+    scaled = logits / temperature
+    loss = F.cross_entropy(scaled, targets).item()
+    preds = scaled.argmax(dim=-1)
+    error = 1.0 - (preds == targets).float().mean().item()
+    return loss, error
 
 
 def _transformer_worker(
@@ -816,53 +679,199 @@ def ts_evaluate_transformer(
 ) -> Path:
     """Temperature-scale all Transformer models and write temperature_scaled_evaluation.jsonl.
 
+    Single-process, single-GPU implementation. For each model:
+      1. Forward-pass the IWSLT `valid` split, cache flat non-pad logits on GPU
+      2. Forward-pass the `test` split, cache flat non-pad logits on GPU
+      3. Fit scalar temperature T on the cached valid logits via L-BFGS
+         (proper Guo et al. 2017 protocol — no test-set contamination)
+      4. Compute original + temperature-scaled metrics on the cached test logits
+      5. BLEU is reused from evaluation.jsonl when available (temperature does
+         not change argmax, so greedy-decode BLEU is identical for original
+         and scaled); otherwise computed once before the model is freed.
+
+    Caching logits on GPU avoids re-running the model forward on every L-BFGS
+    closure iteration (the previous implementation did). Expected GPU memory
+    for IWSLT14 (~140K non-pad valid tokens + ~130K test tokens × vocab ≈
+    ~10K × 4 bytes each) is ~10–11 GB, well within A40 / A100.
+
     Returns:
         Path to the written JSONL file.
     """
+    from jl.double_descent.transformer.transformer_config import TDDConfig
+    from jl.double_descent.transformer.transformer_data import (
+        build_vocab,
+        collate_fn,
+        load_split,
+        TranslationDataset,
+    )
+    from jl.double_descent.transformer.transformer_model import TransformerModel
     from jl.double_descent.transformer.evaluation import discover_models
+    from jl.double_descent.transformer.bleu import compute_bleu
 
     model_path = Path(model_dir)
     models = discover_models(model_dir)
     if not models:
         raise FileNotFoundError(f"No model_d*_*k.pt files in {model_dir}")
 
+    if torch.cuda.device_count() == 0:
+        raise RuntimeError("ts_evaluate_transformer requires a CUDA GPU")
+    device = torch.device("cuda:0")
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    config = TDDConfig()
+    vocab = build_vocab(data_path)
+
+    # Load valid + test splits once; the same loaders are reused for every model.
+    valid_src, valid_tgt = load_split(data_path, "valid")
+    test_src, test_tgt = load_split(data_path, "test")
+    valid_dataset = TranslationDataset(valid_src, valid_tgt, vocab)
+    test_dataset = TranslationDataset(test_src, test_tgt, vocab)
+    valid_loader = DataLoader(
+        valid_dataset,
+        batch_size=64,
+        shuffle=False,
+        collate_fn=partial(collate_fn, pad_idx=vocab.pad_idx),
+    )
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=64,
+        shuffle=False,
+        collate_fn=partial(collate_fn, pad_idx=vocab.pad_idx),
+    )
+
     eval_results = _load_evaluation_jsonl(model_path / "evaluation.jsonl")
-    num_gpus = torch.cuda.device_count()
-    logger.info(f"Transformer TS evaluation: {len(models)} models across {num_gpus} GPUs")
 
     sorted_models = sorted(models.items())
-    manager = mp.Manager()
-    result_dict = manager.dict()
+    logger.info(
+        f"Transformer TS evaluation: {len(sorted_models)} models on {device} "
+        f"(single-process, fit on valid / eval on test)"
+    )
 
-    for batch_start in range(0, len(sorted_models), num_gpus):
-        batch = sorted_models[batch_start : batch_start + num_gpus]
-        processes = []
-        for gpu_id, ((d_model, train_samples), orig_model_path) in enumerate(batch):
-            p = mp.Process(
-                target=_transformer_ts_worker,
-                args=(
-                    gpu_id,
-                    d_model,
-                    train_samples,
-                    str(orig_model_path),
-                    data_path,
-                    eval_results.get(d_model),
-                    result_dict,
-                ),
+    results: List[
+        Tuple[int, int, float, float, float, float, float, float, float]
+    ] = []
+    for (d_model, train_samples), orig_model_path in sorted_models:
+        model = TransformerModel(
+            vocab_size=len(vocab),
+            d_model=d_model,
+            n_layers=config.n_layers,
+            n_heads=config.n_heads,
+            d_ff_multiplier=config.d_ff_multiplier,
+            pad_idx=vocab.pad_idx,
+        ).to(device)
+        model.load_state_dict(
+            torch.load(str(orig_model_path), map_location=device, weights_only=True)
+        )
+        model.eval()
+
+        # Forward valid + test once; cache flat (non-pad) logits on GPU.
+        valid_logits, valid_targets = _collect_transformer_flat_logits(
+            model, valid_loader, vocab.pad_idx, device
+        )
+        test_logits, test_targets = _collect_transformer_flat_logits(
+            model, test_loader, vocab.pad_idx, device
+        )
+
+        # BLEU: reuse from evaluation.jsonl when available (T doesn't change
+        # greedy argmax). Otherwise compute once here while the model is live.
+        eval_entry = eval_results.get(d_model)
+        if eval_entry and "test_bleu" in eval_entry:
+            orig_bleu = float(eval_entry["test_bleu"])
+        else:
+            orig_bleu = compute_bleu(model, test_dataset, vocab, device, max_len=128)
+        ts_bleu = orig_bleu  # temperature scaling doesn't change argmax → BLEU unchanged
+
+        del model
+        torch.cuda.empty_cache()
+
+        # Fit T on cached valid logits. Chunked closure so autograd
+        # intermediates are per-chunk, not full-batch — a naive full-batch
+        # F.cross_entropy on [N_valid, V] with backward uses ~5× the tensor
+        # size for intermediates and OOMs on realistic IWSLT vocab sizes.
+        temperature = nn.Parameter(torch.ones(1, device=device))
+        # lr=1.0, max_iter=200 (see commit ca412cc): lr=0.01 bails out at
+        # T~1.2 when the true optimum is far away.
+        optimizer = torch.optim.LBFGS([temperature], lr=1.0, max_iter=200)
+
+        n_valid = valid_logits.size(0)
+        fit_chunk = 8192
+
+        def _closure():
+            optimizer.zero_grad()
+            total_loss = torch.zeros((), device=device)
+            for i in range(0, n_valid, fit_chunk):
+                cl = valid_logits[i : i + fit_chunk]
+                ct = valid_targets[i : i + fit_chunk]
+                loss = (
+                    F.cross_entropy(cl / temperature, ct, reduction="sum")
+                    / n_valid
+                )
+                loss.backward()
+                total_loss = total_loss + loss.detach()
+            return total_loss
+
+        optimizer.step(_closure)
+        temp = temperature.item()
+
+        # Free valid cache before computing test metrics — creates headroom
+        # for the scaled test logits + softmax intermediates.
+        del valid_logits, valid_targets
+        torch.cuda.empty_cache()
+
+        # Evaluate both original (T=1) and temperature-scaled metrics on cached
+        # test logits. Both use the same flat-non-pad representation, so
+        # original_loss here is directly comparable to ts_loss.
+        with torch.no_grad():
+            orig_loss, orig_error = _transformer_metrics_from_logits(
+                test_logits, test_targets, temperature=1.0
             )
-            p.start()
-            processes.append(p)
-        for p in processes:
-            p.join()
-            if p.exitcode != 0:
-                logger.error(f"Transformer TS worker exited with code {p.exitcode}")
+            ts_loss, ts_error = _transformer_metrics_from_logits(
+                test_logits, test_targets, temperature=temp
+            )
+
+        results.append(
+            (
+                d_model,
+                train_samples,
+                orig_loss,
+                ts_loss,
+                orig_error,
+                ts_error,
+                orig_bleu,
+                ts_bleu,
+                temp,
+            )
+        )
+        logger.info(
+            f"  d_model={d_model}: T={temp:.4f}, "
+            f"orig_loss={orig_loss:.4f}, ts_loss={ts_loss:.4f}, "
+            f"orig_error={orig_error:.4f}, ts_error={ts_error:.4f}, "
+            f"orig_bleu={orig_bleu:.2f}, ts_bleu={ts_bleu:.2f}"
+        )
+
+        del test_logits, test_targets, temperature
+        torch.cuda.empty_cache()
 
     output_dir = model_path / "temperature_scaled"
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "temperature_scaled_evaluation.jsonl"
     with open(output_path, "w") as f:
-        for (d_model, train_samples), _ in sorted_models:
-            orig_loss, ts_loss, orig_error, ts_error, orig_bleu, ts_bleu, temp = result_dict[(d_model, train_samples)]
+        for (
+            d_model,
+            train_samples,
+            orig_loss,
+            ts_loss,
+            orig_error,
+            ts_error,
+            orig_bleu,
+            ts_bleu,
+            temp,
+        ) in results:
             entry = {
                 "d_model": d_model,
                 "original_loss": round(orig_loss, 6),
@@ -875,7 +884,7 @@ def ts_evaluate_transformer(
             }
             f.write(json.dumps(entry) + "\n")
 
-    logger.info(f"Wrote {len(sorted_models)} entries to {output_path}")
+    logger.info(f"Wrote {len(results)} entries to {output_path}")
     return output_path
 
 

@@ -436,3 +436,38 @@ Produces `l2_calibrate_comparison.png` with original vs L2-calibrated vs temp-sc
 - Recommended: 8x V100 (16GB), 8x A100, or 8x H100 on Lambda Labs or RunPod
 - Each GPU trains one model independently
 - Memory per GPU: ~2-4GB for k≤64, larger models need more
+
+---
+
+## Future Fixes for Temperature Scaling (known debt)
+
+The temperature-scaling path in `jl/double_descent/l2_calibrate_evaluation.py`
+(`_fit_resnet_temperature` + `_resnet_ts_worker`) has known methodological
+shortcomings that future work should address:
+
+1. **Test-set contamination (partial).** We currently split the 10K CIFAR-10
+   test set into two disjoint 5K halves (deterministic seed=42) and:
+   - fit T on the first 5K half,
+   - evaluate both original and TS metrics on the second 5K half.
+
+   This halves the contamination relative to the old "fit T on full 10K,
+   eval on full 10K" but does not eliminate it: the fit still uses
+   test-distribution samples. **Proper fix:** retrain all ResNet18 models on
+   45K train + 5K held-out val, and fit T on that val split. This requires
+   a retraining pass across all k values.
+
+2. **`original_*` fields in `temperature_scaled_evaluation.jsonl` are
+   5K-only.** Because the 5K/5K split is applied uniformly, the
+   `original_loss` / `original_error` / `original_ece` in the TS output file
+   are computed on the 5K eval half — NOT on the full 10K that the main
+   `evaluation.jsonl` reports. They are therefore **not directly comparable
+   to the uncalibrated evaluation.jsonl values**. The `ts_*` values are also
+   on the 5K eval half, so internal "original vs TS" deltas within the TS
+   file *are* apples-to-apples. The retrain above also fixes this: once
+   a proper val split exists, `original_*` can revert to full-test-set
+   metrics.
+
+3. **Transformer path unchanged.** `_fit_transformer_temperature` received
+   only the `lr=1.0, max_iter=200` fix (matching commit ca412cc). It still
+   fits T on the full test set. When the ResNet path moves to a proper
+   val split, apply the same to the transformer.
