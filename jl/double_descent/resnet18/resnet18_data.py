@@ -192,7 +192,7 @@ def load_cifar10_with_noise(
     batch_size: int,
     data_augmentation: bool = True,
     data_dir: str = "./data",
-    num_workers: int = 4,
+    num_workers: int = 0,
 ) -> Tuple[DataLoader, DataLoader]:
     """Load CIFAR-10 with label noise on training set.
 
@@ -275,7 +275,7 @@ def load_cifar10_split(
     batch_size: int,
     data_augmentation: bool = True,
     data_dir: str = "./data",
-    num_workers: int = 4,
+    num_workers: int = 0,
 ) -> Tuple[DataLoader, DataLoader]:
     """Load a disjoint split of CIFAR-10 with independent label noise.
 
@@ -451,7 +451,7 @@ def load_cifar10_with_noise_val_split(
     batch_size: int,
     data_augmentation: bool = True,
     data_dir: str = "./data",
-    num_workers: int = 4,
+    num_workers: int = 0,
     val_size: int = DEFAULT_VAL_SIZE,
     val_split_seed: int = VAL_SPLIT_SEED,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
