@@ -295,14 +295,16 @@ def ts_evaluate_resnet(
 ) -> Path:
     """Temperature-scale all ResNet18 models and write temperature_scaled_evaluation.jsonl.
 
-    Single-process, single-GPU implementation. The CIFAR-10 test set is
-    loaded once into GPU memory and reused across every model — avoiding the
-    per-model mp.Process + DataLoader respawn overhead that dominated the
-    previous implementation for this small workload.
+    Single-process, single-GPU implementation. Uses the proper Guo et al.
+    (2017) protocol:
+      - If val.pt exists in model_dir: fit T on the 5K held-out val set
+        (noisy labels, same distribution as training), evaluate on the full
+        10K clean test set.
+      - Fallback (no val.pt): deterministic 5K/5K split of the test set
+        for fit / eval (legacy behaviour for older runs).
 
-    Fits T on a deterministic 5K half of the test set and evaluates on the
-    other 5K half (see RESNET18_PLAN.md "Future Fixes for Temperature
-    Scaling" — proper val-split fix requires model retraining).
+    The test set (or val set) is loaded once into GPU memory and reused
+    across every model.
 
     Returns:
         Path to the written JSONL file.
@@ -330,7 +332,7 @@ def ts_evaluate_resnet(
         datefmt="%H:%M:%S",
     )
 
-    # Load the entire CIFAR-10 test set once into GPU memory (30 MB).
+    # Load the entire CIFAR-10 test set into GPU memory (~30 MB).
     normalize = transforms.Normalize(
         mean=[0.4914, 0.4822, 0.4465], std=[0.2023, 0.1994, 0.2010]
     )
@@ -340,30 +342,37 @@ def ts_evaluate_resnet(
         noise_prob=0.0,
         transform=transforms.Compose([transforms.ToTensor(), normalize]),
     )
-    # num_workers=0: we only pay this cost once, so the sync loader is fine.
     loader = DataLoader(test_dataset, batch_size=1000, shuffle=False, num_workers=0)
-    all_images = []
-    all_labels = []
+    all_test_images = []
+    all_test_labels = []
     for images, labels in loader:
-        all_images.append(images)
-        all_labels.append(labels)
-    all_images = torch.cat(all_images).to(device)  # [10000, 3, 32, 32]
-    all_labels = torch.cat(all_labels).to(device)  # [10000]
-    n = all_images.size(0)
+        all_test_images.append(images)
+        all_test_labels.append(labels)
+    all_test_images = torch.cat(all_test_images).to(device)  # [10000, 3, 32, 32]
+    all_test_labels = torch.cat(all_test_labels).to(device)  # [10000]
 
-    # Deterministic 5K/5K split for fit / eval. Fixed seed so results are
-    # reproducible and the same split is used for every k.
-    gen = torch.Generator()
-    gen.manual_seed(42)
-    perm = torch.randperm(n, generator=gen)
-    half = n // 2
-    fit_idx = perm[:half]
-    eval_idx = perm[half:]
+    # Check for val.pt (proper Guo et al. protocol).
+    val_pt_path = model_path / "val.pt"
+    if val_pt_path.exists():
+        val_data = torch.load(str(val_pt_path), map_location=device, weights_only=True)
+        val_images = val_data["images"].to(device)   # [5000, 3, 32, 32]
+        val_labels = val_data["labels"].to(device)    # [5000]
+        use_val_split = True
+        logger.info(
+            f"Loaded val.pt ({val_images.size(0)} samples) — "
+            f"fitting T on val, evaluating on full 10K test set"
+        )
+    else:
+        use_val_split = False
+        logger.info(
+            "No val.pt found — falling back to 5K/5K test-set split "
+            "(legacy mode, not proper Guo et al. protocol)"
+        )
 
     sorted_models = sorted(models.items())
     logger.info(
         f"ResNet TS evaluation: {len(sorted_models)} models on {device} "
-        f"(single-process, test set loaded once)"
+        f"(single-process)"
     )
 
     results: List[Tuple[int, float, float, float, float, float, float, float]] = []
@@ -375,30 +384,52 @@ def ts_evaluate_resnet(
         )
         model.eval()
 
-        # Forward pass over all 10K test images in one model.
-        all_logits = []
+        # Forward pass on test images.
+        test_logits = []
         with torch.no_grad():
-            for i in range(0, n, forward_batch):
-                all_logits.append(model(all_images[i : i + forward_batch]))
-        all_logits = torch.cat(all_logits)  # [10000, 10] on GPU
+            for i in range(0, all_test_images.size(0), forward_batch):
+                test_logits.append(model(all_test_images[i : i + forward_batch]))
+        test_logits = torch.cat(test_logits)  # [10000, 10]
 
-        # Move to CPU for the LBFGS fit and the metric computation. Keeping
-        # logits on GPU for the fit works too but L-BFGS + small tensors
-        # don't benefit and this keeps `_fit_resnet_temperature` GPU-agnostic.
-        logits_cpu = all_logits.cpu()
-        labels_cpu = all_labels.cpu()
+        if use_val_split:
+            # Forward pass on val images for fitting T.
+            val_logits = []
+            with torch.no_grad():
+                for i in range(0, val_images.size(0), forward_batch):
+                    val_logits.append(model(val_images[i : i + forward_batch]))
+            val_logits_t = torch.cat(val_logits).cpu()  # [5000, 10]
+            val_labels_cpu = val_labels.cpu()
 
-        temp = _fit_resnet_temperature(logits_cpu[fit_idx], labels_cpu[fit_idx])
+            temp = _fit_resnet_temperature(val_logits_t, val_labels_cpu)
 
-        # Both original and TS metrics computed on the held-out eval half.
-        # NOTE: these "original_*" values are NOT directly comparable to the
-        # full-10K-test metrics in evaluation.jsonl. See RESNET18_PLAN.md.
-        orig_loss, orig_error, orig_ece = _resnet_metrics_from_logits(
-            logits_cpu[eval_idx], labels_cpu[eval_idx], temperature=1.0
-        )
-        ts_loss, ts_error, ts_ece = _resnet_metrics_from_logits(
-            logits_cpu[eval_idx], labels_cpu[eval_idx], temperature=temp
-        )
+            # Evaluate on the full 10K test set.
+            test_logits_cpu = test_logits.cpu()
+            test_labels_cpu = all_test_labels.cpu()
+            orig_loss, orig_error, orig_ece = _resnet_metrics_from_logits(
+                test_logits_cpu, test_labels_cpu, temperature=1.0
+            )
+            ts_loss, ts_error, ts_ece = _resnet_metrics_from_logits(
+                test_logits_cpu, test_labels_cpu, temperature=temp
+            )
+        else:
+            # Legacy fallback: 5K/5K split of the test set.
+            gen = torch.Generator()
+            gen.manual_seed(42)
+            perm = torch.randperm(all_test_images.size(0), generator=gen)
+            half = all_test_images.size(0) // 2
+            fit_idx = perm[:half]
+            eval_idx = perm[half:]
+
+            logits_cpu = test_logits.cpu()
+            labels_cpu = all_test_labels.cpu()
+
+            temp = _fit_resnet_temperature(logits_cpu[fit_idx], labels_cpu[fit_idx])
+            orig_loss, orig_error, orig_ece = _resnet_metrics_from_logits(
+                logits_cpu[eval_idx], labels_cpu[eval_idx], temperature=1.0
+            )
+            ts_loss, ts_error, ts_ece = _resnet_metrics_from_logits(
+                logits_cpu[eval_idx], labels_cpu[eval_idx], temperature=temp
+            )
 
         results.append(
             (k, orig_loss, ts_loss, orig_error, ts_error, orig_ece, ts_ece, temp)
@@ -409,7 +440,7 @@ def ts_evaluate_resnet(
             f"orig_ece={orig_ece:.4f}, ts_ece={ts_ece:.4f}"
         )
 
-        del model, all_logits, logits_cpu
+        del model, test_logits
         torch.cuda.empty_cache()
 
     output_dir = model_path / "temperature_scaled"
