@@ -3,7 +3,7 @@
 
 Produces a figure with 2 subplots:
 - Top: Train/Test error vs k
-- Bottom: Train/Test loss vs k, with ECE on right y-axis (dual axis)
+- Bottom: Train/Test loss vs k
 
 Usage:
     # Uncalibrated evaluation
@@ -52,7 +52,6 @@ def _render(
     test_error: Sequence[float],
     train_loss: Sequence[float],
     test_loss: Sequence[float],
-    ece: Sequence[float],
     title: str,
     output_path: Path,
 ) -> None:
@@ -91,7 +90,6 @@ def _render(
     # Tableau palette (paper-friendly, desaturated)
     color_error = '#1f77b4'  # blue
     color_loss = '#d62728'   # red
-    color_ece = '#2ca02c'    # green
 
     # Shared line style kwargs
     line_kw = dict(
@@ -124,37 +122,21 @@ def _render(
     ax1.spines['top'].set_visible(True)
     ax1.spines['right'].set_visible(True)
 
-    # Loss plot (bottom) with ECE on right y-axis
-    # ECE drawn first (behind), then train loss, then test loss on top
-    ax2_ece = ax2.twinx()
-    ax2_ece.plot(k_values, ece, linestyle='-', color=color_ece,
-                 marker='s', markersize=4.5, markeredgewidth=1.1,
-                 markerfacecolor='white', markeredgecolor=color_ece,
-                 label='Test ECE', zorder=2, **line_kw)
-    ax2_ece.set_ylabel('Expected Calibration Error', color=color_ece)
-    ax2_ece.tick_params(axis='y', labelcolor=color_ece, direction='in')
-    ax2_ece.set_ylim(bottom=0)
-    ax2_ece.spines['right'].set_color(color_ece)
-
+    # Loss plot (bottom)
     ax2.plot(k_values, train_loss, linestyle=(0, (4, 2)),
              color=color_loss, alpha=0.55, label='Train Loss',
-             zorder=3, **line_kw, **train_marker)
+             zorder=2, **line_kw, **train_marker)
     ax2.plot(k_values, test_loss, linestyle='-',
              color=color_loss, markeredgecolor=color_loss,
-             label='Test Loss', zorder=4, **line_kw, **test_marker)
+             label='Test Loss', zorder=3, **line_kw, **test_marker)
     ax2.set_xlabel('ResNet18 width parameter $k$')
     ax2.set_ylabel('Cross-Entropy Loss')
     ax2.set_ylim(bottom=0)
+    ax2.legend(loc='lower right')
     ax2.grid(True, which='major', linestyle=':', linewidth=0.5, alpha=0.5)
     ax2.minorticks_on()
-    # Make sure the loss axis draws above the twinx ECE axis
-    ax2.set_zorder(ax2_ece.get_zorder() + 1)
-    ax2.patch.set_visible(False)
-
-    # Combined legend for loss subplot
-    lines1, labels1 = ax2.get_legend_handles_labels()
-    lines2, labels2 = ax2_ece.get_legend_handles_labels()
-    ax2.legend(lines1 + lines2, labels1 + labels2, loc='lower right')
+    ax2.spines['top'].set_visible(True)
+    ax2.spines['right'].set_visible(True)
 
     plt.tight_layout()
     plt.savefig(output_path, bbox_inches='tight')
@@ -163,7 +145,7 @@ def _render(
 
 
 def plot_evaluation(eval_path: str, output_dir: str, noise_level: float = 0.15) -> None:
-    """Plot uncalibrated error and loss vs k, with ECE on secondary axis.
+    """Plot uncalibrated error and loss vs k.
 
     Args:
         eval_path: Path to evaluation.jsonl file.
@@ -177,11 +159,10 @@ def plot_evaluation(eval_path: str, output_dir: str, noise_level: float = 0.15) 
     test_error = [r["test_error"] for r in results]
     train_loss = [r["train_loss"] for r in results]
     test_loss = [r["test_loss"] for r in results]
-    ece = [r["ece"] for r in results]
 
     title = f'ResNet18 on CIFAR-10 ({int(noise_level*100)}% label noise)'
     output_path = Path(output_dir) / 'resnet18_evaluation.png'
-    _render(k_values, train_error, test_error, train_loss, test_loss, ece,
+    _render(k_values, train_error, test_error, train_loss, test_loss,
             title, output_path)
 
 
@@ -193,9 +174,9 @@ def plot_temperature_scaled(
 ) -> None:
     """Plot temperature-scaled evaluation.
 
-    Test curves and ECE come from the TS JSONL (ts_error, ts_loss, ts_ece);
-    train curves come from the uncalibrated evaluation.jsonl (temperature
-    scaling does not affect train-set metrics).
+    Test curves come from the TS JSONL (ts_error, ts_loss); train curves
+    come from the uncalibrated evaluation.jsonl (temperature scaling does
+    not affect train-set metrics).
 
     Args:
         ts_eval_path: Path to temperature_scaled_evaluation.jsonl.
@@ -212,7 +193,6 @@ def plot_temperature_scaled(
     test_error = []
     train_loss = []
     test_loss = []
-    ece = []
     for r in ts_results:
         k = r["k"]
         if k not in orig_by_k:
@@ -223,7 +203,6 @@ def plot_temperature_scaled(
         k_values.append(k)
         test_error.append(r["ts_error"])
         test_loss.append(r["ts_loss"])
-        ece.append(r["ts_ece"])
         train_error.append(orig_by_k[k]["train_error"])
         train_loss.append(orig_by_k[k]["train_loss"])
 
@@ -232,13 +211,13 @@ def plot_temperature_scaled(
         f'({int(noise_level*100)}% label noise)'
     )
     output_path = Path(output_dir) / 'resnet18_evaluation.png'
-    _render(k_values, train_error, test_error, train_loss, test_loss, ece,
+    _render(k_values, train_error, test_error, train_loss, test_loss,
             title, output_path)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Plot ResNet18 evaluation: error/loss vs k with ECE"
+        description="Plot ResNet18 evaluation: error/loss vs k"
     )
     parser.add_argument(
         "eval_path",
