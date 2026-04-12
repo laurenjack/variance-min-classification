@@ -1,0 +1,36 @@
+[project]
+name = "variance-min-classification"
+version = "0.1.0"
+description = "Variance-minimizing classification models with various architectures and regularization strategies"
+requires-python = ">=3.11"
+
+# Core dependencies - always installed (CPU-safe, no torch)
+dependencies = [
+    "numpy>=1.26,<2.0",
+    "matplotlib>=3.5",
+    "scipy>=1.10",
+    "sacrebleu>=2.3",
+    "pytest>=7.0",
+]
+
+[project.optional-dependencies]
+# GPU experiments (double descent, etc.) - adds torchvision
+gpu = [
+    "torchvision",
+]
+# LLM reward model training - adds HuggingFace ecosystem + Flash Attention 3
+llm = [
+    "transformers>=4.41",
+    "datasets>=2.19",
+    "tokenizers>=0.15.2",
+    "safetensors>=0.4.2",
+    "accelerate>=0.30",
+    "kernels",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["jl*"]

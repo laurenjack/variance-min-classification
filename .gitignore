@@ -10,3 +10,4 @@ __pycache__
 CLAUDE.md
 temp_double_descent.pdf
 why_double_descent.md
+*.egg-info/
