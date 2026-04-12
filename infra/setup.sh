@@ -31,7 +31,7 @@ source venv/bin/activate
 # Install dependencies
 # Use ./infra/setup.sh --llm to also install reward model deps (transformers, flash attention, etc.)
 pip install --upgrade pip
-pip install torch --index-url https://download.pytorch.org/whl/cu128
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 if [[ "${1:-}" == "--llm" ]]; then
     pip install -e ".[gpu,llm]"
     echo "Installed GPU + LLM dependencies"
