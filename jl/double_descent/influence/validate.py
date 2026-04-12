@@ -79,34 +79,32 @@ def validate_decomposition(
 
 
 def plot_figure_x(
-    orig_eval_path: Path,
+    ts_eval_path: Path,
     finetuned_metrics: Dict[int, Dict[str, float]],
     output_path: Path,
 ) -> None:
-    """Plot original vs fine-tuned train/test loss across k values.
+    """Plot temperature-scaled vs L2 fine-tuned test loss across k values.
 
     Shows that L2 fine-tuning of the final layer preserves the double
     descent shape, validating its use for the decomposition.
 
     Args:
-        orig_eval_path: Path to evaluation.jsonl from the original run.
-        finetuned_metrics: k -> {train_loss, test_loss, train_error, test_error}.
+        ts_eval_path: Path to temperature_scaled_evaluation.jsonl.
+        finetuned_metrics: k -> {test_loss, ...}.
         output_path: Where to save the figure.
     """
-    # Load original evaluation
-    orig_records = []
-    with open(orig_eval_path) as f:
+    # Load temperature-scaled evaluation
+    ts_records = []
+    with open(ts_eval_path) as f:
         for line in f:
             if line.strip():
-                orig_records.append(json.loads(line))
-    orig_records.sort(key=lambda r: r["k"])
+                ts_records.append(json.loads(line))
+    ts_records.sort(key=lambda r: r["k"])
 
-    orig_k = [r["k"] for r in orig_records]
-    orig_train_loss = [r["train_loss"] for r in orig_records]
-    orig_test_loss = [r["test_loss"] for r in orig_records]
+    ts_k = [r["k"] for r in ts_records]
+    ts_test_loss = [r["ts_loss"] for r in ts_records]
 
     ft_k = sorted(finetuned_metrics.keys())
-    ft_train_loss = [finetuned_metrics[k]["train_loss"] for k in ft_k]
     ft_test_loss = [finetuned_metrics[k]["test_loss"] for k in ft_k]
 
     # Academic style
@@ -139,32 +137,25 @@ def plot_figure_x(
         dash_joinstyle='round',
         antialiased=True,
     )
-    test_marker = dict(marker='o', markersize=5, markeredgewidth=1.1,
-                       markerfacecolor='white')
-    train_marker = dict(marker='o', markersize=3.5, markeredgewidth=0)
+    marker_kw = dict(marker='o', markersize=5, markeredgewidth=1.1,
+                     markerfacecolor='white')
 
-    color_orig = '#1f77b4'   # blue
+    color_ts = '#1f77b4'     # blue
     color_ft = '#2ca02c'     # green
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     fig, ax = plt.subplots(1, 1, figsize=(7, 4), dpi=200)
 
-    # Original
-    ax.plot(orig_k, orig_train_loss, color=color_orig, linestyle='--',
-            label='Original train', **train_marker, **line_kw)
-    ax.plot(orig_k, orig_test_loss, color=color_orig, linestyle='-',
-            label='Original test', **test_marker, **line_kw)
-    # Fine-tuned
-    ax.plot(ft_k, ft_train_loss, color=color_ft, linestyle='--',
-            label='L2 fine-tuned train', **train_marker, **line_kw)
+    ax.plot(ts_k, ts_test_loss, color=color_ts, linestyle='-',
+            label='Temperature scaled', **marker_kw, **line_kw)
     ax.plot(ft_k, ft_test_loss, color=color_ft, linestyle='-',
-            label='L2 fine-tuned test', **test_marker, **line_kw)
+            label='L2 fine-tuned', **marker_kw, **line_kw)
 
     ax.set_xlabel('Width parameter k')
     ax.set_ylabel('Cross-entropy loss')
     ax.legend(loc='upper right')
-    ax.set_title('Original vs L2 Fine-tuned Loss')
+    ax.set_title('Temperature Scaled vs L2 Fine-tuned Test Loss')
 
     fig.tight_layout()
     fig.savefig(output_path, bbox_inches='tight')
