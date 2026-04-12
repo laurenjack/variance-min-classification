@@ -321,6 +321,23 @@ def main():
     )
     logger.info(f"Test set: {len(test_dataset)} samples")
 
+    # Load val set from val.pt if present (enables temperature scaling)
+    val_loader = None
+    val_path = Path(args.model_path) / "val.pt"
+    if val_path.exists():
+        val_data = torch.load(val_path, weights_only=True)
+        val_dataset = torch.utils.data.TensorDataset(
+            val_data["images"], val_data["labels"],
+        )
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=EVAL_BATCH_SIZE,
+            shuffle=False,
+        )
+        logger.info(f"Val set loaded from {val_path}: {len(val_dataset)} samples")
+    else:
+        logger.info("No val.pt found — skipping temperature scaling")
+
     # Clear existing evaluation file (overwrite mode)
     output_path = Path(args.model_path)
     eval_file = output_path / 'evaluation.jsonl'
@@ -345,6 +362,7 @@ def main():
         compute_final_metrics(
             model, test_loader, metrics_path, output_path,
             model_label=f"k{k}", model_params={"k": k}, device=device,
+            val_loader=val_loader,
         )
 
         # Clean up
