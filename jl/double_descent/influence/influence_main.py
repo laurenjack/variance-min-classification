@@ -258,7 +258,7 @@ def main():
     # Plot Figure X (temperature-scaled vs L2 fine-tuned test loss)
     ts_eval_path = (
         Path(args.ts_eval_path) if args.ts_eval_path
-        else model_dir / "temperature_scaled" / "temperature_scaled_evaluation.jsonl"
+        else model_dir / "evaluation.jsonl"
     )
     if ts_eval_path.exists():
         plot_figure_x(

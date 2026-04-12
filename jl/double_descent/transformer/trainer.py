@@ -21,8 +21,6 @@ from jl.double_descent.transformer.transformer_data import (
     Vocab,
     collate_fn,
     load_iwslt14,
-    load_iwslt14_variance_split,
-    load_m2m100_iwslt14_variance_split,
 )
 from jl.double_descent.transformer.transformer_model import TransformerModel, count_parameters
 
@@ -121,9 +119,6 @@ def train_single_model(
     config: TDDConfig,
     output_path: str,
     data_path: str,
-    split_id: int = None,
-    num_splits: int = 8,
-    m2m100: bool = False,
 ) -> None:
     """Train a single Transformer with embedding dimension d_model.
 
@@ -134,43 +129,21 @@ def train_single_model(
         config: Training configuration.
         output_path: Directory to save metrics.
         data_path: Directory containing preprocessed IWSLT data.
-        split_id: If provided, use disjoint split for variance experiments.
-        num_splits: Number of disjoint splits for variance experiments.
-        m2m100: If True, use M2M100-tokenized data instead of BPE.
     """
     device = torch.device(f"cuda:{gpu_id}")
 
-    # Determine output suffix based on mode
-    if split_id is not None:
-        output_suffix = f"split{split_id}"
-        log_name = f"trainer_d{d_model}_split{split_id}"
-    else:
-        samples_k = train_samples // 1000
-        output_suffix = f"{samples_k}k"
-        log_name = f"trainer_d{d_model}_{samples_k}k"
+    samples_k = train_samples // 1000
+    output_suffix = f"{samples_k}k"
+    log_name = f"trainer_d{d_model}_{samples_k}k"
 
     # Setup logging for this process
     process_logger = logging.getLogger(log_name)
     process_logger.setLevel(logging.INFO)
 
-    if split_id is not None and m2m100:
-        process_logger.info(f"Starting M2M100 training for d_model={d_model}, split {split_id} on GPU {gpu_id}")
-        train_dataset, valid_dataset, test_dataset, vocab = load_m2m100_iwslt14_variance_split(
-            data_path, split_id, num_splits=num_splits, samples_per_split=train_samples, subsample_seed=config.subsample_seed
-        )
-    elif split_id is not None:
-        process_logger.info(f"Starting training for d_model={d_model}, split {split_id} on GPU {gpu_id}")
-        # Load disjoint split for variance experiment
-        train_dataset, valid_dataset, test_dataset, vocab = load_iwslt14_variance_split(
-            data_path, split_id, num_splits=num_splits, samples_per_split=train_samples, subsample_seed=config.subsample_seed
-        )
-    else:
-        samples_k = train_samples // 1000
-        process_logger.info(f"Starting training for d_model={d_model}, {samples_k}K samples on GPU {gpu_id}")
-        # Load data with specified sample count
-        train_dataset, valid_dataset, test_dataset, vocab = load_iwslt14(
-            data_path, train_samples, config.subsample_seed
-        )
+    process_logger.info(f"Starting training for d_model={d_model}, {samples_k}K samples on GPU {gpu_id}")
+    train_dataset, valid_dataset, test_dataset, vocab = load_iwslt14(
+        data_path, train_samples, config.subsample_seed
+    )
 
     process_logger.info(f"Loaded data: {len(train_dataset)} train, {len(valid_dataset)} valid, {len(test_dataset)} test")
     process_logger.info(f"Vocabulary size: {len(vocab)}")
@@ -321,7 +294,6 @@ def train_single_model(
         "step": step,
         "d_model": d_model,
         "train_samples": train_samples,
-        "split_id": split_id,
         "train_loss": train_loss,
         "train_acc": train_acc,
         "valid_loss": valid_loss,
@@ -339,15 +311,14 @@ def train_single_model(
     torch.save(model.state_dict(), model_path)
     process_logger.info(f"[d_model={d_model}, {output_suffix}] Model saved to {model_path}")
 
-    # Compute and save final evaluation metrics (main runs only)
-    if split_id is None:
-        from jl.double_descent.transformer.evaluation import compute_final_metrics
-        metrics_path = Path(output_path) / f"metrics_d{d_model}_{output_suffix}.jsonl"
-        eval_output = Path(output_path)
-        compute_final_metrics(
-            model, test_dataset, vocab, metrics_path, eval_output,
-            d_model, train_samples, device
-        )
+    # Compute and save final evaluation metrics
+    from jl.double_descent.transformer.evaluation import compute_final_metrics
+    metrics_path = Path(output_path) / f"metrics_d{d_model}_{output_suffix}.jsonl"
+    eval_output = Path(output_path)
+    compute_final_metrics(
+        model, test_dataset, vocab, metrics_path, eval_output,
+        d_model, train_samples, device, val_dataset=valid_dataset,
+    )
 
     total_time = time.time() - train_start
     process_logger.info(

@@ -20,7 +20,7 @@ import logging
 import re
 from functools import partial
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -37,6 +37,7 @@ from jl.double_descent.transformer.transformer_data import (
     load_split,
 )
 from jl.double_descent.transformer.transformer_model import TransformerModel
+from jl.double_descent.temperature_scaling import fit_temperature, metrics_with_temperature
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,34 @@ def read_final_train_metrics(metrics_path: Path) -> Dict[str, float]:
     }
 
 
+def _collect_flat_logits(
+    model: TransformerModel,
+    loader: DataLoader,
+    pad_idx: int,
+    device: torch.device,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Collect flattened non-pad logits and targets from a translation DataLoader.
+
+    Returns:
+        logits: (N_tokens, vocab_size) on CPU
+        targets: (N_tokens,) on CPU
+    """
+    all_logits = []
+    all_targets = []
+    with torch.no_grad():
+        for src, tgt in loader:
+            src, tgt = src.to(device), tgt.to(device)
+            tgt_input, target, mask, _ = _prepare_batch(tgt, pad_idx)
+            logits = model(src, tgt_input)
+            # Flatten and keep only non-pad positions
+            flat_logits = logits.view(-1, logits.size(-1))
+            flat_target = target.view(-1)
+            flat_mask = mask.view(-1)
+            all_logits.append(flat_logits[flat_mask].cpu())
+            all_targets.append(flat_target[flat_mask].cpu())
+    return torch.cat(all_logits), torch.cat(all_targets)
+
+
 def compute_final_metrics(
     model: TransformerModel,
     test_dataset: TranslationDataset,
@@ -129,6 +158,7 @@ def compute_final_metrics(
     d_model: int,
     train_samples: int,
     device: torch.device,
+    val_dataset: "Optional[TranslationDataset]" = None,
 ) -> Dict:
     """Compute final metrics for a trained transformer model.
 
@@ -224,14 +254,37 @@ def compute_final_metrics(
         'ece': round(ece, 6),
     }
 
+    # Temperature scaling: fit T on val logits, evaluate on test logits
+    if val_dataset is not None:
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=EVAL_BATCH_SIZE,
+            shuffle=False,
+            collate_fn=partial(collate_fn, pad_idx=vocab.pad_idx),
+        )
+        val_logits, val_targets = _collect_flat_logits(
+            model, val_loader, vocab.pad_idx, device,
+        )
+        test_logits, test_targets = _collect_flat_logits(
+            model, test_loader, vocab.pad_idx, device,
+        )
+        temperature = fit_temperature(val_logits, val_targets, chunk_size=8192)
+        ts_metrics = metrics_with_temperature(test_logits, test_targets, temperature)
+        result['temperature'] = round(temperature, 6)
+        result['ts_loss'] = round(ts_metrics['ts_loss'], 6)
+        result['ts_error'] = round(ts_metrics['ts_error'], 6)
+
     # Append to evaluation.jsonl
     eval_file = output_path / 'evaluation.jsonl'
     with open(eval_file, 'a') as f:
         f.write(json.dumps(result) + '\n')
 
+    ts_str = ""
+    if val_dataset is not None:
+        ts_str = f", T={result['temperature']:.4f}, ts_loss={result['ts_loss']:.4f}"
     logger.info(
         f"d_model={d_model}: test_loss={test_loss:.4f}, test_acc={test_acc:.4f}, "
-        f"test_bleu={test_bleu:.2f}, ece={ece:.6f}"
+        f"test_bleu={test_bleu:.2f}, ece={ece:.6f}{ts_str}"
     )
 
     return result
@@ -304,9 +357,14 @@ def main():
         )
     logger.info(f"Found models: {list(models.keys())}")
 
-    # Load test data
+    # Load test and valid data
     test_dataset, vocab = _load_test_data(args.data_path)
-    logger.info(f"Test set: {len(test_dataset)} examples, vocab: {len(vocab)} tokens")
+    valid_src, valid_tgt = load_split(args.data_path, "valid")
+    valid_dataset = TranslationDataset(valid_src, valid_tgt, vocab)
+    logger.info(
+        f"Test set: {len(test_dataset)} examples, "
+        f"Valid set: {len(valid_dataset)} examples, vocab: {len(vocab)} tokens"
+    )
 
     config = TDDConfig()
 
@@ -341,7 +399,7 @@ def main():
         # Compute and save metrics
         compute_final_metrics(
             model, test_dataset, vocab, metrics_path, output_path,
-            d_model, train_samples, device
+            d_model, train_samples, device, val_dataset=valid_dataset,
         )
 
         # Clean up

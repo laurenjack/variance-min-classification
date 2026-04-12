@@ -27,6 +27,7 @@ import torchvision.transforms as transforms
 
 from jl.double_descent.resnet18.resnet18_data import NoisyCIFAR10
 from jl.double_descent.resnet18.resnet18k import make_resnet18k
+from jl.double_descent.temperature_scaling import fit_temperature, metrics_with_temperature
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +135,23 @@ def _metrics_pass(
     return avg_loss, error, ece
 
 
+def _collect_logits(
+    model: torch.nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Forward pass collecting all logits and labels as tensors."""
+    all_logits = []
+    all_labels = []
+    with torch.no_grad():
+        for images, labels in loader:
+            images = images.to(device)
+            logits = model(images)
+            all_logits.append(logits.cpu())
+            all_labels.append(labels)
+    return torch.cat(all_logits), torch.cat(all_labels)
+
+
 def compute_final_metrics(
     model: torch.nn.Module,
     test_loader: DataLoader,
@@ -189,6 +207,18 @@ def compute_final_metrics(
         result['val_error'] = round(val_error, 6)
         result['val_ece'] = round(val_ece, 6)
 
+        # Temperature scaling: fit T on val logits, evaluate on test logits
+        val_logits, val_labels = _collect_logits(model, val_loader, device)
+        test_logits, test_labels = _collect_logits(model, test_loader, device)
+        temperature = fit_temperature(val_logits, val_labels)
+        ts_metrics = metrics_with_temperature(
+            test_logits, test_labels, temperature, compute_ece_fn=compute_ece,
+        )
+        result['temperature'] = round(temperature, 6)
+        result['ts_loss'] = round(ts_metrics['ts_loss'], 6)
+        result['ts_error'] = round(ts_metrics['ts_error'], 6)
+        result['ts_ece'] = round(ts_metrics['ts_ece'], 6)
+
     # Append to evaluation.jsonl
     eval_file = output_path / 'evaluation.jsonl'
     with open(eval_file, 'a') as f:
@@ -198,7 +228,8 @@ def compute_final_metrics(
     if val_loader is not None:
         val_str = (
             f", val_loss={result['val_loss']:.4f}, "
-            f"val_error={result['val_error']:.4f}, val_ece={result['val_ece']:.6f}"
+            f"val_error={result['val_error']:.4f}, val_ece={result['val_ece']:.6f}, "
+            f"T={result['temperature']:.4f}, ts_loss={result['ts_loss']:.4f}"
         )
     logger.info(
         f"{model_label}: test_loss={test_loss:.4f}, test_error={test_error:.4f}, "
