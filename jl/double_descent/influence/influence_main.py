@@ -100,23 +100,12 @@ def process_k(
     with open(val_path, "w") as f:
         json.dump(val_record, f, indent=2)
 
-    # Compute fine-tuned metrics for Figure X
-    ft_train_loss, ft_train_error, _ = _metrics_pass(
-        model, train_loader, device
-    )
+    # Compute fine-tuned test metrics for Figure X
     ft_test_loss, ft_test_error, _ = _metrics_pass(
         model, test_loader, device
     )
-    ft_metrics = {
-        "train_loss": ft_train_loss,
-        "test_loss": ft_test_loss,
-        "train_error": ft_train_error,
-        "test_error": ft_test_error,
-    }
-    logger.info(
-        f"Fine-tuned metrics: train_loss={ft_train_loss:.4f}, "
-        f"test_loss={ft_test_loss:.4f}"
-    )
+    ft_metrics = {"test_loss": ft_test_loss}
+    logger.info(f"Fine-tuned test_loss={ft_test_loss:.4f}")
 
     # Compute influence scores
     logger.info("Computing influence scores...")
@@ -136,8 +125,7 @@ def process_k(
     # Summary stats
     stats = compute_summary_stats(influence, mislabel_mask)
     logger.info(
-        f"Influence ratio (mislabeled/clean): {stats['influence_ratio']:.3f}, "
-        f"top1% mislabeled frac: {stats['top1pct_frac_mislabeled']:.3f}"
+        f"Influence ratio (mislabeled/clean): {stats['influence_ratio']:.3f}"
     )
 
     # Clean up GPU memory
@@ -166,6 +154,10 @@ def main():
     parser.add_argument(
         "--output-dir", default=None,
         help="Output directory (default: <model-dir>/influence)",
+    )
+    parser.add_argument(
+        "--ts-eval-path", default=None,
+        help="Path to temperature_scaled_evaluation.jsonl for Figure X",
     )
     parser.add_argument(
         "--device", default=None,
@@ -263,16 +255,19 @@ def main():
             f.write(json.dumps(rec) + "\n")
     logger.info(f"Saved summary to {summary_path}")
 
-    # Plot Figure X
-    orig_eval_path = model_dir / "evaluation.jsonl"
-    if orig_eval_path.exists():
+    # Plot Figure X (temperature-scaled vs L2 fine-tuned test loss)
+    ts_eval_path = (
+        Path(args.ts_eval_path) if args.ts_eval_path
+        else model_dir / "temperature_scaled" / "temperature_scaled_evaluation.jsonl"
+    )
+    if ts_eval_path.exists():
         plot_figure_x(
-            orig_eval_path, finetuned_metrics,
+            ts_eval_path, finetuned_metrics,
             output_dir / "figure_x.png",
         )
     else:
         logger.warning(
-            f"No evaluation.jsonl found at {orig_eval_path}, "
+            f"No temperature_scaled_evaluation.jsonl found at {ts_eval_path}, "
             "skipping Figure X"
         )
 

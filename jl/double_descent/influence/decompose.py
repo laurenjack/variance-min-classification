@@ -142,27 +142,15 @@ def compute_summary_stats(
         mean_influence_mislabeled: mean influence over mislabeled points
         mean_influence_clean: mean influence over clean points
         influence_ratio: mislabeled / clean ratio
-        frac_mislabeled: fraction of training set that is mislabeled
-        top1pct_frac_mislabeled: fraction of top 1% influential points that are mislabeled
-        top5pct_frac_mislabeled: fraction of top 5% influential points that are mislabeled
     """
     inf_np = influence.cpu().numpy()
     mask = mislabel_mask.astype(bool)
-    n = len(inf_np)
 
     mean_mis = float(inf_np[mask].mean()) if mask.any() else 0.0
     mean_clean = float(inf_np[~mask].mean()) if (~mask).any() else 0.0
-
-    # Top-k analysis
-    sorted_idx = np.argsort(inf_np)[::-1]
-    top1pct = sorted_idx[:max(1, n // 100)]
-    top5pct = sorted_idx[:max(1, n // 20)]
 
     return {
         "mean_influence_mislabeled": mean_mis,
         "mean_influence_clean": mean_clean,
         "influence_ratio": mean_mis / mean_clean if mean_clean > 0 else float("inf"),
-        "frac_mislabeled": float(mask.sum()) / n,
-        "top1pct_frac_mislabeled": float(mask[top1pct].sum()) / len(top1pct),
-        "top5pct_frac_mislabeled": float(mask[top5pct].sum()) / len(top5pct),
     }
