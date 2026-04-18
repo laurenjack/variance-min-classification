@@ -19,6 +19,7 @@ dependencies = [
 # (requires --index-url for CUDA builds that pyproject.toml cannot express)
 gpu = [
     "scikit-learn>=1.3",
+    "datasets>=2.19",
 ]
 # LLM reward model training - adds HuggingFace ecosystem + Flash Attention 3
 llm = [
