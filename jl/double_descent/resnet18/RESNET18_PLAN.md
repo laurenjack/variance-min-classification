@@ -26,8 +26,8 @@ jl/double_descent/resnet18/
 ├── resnet18_main.py       # Entry point (requires 10 GPUs)
 ├── resnet18k.py           # Standard PreActResNet18
 ├── trainer.py             # Single-model training function (calls evaluation.py)
-├── evaluation.py          # Final metrics + ECE for main runs
-├── plot_evaluation.py     # Main runs: error/loss/ECE vs k
+├── evaluation.py          # Final metrics for main runs
+├── plot_evaluation.py     # Main runs: error/loss vs k
 ├── plot_single_k.py       # Training curves for single k
 └── RESNET18_PLAN.md       # This plan file
 ```
@@ -165,7 +165,7 @@ Manually provision an 8-GPU instance (8x V100, 8x A100, or 8x H100), then:
 
 ```bash
 # SSH into the remote instance, then:
-cd /workspace/variance-min-classification && source venv/bin/activate && source .env
+cd /root/variance-min-classification && source venv/bin/activate && source .env
 python -m jl.double_descent.resnet18.resnet18_main \
     --output-path ./output/resnet18/$(date +%m-%d-%H%M) --data-path ./data
 ```
@@ -202,7 +202,6 @@ Temperature scaling is integrated into `evaluation.py`. When `--val-split` is us
 - `temperature`: fitted T value
 - `ts_loss`: test cross-entropy after dividing logits by T
 - `ts_error`: test error after temperature scaling
-- `ts_ece`: ECE after temperature scaling
 
 The shared utility lives in `jl/double_descent/temperature_scaling.py`.
 
@@ -216,7 +215,7 @@ Plots can be generated locally after downloading results, or via `/download` whi
 Plots evaluation metrics for main (non-variance) runs:
 - Single figure with 2 subplots:
   - Top: Train/Test error vs k
-  - Bottom: Train/Test loss vs k, with ECE on right y-axis
+  - Bottom: Train/Test loss vs k
 
 Generated automatically by trainer. Can also run manually:
 ```bash

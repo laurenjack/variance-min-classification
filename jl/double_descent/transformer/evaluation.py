@@ -374,6 +374,15 @@ def main():
     if eval_file.exists():
         eval_file.unlink()
 
+    # Discover early-stop models
+    es_dir = output_path / "early_stop"
+    es_models = discover_models(str(es_dir)) if es_dir.is_dir() else {}
+    if es_models:
+        logger.info(f"Found early-stop models: {list(es_models.keys())}")
+        es_eval_file = es_dir / 'evaluation.jsonl'
+        if es_eval_file.exists():
+            es_eval_file.unlink()
+
     # Evaluate each model
     for (d_model, train_samples), model_path in models.items():
         samples_k = train_samples // 1000
@@ -406,7 +415,34 @@ def main():
         del model
         torch.cuda.empty_cache()
 
+        # Evaluate early-stop model if available
+        key = (d_model, train_samples)
+        if key in es_models:
+            logger.info(f"Evaluating early-stop d_model={d_model}, {samples_k}K samples...")
+            es_model = TransformerModel(
+                vocab_size=len(vocab),
+                d_model=d_model,
+                n_layers=config.n_layers,
+                n_heads=config.n_heads,
+                d_ff_multiplier=config.d_ff_multiplier,
+                pad_idx=vocab.pad_idx,
+            ).to(device)
+            es_model.load_state_dict(
+                torch.load(es_models[key], map_location=device, weights_only=True)
+            )
+            es_model.eval()
+
+            compute_final_metrics(
+                es_model, test_dataset, vocab, metrics_path, es_dir,
+                d_model, train_samples, device, val_dataset=valid_dataset,
+            )
+
+            del es_model
+            torch.cuda.empty_cache()
+
     logger.info(f"Evaluation complete. Results written to {eval_file}")
+    if es_models:
+        logger.info(f"Early-stop evaluation written to {es_eval_file}")
 
 
 if __name__ == "__main__":

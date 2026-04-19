@@ -206,6 +206,13 @@ def train_single_model(
     if metrics_file.exists():
         metrics_file.unlink()
 
+    # Early stopping checkpoint tracking
+    es_dir = Path(output_path) / "early_stop"
+    es_dir.mkdir(parents=True, exist_ok=True)
+    es_model_path = es_dir / f"model_d{d_model}_{output_suffix}.pt"
+    best_valid_loss = float("inf")
+    best_valid_step = 0
+
     # Training loop
     model.train()
     step = 0
@@ -264,6 +271,12 @@ def train_single_model(
                     metrics["valid_loss"] = valid_loss
                     metrics["valid_acc"] = valid_acc
 
+                    # Save early-stop checkpoint if validation loss improved
+                    if valid_loss < best_valid_loss:
+                        best_valid_loss = valid_loss
+                        best_valid_step = step
+                        torch.save(model.state_dict(), es_model_path)
+
                 log_metrics(output_path, d_model, output_suffix, metrics)
 
                 elapsed = time.time() - train_start
@@ -319,6 +332,30 @@ def train_single_model(
         model, test_dataset, vocab, metrics_path, eval_output,
         d_model, train_samples, device, val_dataset=valid_dataset,
     )
+
+    # Evaluate early-stop checkpoint
+    process_logger.info(
+        f"[d_model={d_model}, {output_suffix}] Evaluating early-stop model "
+        f"(best valid_loss={best_valid_loss:.4f} at step {best_valid_step})..."
+    )
+    es_model = TransformerModel(
+        vocab_size=len(vocab),
+        d_model=d_model,
+        n_layers=config.n_layers,
+        n_heads=config.n_heads,
+        d_ff_multiplier=config.d_ff_multiplier,
+        pad_idx=vocab.pad_idx,
+    ).to(device)
+    es_model.load_state_dict(
+        torch.load(es_model_path, map_location=device, weights_only=True)
+    )
+    es_model.eval()
+    compute_final_metrics(
+        es_model, test_dataset, vocab, metrics_path, es_dir,
+        d_model, train_samples, device, val_dataset=valid_dataset,
+    )
+    del es_model
+    torch.cuda.empty_cache()
 
     total_time = time.time() - train_start
     process_logger.info(

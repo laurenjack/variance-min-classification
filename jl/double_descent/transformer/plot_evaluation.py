@@ -23,7 +23,7 @@ Usage:
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Dict, List, Optional, Sequence
 
 import matplotlib.pyplot as plt
 
@@ -46,6 +46,23 @@ def load_evaluation(eval_path: str) -> List[Dict]:
     return sorted(results, key=lambda r: r["d_model"])
 
 
+def load_early_stop_evaluation(run_dir: Path) -> Optional[List[Dict]]:
+    """Load early-stop evaluation.jsonl from the early_stop/ subdirectory.
+
+    Returns:
+        List of dicts sorted by d_model, or None if file doesn't exist.
+    """
+    es_path = run_dir / "early_stop" / "evaluation.jsonl"
+    if not es_path.exists():
+        return None
+    results = []
+    with open(es_path) as f:
+        for line in f:
+            if line.strip():
+                results.append(json.loads(line))
+    return sorted(results, key=lambda r: r["d_model"]) if results else None
+
+
 def _render(
     d_model_values: Sequence[int],
     train_loss: Sequence[float],
@@ -53,12 +70,17 @@ def _render(
     test_bleu: Sequence[float],
     title: str,
     output_path: Path,
+    es_loss: Optional[Sequence[float]] = None,
+    es_bleu: Optional[Sequence[float]] = None,
 ) -> None:
     """Render the two-subplot evaluation figure from plain arrays.
 
     This is the pure plotting body: takes arrays + title + output path,
     produces the figure. Used by both the uncalibrated and temperature-
     scaled entry points.
+
+    If es_loss/es_bleu are provided, an "Early Stopping" line is added
+    to each subplot.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -89,6 +111,7 @@ def _render(
     # Tableau palette (paper-friendly)
     color_loss = '#d62728'   # red
     color_bleu = '#2ca02c'   # green
+    color_es = '#1f77b4'     # blue
 
     # Shared line style kwargs
     line_kw = dict(
@@ -111,6 +134,10 @@ def _render(
     ax1.plot(d_model_values, test_bleu, linestyle='-',
              color=color_bleu, markeredgecolor=color_bleu,
              label='Test BLEU', zorder=3, **line_kw, **test_marker)
+    if es_bleu is not None:
+        ax1.plot(d_model_values, es_bleu, linestyle='-',
+                 color=color_es, markeredgecolor=color_es,
+                 label='Early Stopping BLEU', zorder=3, **line_kw, **test_marker)
     ax1.set_ylabel('Test BLEU Score')
     ax1.set_title(title)
     ax1.set_ylim(bottom=0)
@@ -125,6 +152,10 @@ def _render(
     ax2.plot(d_model_values, test_loss, linestyle='-',
              color=color_loss, markeredgecolor=color_loss,
              label='Test Loss', zorder=3, **line_kw, **test_marker)
+    if es_loss is not None:
+        ax2.plot(d_model_values, es_loss, linestyle='-',
+                 color=color_es, markeredgecolor=color_es,
+                 label='Early Stopping Loss', zorder=3, **line_kw, **test_marker)
     ax2.set_xlabel(r'Transformer embedding dimension $d_{\mathrm{model}}$')
     ax2.set_ylabel('Cross-Entropy Loss')
     ax2.set_ylim(bottom=0)
@@ -141,21 +172,35 @@ def _render(
 def plot_evaluation(eval_path: str, output_dir: str) -> None:
     """Plot uncalibrated BLEU + loss vs d_model.
 
+    If early_stop/evaluation.jsonl exists in the same directory as eval_path,
+    early-stopping lines are added to both subplots.
+
     Args:
         eval_path: Path to evaluation.jsonl file.
         output_dir: Directory to save plot.
     """
     results = load_evaluation(eval_path)
+    run_dir = Path(eval_path).parent
 
     d_model_values = [r["d_model"] for r in results]
     train_loss = [r["train_loss"] for r in results]
     test_loss = [r["test_loss"] for r in results]
     test_bleu = [r["test_bleu"] for r in results]
 
+    # Try to load early-stopping evaluation
+    es_loss = None
+    es_bleu = None
+    es_results = load_early_stop_evaluation(run_dir)
+    if es_results:
+        es_by_d = {r["d_model"]: r for r in es_results}
+        if all(d in es_by_d for d in d_model_values):
+            es_loss = [es_by_d[d]["test_loss"] for d in d_model_values]
+            es_bleu = [es_by_d[d]["test_bleu"] for d in d_model_values]
+
     title = 'Transformer Double Descent: IWSLT14 de-en'
     output_path = Path(output_dir) / 'transformer_evaluation.png'
     _render(d_model_values, train_loss, test_loss, test_bleu,
-            title, output_path)
+            title, output_path, es_loss=es_loss, es_bleu=es_bleu)
 
 
 def plot_temperature_scaled(

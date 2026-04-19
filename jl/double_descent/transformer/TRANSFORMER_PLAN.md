@@ -71,8 +71,8 @@ jl/double_descent/transformer/
 ├── transformer_model.py      # Encoder-decoder Transformer
 ├── trainer.py                # Single-model training function (calls evaluation.py)
 ├── bleu.py                   # BLEU score computation
-├── evaluation.py             # Final metrics + ECE for main runs
-├── plot_evaluation.py        # Main runs: loss/ECE/accuracy/BLEU vs d_model
+├── evaluation.py             # Final metrics for main runs + early-stop models
+├── plot_evaluation.py        # Main runs: loss/BLEU vs d_model (+ early stopping)
 ├── plot_single_d_model.py    # Step-wise training curves for single model
 └── TRANSFORMER_PLAN.md       # This plan file
 ```
@@ -315,8 +315,16 @@ output/transformer/03-01-1010/
 ├── model_d8_36k.pt
 ├── model_d16_36k.pt
 ├── ...
-└── model_d192_36k.pt
+├── model_d192_36k.pt
+├── evaluation.jsonl              # Final model evaluation (test loss, BLEU, TS)
+└── early_stop/
+    ├── model_d8_36k.pt           # Best valid_loss checkpoint
+    ├── ...
+    ├── model_d192_36k.pt
+    └── evaluation.jsonl          # Early-stop evaluation (test loss, BLEU, TS)
 ```
+
+**Early stopping:** During training, the model checkpoint is saved to `early_stop/` every `eval_interval` steps (100) whenever `valid_loss` improves. At the end of training, the early-stop model is loaded and evaluated (test loss, BLEU, temperature scaling), with results written to `early_stop/evaluation.jsonl`.
 
 **Metrics format (JSONL):**
 ```json
@@ -326,7 +334,7 @@ output/transformer/03-01-1010/
 {"step": 80000, "d_model": 64, "train_samples": 36000, "train_loss": 2.1, "train_acc": 0.65, "valid_loss": 3.2, "valid_acc": 0.48, "lr": 0.00003, "train_bleu": 45.2, "test_bleu": 28.5, "test_loss": 3.3, "test_acc": 0.47}
 ```
 
-**Total output files:** 48 (24 metrics + 24 models)
+**Total output files:** 72 (24 metrics + 24 final models + 24 early-stop models) + 2 evaluation.jsonl
 
 ---
 
@@ -337,7 +345,7 @@ output/transformer/03-01-1010/
 **Default double descent (d_model 8-192):**
 ```bash
 # SSH into the remote instance, then:
-cd /workspace/variance-min-classification && source venv/bin/activate && source .env
+cd /root/variance-min-classification && source venv/bin/activate && source .env
 python -m jl.double_descent.transformer.transformer_main \
     --output-path ./output/transformer/$(date +%m-%d-%H%M) \
     --data-path ./data/iwslt14.tokenized.de-en

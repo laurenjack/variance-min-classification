@@ -9,14 +9,14 @@
 #     HF_TOKEN, KAGGLE_USERNAME, KAGGLE_KEY
 #
 # Usage:
-#   cd /workspace/variance-min-classification
+#   cd /root/variance-min-classification
 #   ./infra/setup.sh
 
 set -ex
 
 # Write .env file with API tokens
 cat > .env << 'EOF'
-export HF_HOME='/workspace/.cache/huggingface'
+export HF_HOME='/root/.cache/huggingface'
 EOF
 [[ -n "${HF_TOKEN:-}" ]] && echo "export HF_TOKEN='${HF_TOKEN}'" >> .env
 [[ -n "${KAGGLE_USERNAME:-}" ]] && echo "export KAGGLE_USERNAME='${KAGGLE_USERNAME}'" >> .env
