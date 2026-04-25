@@ -219,12 +219,142 @@ def l2_finetune_chunked(
         f"(CE={final_ce:.6f}, L2={final_l2:.6f}), grad_norm={grad_norm:.2e}"
     )
     return {
+        "optimizer": "lbfgs",
         "final_loss": float(final_loss.item()),
         "final_ce": final_ce,
         "final_l2": final_l2,
         "grad_norm": grad_norm,
         "n_closure_evals": eval_count[0],
         "lambda_l2": lambda_l2,
+    }
+
+
+def _full_batch_grad(
+    W: torch.Tensor,
+    b: torch.Tensor,
+    features: torch.Tensor,
+    targets: torch.Tensor,
+    lambda_l2: float,
+    chunk_size: int,
+) -> tuple:
+    """Accumulate full-batch gradient of (1/n)*CE + lambda*(||W||^2 + ||b||^2)
+    into W.grad / b.grad via chunked backprop. Returns (ce_value, l2_value).
+    """
+    if W.grad is not None:
+        W.grad.zero_()
+    if b.grad is not None:
+        b.grad.zero_()
+
+    n = features.size(0)
+    ce_total = 0.0
+    for s in range(0, n, chunk_size):
+        e = min(s + chunk_size, n)
+        chunk_logits = features[s:e] @ W.t() + b
+        ce_chunk = F.cross_entropy(chunk_logits, targets[s:e], reduction="sum") / n
+        ce_chunk.backward()
+        ce_total += float(ce_chunk.item())
+
+    l2 = lambda_l2 * (W.pow(2).sum() + b.pow(2).sum())
+    l2.backward()
+    return ce_total, float(l2.item())
+
+
+def adam_finetune_chunked(
+    linear: nn.Linear,
+    features: torch.Tensor,
+    targets: torch.Tensor,
+    lambda_l2: float,
+    num_steps: int = 3000,
+    lr_init: float = 1e-3,
+    beta1: float = 0.9,
+    beta2: float = 0.9999,
+    eps: float = 1e-8,
+    chunk_size: int = 4096,
+    log_interval: int = 50,
+) -> dict:
+    """Full-batch Adam fine-tune with cosine LR decay to zero.
+
+    Loss = (1/n) * CE(features W^T + b, targets) + lambda * (||W||^2 + ||b||^2)
+
+    The L2 term is added to the loss directly (NOT via Adam's `weight_decay`,
+    which would not give the same stationary point we are trying to validate).
+    Cosine decay to zero is what gets us the last few orders of magnitude on
+    the gradient norm — without it, Adam tends to plateau on its own update
+    floor.
+    """
+    assert linear.bias is not None
+    n = features.size(0)
+    device = features.device
+
+    W = linear.weight.detach().clone().to(device).requires_grad_(True)
+    b = linear.bias.detach().clone().to(device).requires_grad_(True)
+
+    optimizer = torch.optim.Adam(
+        [W, b], lr=lr_init, betas=(beta1, beta2), eps=eps, weight_decay=0.0,
+    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=num_steps, eta_min=0.0,
+    )
+
+    history = []
+    last_grad_norm = float("inf")
+    last_ce = float("nan")
+    last_l2 = float("nan")
+
+    for step in range(num_steps):
+        optimizer.zero_grad()
+        ce_val, l2_val = _full_batch_grad(W, b, features, targets, lambda_l2, chunk_size)
+        with torch.no_grad():
+            grad_norm = torch.cat([W.grad.flatten(), b.grad.flatten()]).norm().item()
+        last_grad_norm = grad_norm
+        last_ce = ce_val
+        last_l2 = l2_val
+
+        optimizer.step()
+        scheduler.step()
+
+        if step % log_interval == 0 or step == num_steps - 1:
+            cur_lr = scheduler.get_last_lr()[0]
+            logger.info(
+                f"Adam step {step}/{num_steps}: "
+                f"loss={ce_val + l2_val:.6f} (CE={ce_val:.6f}, L2={l2_val:.6f}), "
+                f"grad_norm={grad_norm:.3e}, lr={cur_lr:.3e}"
+            )
+            history.append({
+                "step": step, "loss": ce_val + l2_val, "ce": ce_val,
+                "l2": l2_val, "grad_norm": grad_norm, "lr": cur_lr,
+            })
+
+    # Recompute final gradient at the post-step weights (last `step()` moved
+    # them after the grad we logged). One extra forward/backward.
+    with torch.no_grad():
+        pass
+    optimizer.zero_grad()
+    final_ce, final_l2 = _full_batch_grad(W, b, features, targets, lambda_l2, chunk_size)
+    with torch.no_grad():
+        final_grad_norm = torch.cat([W.grad.flatten(), b.grad.flatten()]).norm().item()
+
+    with torch.no_grad():
+        linear.weight.copy_(W)
+        linear.bias.copy_(b)
+
+    logger.info(
+        f"Adam done: final loss={final_ce + final_l2:.6f} "
+        f"(CE={final_ce:.6f}, L2={final_l2:.6f}), final_grad_norm={final_grad_norm:.3e}"
+    )
+    return {
+        "optimizer": "adam",
+        "final_loss": final_ce + final_l2,
+        "final_ce": final_ce,
+        "final_l2": final_l2,
+        "grad_norm": final_grad_norm,
+        "n_steps": num_steps,
+        "lr_init": lr_init,
+        "beta1": beta1,
+        "beta2": beta2,
+        "eps": eps,
+        "lambda_l2": lambda_l2,
+        "history": history,
     }
 
 
@@ -365,7 +495,15 @@ def main():
                         help="Directory with M2M100-preprocessed IWSLT data")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--lambda-l2", type=float, default=1e-5)
-    parser.add_argument("--max-iter", type=int, default=3000)
+    parser.add_argument("--optimizer", choices=["adam", "lbfgs"], default="adam")
+    parser.add_argument("--max-iter", type=int, default=3000,
+                        help="L-BFGS only: max_iter passed to torch.optim.LBFGS")
+    parser.add_argument("--num-adam-steps", type=int, default=3000,
+                        help="Adam only: number of full-batch steps")
+    parser.add_argument("--adam-lr", type=float, default=1e-3,
+                        help="Adam only: initial LR (cosine-decayed to 0)")
+    parser.add_argument("--adam-beta1", type=float, default=0.9)
+    parser.add_argument("--adam-beta2", type=float, default=0.9999)
     parser.add_argument("--num-splits", type=int, default=4)
     parser.add_argument("--samples-per-split", type=int, default=36000)
     parser.add_argument("--subsample-seed", type=int, default=42)
@@ -471,13 +609,29 @@ def main():
         output_dir / "features_test.pt",
     )
 
-    # 6. L-BFGS fine-tune the untied output projection
-    logger.info(f"L-BFGS fine-tune (lambda={args.lambda_l2}, max_iter={args.max_iter})...")
-    ft_stats = l2_finetune_chunked(
-        model.output_proj, phi_train_dev, y_train_dev,
-        lambda_l2=args.lambda_l2, max_iter=args.max_iter,
-        chunk_size=args.feature_chunk,
-    )
+    # 6. Fine-tune the untied output projection
+    if args.optimizer == "lbfgs":
+        logger.info(f"L-BFGS fine-tune (lambda={args.lambda_l2}, max_iter={args.max_iter})...")
+        ft_stats = l2_finetune_chunked(
+            model.output_proj, phi_train_dev, y_train_dev,
+            lambda_l2=args.lambda_l2, max_iter=args.max_iter,
+            chunk_size=args.feature_chunk,
+        )
+    else:
+        logger.info(
+            f"Full-batch Adam fine-tune (lambda={args.lambda_l2}, "
+            f"steps={args.num_adam_steps}, lr={args.adam_lr}, "
+            f"betas=({args.adam_beta1}, {args.adam_beta2}))..."
+        )
+        ft_stats = adam_finetune_chunked(
+            model.output_proj, phi_train_dev, y_train_dev,
+            lambda_l2=args.lambda_l2,
+            num_steps=args.num_adam_steps,
+            lr_init=args.adam_lr,
+            beta1=args.adam_beta1,
+            beta2=args.adam_beta2,
+            chunk_size=args.feature_chunk,
+        )
 
     # 7. FT test loss after fine-tuning
     ft_test_loss = evaluate_test_loss(model, test_dataset, vocab, device, args.batch_size)
