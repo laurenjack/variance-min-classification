@@ -180,7 +180,7 @@ def l2_finetune_chunked(
         tolerance_grad=tolerance_grad,
         tolerance_change=0,
         line_search_fn="strong_wolfe",
-        history_size=20,
+        history_size=100,
     )
 
     eval_count = [0]
@@ -365,7 +365,7 @@ def main():
                         help="Directory with M2M100-preprocessed IWSLT data")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--lambda-l2", type=float, default=1e-5)
-    parser.add_argument("--max-iter", type=int, default=500)
+    parser.add_argument("--max-iter", type=int, default=3000)
     parser.add_argument("--num-splits", type=int, default=4)
     parser.add_argument("--samples-per-split", type=int, default=36000)
     parser.add_argument("--subsample-seed", type=int, default=42)
