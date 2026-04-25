@@ -504,6 +504,11 @@ def main():
                         help="Adam only: initial LR (cosine-decayed to 0)")
     parser.add_argument("--adam-beta1", type=float, default=0.9)
     parser.add_argument("--adam-beta2", type=float, default=0.9999)
+    parser.add_argument("--polish", action="store_true",
+                        help="After the chosen optimizer, run an L-BFGS polish stage "
+                             "(from the converged weights, with tight tolerance).")
+    parser.add_argument("--polish-max-iter", type=int, default=2000)
+    parser.add_argument("--polish-tolerance-grad", type=float, default=1e-9)
     parser.add_argument("--num-splits", type=int, default=4)
     parser.add_argument("--samples-per-split", type=int, default=36000)
     parser.add_argument("--subsample-seed", type=int, default=42)
@@ -633,6 +638,20 @@ def main():
             chunk_size=args.feature_chunk,
         )
 
+    # 6b. Optional L-BFGS polish stage (warm start from prior optimizer's result)
+    polish_stats = None
+    if args.polish:
+        logger.info(
+            f"L-BFGS polish (lambda={args.lambda_l2}, max_iter={args.polish_max_iter}, "
+            f"tol_grad={args.polish_tolerance_grad})..."
+        )
+        polish_stats = l2_finetune_chunked(
+            model.output_proj, phi_train_dev, y_train_dev,
+            lambda_l2=args.lambda_l2, max_iter=args.polish_max_iter,
+            tolerance_grad=args.polish_tolerance_grad,
+            chunk_size=args.feature_chunk,
+        )
+
     # 7. FT test loss after fine-tuning
     ft_test_loss = evaluate_test_loss(model, test_dataset, vocab, device, args.batch_size)
     logger.info(
@@ -687,6 +706,7 @@ def main():
         "ft_test_loss": ft_test_loss,
         "ft_test_loss_delta": abs(original_test_loss - ft_test_loss),
         "lbfgs": ft_stats,
+        "polish": polish_stats,
         "decomposition": val_stats,
     }
     with open(output_dir / "validation.json", "w") as f:
