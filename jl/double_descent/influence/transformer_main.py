@@ -266,13 +266,14 @@ def adam_finetune_chunked(
     lambda_l2: float,
     num_steps: int = 3000,
     lr_init: float = 1e-3,
+    warmup_steps: int = 0,
     beta1: float = 0.9,
     beta2: float = 0.9999,
     eps: float = 1e-8,
     chunk_size: int = 4096,
     log_interval: int = 50,
 ) -> dict:
-    """Full-batch Adam fine-tune with cosine LR decay to zero.
+    """Full-batch Adam fine-tune with linear warmup + cosine LR decay to zero.
 
     Loss = (1/n) * CE(features W^T + b, targets) + lambda * (||W||^2 + ||b||^2)
 
@@ -281,7 +282,13 @@ def adam_finetune_chunked(
     Cosine decay to zero is what gets us the last few orders of magnitude on
     the gradient norm — without it, Adam tends to plateau on its own update
     floor.
+
+    Linear warmup helps when lr_init is large (>= 1e-2): without it, Adam's
+    second-moment estimate v_hat starts at 0, so the first few updates can be
+    enormous (lr * sign(grad)) and destabilize the descent.
     """
+    import math
+
     assert linear.bias is not None
     n = features.size(0)
     device = features.device
@@ -292,9 +299,15 @@ def adam_finetune_chunked(
     optimizer = torch.optim.Adam(
         [W, b], lr=lr_init, betas=(beta1, beta2), eps=eps, weight_decay=0.0,
     )
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=num_steps, eta_min=0.0,
-    )
+
+    def _lr_lambda(step: int) -> float:
+        if warmup_steps > 0 and step < warmup_steps:
+            return float(step + 1) / float(max(1, warmup_steps))
+        progress = (step - warmup_steps) / max(1, num_steps - warmup_steps)
+        progress = min(max(progress, 0.0), 1.0)
+        return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, _lr_lambda)
 
     history = []
     last_grad_norm = float("inf")
@@ -349,6 +362,7 @@ def adam_finetune_chunked(
         "final_l2": final_l2,
         "grad_norm": final_grad_norm,
         "n_steps": num_steps,
+        "warmup_steps": warmup_steps,
         "lr_init": lr_init,
         "beta1": beta1,
         "beta2": beta2,
@@ -504,6 +518,8 @@ def main():
                         help="Adam only: initial LR (cosine-decayed to 0)")
     parser.add_argument("--adam-beta1", type=float, default=0.9)
     parser.add_argument("--adam-beta2", type=float, default=0.9999)
+    parser.add_argument("--adam-warmup-steps", type=int, default=0,
+                        help="Linear warmup steps before cosine decay starts.")
     parser.add_argument("--polish", action="store_true",
                         help="After the chosen optimizer, run an L-BFGS polish stage "
                              "(from the converged weights, with tight tolerance).")
@@ -640,6 +656,7 @@ def main():
         logger.info(
             f"Full-batch Adam fine-tune (lambda={args.lambda_l2}, "
             f"steps={args.num_adam_steps}, lr={args.adam_lr}, "
+            f"warmup={args.adam_warmup_steps}, "
             f"betas=({args.adam_beta1}, {args.adam_beta2}))..."
         )
         ft_stats = adam_finetune_chunked(
@@ -647,6 +664,7 @@ def main():
             lambda_l2=args.lambda_l2,
             num_steps=args.num_adam_steps,
             lr_init=args.adam_lr,
+            warmup_steps=args.adam_warmup_steps,
             beta1=args.adam_beta1,
             beta2=args.adam_beta2,
             chunk_size=args.feature_chunk,
