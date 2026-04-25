@@ -509,6 +509,9 @@ def main():
                              "(from the converged weights, with tight tolerance).")
     parser.add_argument("--polish-max-iter", type=int, default=2000)
     parser.add_argument("--polish-tolerance-grad", type=float, default=1e-9)
+    parser.add_argument("--init-output-proj", default=None,
+                        help="Path to a state_dict for output_proj. If set, loads it "
+                             "after untie (overrides the embedding-weight initialization).")
     parser.add_argument("--num-splits", type=int, default=4)
     parser.add_argument("--samples-per-split", type=int, default=36000)
     parser.add_argument("--subsample-seed", type=int, default=42)
@@ -573,6 +576,17 @@ def main():
     assert abs(untie_test_loss - original_test_loss) < 1e-5, (
         f"Untie changed loss: {original_test_loss} -> {untie_test_loss}"
     )
+
+    # 4b. Optionally override output_proj weights from a previous run
+    # (e.g., warm-start L-BFGS from an Adam checkpoint).
+    if args.init_output_proj:
+        state = torch.load(args.init_output_proj, map_location=device, weights_only=True)
+        model.output_proj.load_state_dict(state)
+        warm_test_loss = evaluate_test_loss(model, test_dataset, vocab, device, args.batch_size)
+        logger.info(
+            f"Loaded output_proj from {args.init_output_proj}; "
+            f"test loss={warm_test_loss:.6f}"
+        )
 
     # 5. Extract decoder features for train + test
     logger.info("Extracting train decoder features...")
