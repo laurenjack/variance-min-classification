@@ -173,7 +173,17 @@ def main():
             tgt_input_ids = tgt_encoded["input_ids"].to(device)
             tgt_attention_mask = tgt_encoded["attention_mask"].to(device)
 
-            decoder_input_ids = tgt_input_ids[:, :-1]
+            # Prepend decoder_start_token_id (M2M100 was trained with </s>=2 at
+            # decoder position 0). Without this prefix the decoder is fed
+            # __en__ at position 0 — out-of-distribution — and per-token NLL
+            # is inflated 4-9x. See oracle_diagnostic.py which uses labels= to
+            # let HF auto-shift.
+            bsz = tgt_input_ids.size(0)
+            start_id = model.config.decoder_start_token_id
+            start_col = torch.full(
+                (bsz, 1), start_id, dtype=tgt_input_ids.dtype, device=device,
+            )
+            decoder_input_ids = torch.cat([start_col, tgt_input_ids[:, :-1]], dim=1)
 
             outputs = model(
                 input_ids=src_encoded["input_ids"],
@@ -185,8 +195,11 @@ def main():
             compact_logits = outputs.logits[:, :, extract_indices].float()
             del outputs
 
-            target_native_ids = tgt_input_ids[:, 1:]    # [batch, tgt_len-1]
-            target_mask = tgt_attention_mask[:, 1:]      # [batch, tgt_len-1]
+            # logits[i] now predicts tgt_input_ids[i] (HF-shift convention).
+            # Drop position 0 (predicts the leading __en__ language tag) so
+            # we keep only content-token predictions.
+            target_native_ids = tgt_input_ids                # [batch, tgt_len]
+            target_mask = tgt_attention_mask                  # [batch, tgt_len]
 
             log_probs = F.log_softmax(compact_logits, dim=-1)
             del compact_logits
@@ -210,12 +223,14 @@ def main():
             del log_probs
 
             for i in range(len(batch_de)):
-                mask = target_mask[i].bool()
-                n_positions = int(mask.sum().item())
+                # Position 0 predicts __en__ (language tag); skip it.
+                content_mask = target_mask[i].bool().clone()
+                content_mask[0] = False
+                n_positions = int(content_mask.sum().item())
 
                 if n_positions > 0:
-                    all_log_probs.append(log_p_target[i][mask].cpu())
-                    all_target_ids.append(target_compact[i][mask].cpu().short())
+                    all_log_probs.append(log_p_target[i][content_mask].cpu())
+                    all_target_ids.append(target_compact[i][content_mask].cpu().short())
 
                 sentence_offsets.append(sentence_offsets[-1] + n_positions)
 
