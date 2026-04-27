@@ -103,6 +103,14 @@ def main():
     parser.add_argument("--influence-path", required=True)
     parser.add_argument("--oracle-path", required=True)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument(
+        "--x-as-prob", action="store_true",
+        help="Use p_oracle(y) instead of log p_oracle(y) on the x-axis.",
+    )
+    parser.add_argument(
+        "--plot-name", default="oracle_vs_influence.png",
+        help="Filename for the scatter plot (saved inside --output-dir).",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -139,25 +147,31 @@ def main():
 
     inf_np = influence_aligned.numpy()
     log_p_np = oracle_aligned.numpy()
+    if args.x_as_prob:
+        x_np = np.exp(log_p_np)
+        x_label = "M2M100-12B  p(y_i | context_i)"
+    else:
+        x_np = log_p_np
+        x_label = "M2M100-12B  log p(y_i | context_i)"
 
-    pearson_r, pearson_p = stats.pearsonr(log_p_np, inf_np)
-    spearman_r, spearman_p = stats.spearmanr(log_p_np, inf_np)
+    pearson_r, pearson_p = stats.pearsonr(x_np, inf_np)
+    spearman_r, spearman_p = stats.spearmanr(x_np, inf_np)
     logger.info(
         f"Pearson r = {pearson_r:.4f} (p={pearson_p:.2e}); "
         f"Spearman rho = {spearman_r:.4f} (p={spearman_p:.2e})"
     )
 
-    # Binned means: average influence in deciles of log p(y)
+    # Binned means: average influence in deciles of x
     n_bins = 10
-    bin_edges = np.quantile(log_p_np, np.linspace(0, 1, n_bins + 1))
-    bin_idx = np.clip(np.digitize(log_p_np, bin_edges[1:-1]), 0, n_bins - 1)
+    bin_edges = np.quantile(x_np, np.linspace(0, 1, n_bins + 1))
+    bin_idx = np.clip(np.digitize(x_np, bin_edges[1:-1]), 0, n_bins - 1)
     bin_centers = []
     bin_means = []
     bin_stds = []
     bin_counts = []
     for i in range(n_bins):
         sel = bin_idx == i
-        bin_centers.append(float(log_p_np[sel].mean()))
+        bin_centers.append(float(x_np[sel].mean()))
         bin_means.append(float(inf_np[sel].mean()))
         bin_stds.append(float(inf_np[sel].std()))
         bin_counts.append(int(sel.sum()))
@@ -189,7 +203,7 @@ def main():
     rng = np.random.default_rng(0)
     sample_idx = rng.choice(len(inf_np), size=n_plot, replace=False)
     ax.scatter(
-        log_p_np[sample_idx], inf_np[sample_idx],
+        x_np[sample_idx], inf_np[sample_idx],
         s=2, alpha=0.15, color="#1f77b4", rasterized=True,
         label=f"per-token (n={n_plot:,})",
     )
@@ -199,15 +213,16 @@ def main():
         capsize=3, label="decile mean ± std",
     )
     ax.axhline(1.0, color="0.5", linestyle="--", linewidth=0.8, alpha=0.7)
-    ax.set_xlabel("M2M100-12B log p(y_i | context_i)")
+    ax.set_xlabel(x_label)
     ax.set_ylabel("Influence score (mean=1)")
+    title_x = "Oracle prob" if args.x_as_prob else "Oracle log-prob"
     ax.set_title(
-        f"Oracle log-prob vs influence  "
+        f"{title_x} vs influence  "
         f"(Pearson r={pearson_r:.3f}, Spearman ρ={spearman_r:.3f})"
     )
     ax.legend()
     fig.tight_layout()
-    fig.savefig(output_dir / "oracle_vs_influence.png", bbox_inches="tight")
+    fig.savefig(output_dir / args.plot_name, bbox_inches="tight")
     plt.close(fig)
 
     logger.info(f"Wrote outputs to {output_dir}")
