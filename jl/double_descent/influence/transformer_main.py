@@ -478,24 +478,29 @@ def compute_influence_scores_chunked(
     train_chunk: int = 16384,
     test_chunk: int = 16384,
 ) -> torch.Tensor:
-    """influence_i = ||r_i|| * mean_t(phi_train[i] . phi_test[t]), normalized
-    so mean(influence) = 1. Computed with two-level chunking.
+    """influence_i = ||r_i|| · RMS_t(phi_train[i] · phi_test[t]), normalized
+    so mean(influence) = 1.
+
+    RMS over test points keeps the score non-negative even when features can
+    have signs (post-LayerNorm transformer hidden states), and corresponds to
+    the L2 norm of the per-(class, test-point) Yeh & Kim contribution matrix
+    divided by sqrt(N_test). Computed with two-level chunking.
     """
     n_train = phi_train.size(0)
     n_test = phi_test.size(0)
     device = phi_train.device
 
-    mean_sim = torch.zeros(n_train, device=device, dtype=torch.float32)
+    sum_sq_dots = torch.zeros(n_train, device=device, dtype=torch.float32)
     for ts in range(0, n_test, test_chunk):
         te = min(ts + test_chunk, n_test)
         phi_test_block = phi_test[ts:te].float()
         for trs in range(0, n_train, train_chunk):
             tre = min(trs + train_chunk, n_train)
             dots = phi_train[trs:tre].float() @ phi_test_block.t()
-            mean_sim[trs:tre] += dots.sum(dim=1)
-    mean_sim /= n_test
+            sum_sq_dots[trs:tre] += dots.pow(2).sum(dim=1)
+    rms_sim = (sum_sq_dots / n_test).sqrt()
 
-    raw = grad_norms.float() * mean_sim
+    raw = grad_norms.float() * rms_sim
     return raw / raw.mean()
 
 

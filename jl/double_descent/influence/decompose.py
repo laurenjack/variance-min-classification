@@ -47,8 +47,15 @@ def compute_influence_scores(
 ) -> torch.Tensor:
     """Compute normalized per-training-point influence scores.
 
-    influence_i = ||r_i||_2 * mean_t(phi_train[i] . phi_test[t])
-    Normalized so mean(influence) = 1.
+    influence_i = ||r_i||_2 · RMS_t(phi_train[i] . phi_test[t])
+                = sqrt( ||r_i||^2 · (1/N_test) Σ_t (phi_train[i] · phi_test[t])^2 )
+
+    This is the L2 norm of the per-(class, test-point) Yeh & Kim contribution
+    matrix for training point i, divided by sqrt(N_test). It is non-negative
+    by construction (the previous formula used signed mean similarity, which
+    can be negative for features that are not in the non-negative orthant
+    such as post-LayerNorm transformer hidden states). Normalized so
+    mean(influence) = 1.
 
     Args:
         phi_train: (N_train, d) training features.
@@ -60,20 +67,18 @@ def compute_influence_scores(
         (N_train,) normalized influence scores.
     """
     grad_norms = residuals.norm(dim=1)  # (N_train,)
-
-    # Compute mean feature similarity to test set
     n_test = phi_test.size(0)
-    mean_sim = torch.zeros(phi_train.size(0), device=phi_train.device)
 
+    # RMS_t over test points: sqrt( (1/N_test) Σ_t (phi_i · phi_t)^2 )
+    sum_sq_dots = torch.zeros(phi_train.size(0), device=phi_train.device)
     for start in range(0, n_test, chunk_size):
         end = min(start + chunk_size, n_test)
-        # (N_train, chunk) -> sum along chunk dim
         dots = phi_train @ phi_test[start:end].t()
-        mean_sim += dots.sum(dim=1)
+        sum_sq_dots += dots.pow(2).sum(dim=1)
 
-    mean_sim /= n_test
+    rms_sim = (sum_sq_dots / n_test).sqrt()
 
-    raw = grad_norms * mean_sim
+    raw = grad_norms * rms_sim
     influence = raw / raw.mean()
     return influence
 
