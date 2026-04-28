@@ -88,6 +88,7 @@ def main():
 
     log_p = oracle_aligned.numpy()
     p = oracle_aligned.exp().numpy()
+    neg_log_p = -log_p  # NLL (entropy of correct token under oracle), >= 0
     inf_np = influence_aligned.numpy()
     logger.info(f"Aligned tokens: {len(inf_np)}, mismatches: {n_mismatch}")
 
@@ -108,7 +109,15 @@ def main():
             output_path=output_dir / f"bucket_means_logp_{label}.png",
         )
 
-    logger.info(f"Wrote 4 bucket-mean plots to {output_dir}")
+        c_nl, m_nl = bucket_means(neg_log_p, inf_np, n_bins)
+        plot_one(
+            c_nl, m_nl,
+            x_label="M2M100-12B -log p(y_i | context_i)  (NLL / entropy, nats)",
+            title=f"Oracle NLL vs influence (means, {n_bins} buckets)",
+            output_path=output_dir / f"bucket_means_neglogp_{label}.png",
+        )
+
+    logger.info(f"Wrote 6 bucket-mean plots to {output_dir}")
 
 
 if __name__ == "__main__":
