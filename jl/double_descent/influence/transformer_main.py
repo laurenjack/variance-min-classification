@@ -533,6 +533,9 @@ def main():
     parser.add_argument("--init-output-proj", default=None,
                         help="Path to a state_dict for output_proj. If set, loads it "
                              "after untie (overrides the embedding-weight initialization).")
+    parser.add_argument("--no-save-features", action="store_true",
+                        help="Skip writing features_train/test.pt, untied_output_proj.pt, "
+                             "and influence_train.pt. validation.json is still written.")
     parser.add_argument("--num-splits", type=int, default=4)
     parser.add_argument("--samples-per-split", type=int, default=36000)
     parser.add_argument("--subsample-seed", type=int, default=42)
@@ -633,21 +636,22 @@ def main():
     y_train_dev = y_train.to(device).long()
     phi_test_dev = phi_test.to(device)
 
-    # Save features for downstream analysis
-    torch.save(
-        {
-            "features": phi_train.half(), "target_ids": y_train.short(),
-            "sentence_offsets": offsets_train,
-        },
-        output_dir / "features_train.pt",
-    )
-    torch.save(
-        {
-            "features": phi_test.half(), "target_ids": y_test.short(),
-            "sentence_offsets": offsets_test,
-        },
-        output_dir / "features_test.pt",
-    )
+    # Save features for downstream analysis (unless --no-save-features)
+    if not args.no_save_features:
+        torch.save(
+            {
+                "features": phi_train.half(), "target_ids": y_train.short(),
+                "sentence_offsets": offsets_train,
+            },
+            output_dir / "features_train.pt",
+        )
+        torch.save(
+            {
+                "features": phi_test.half(), "target_ids": y_test.short(),
+                "sentence_offsets": offsets_test,
+            },
+            output_dir / "features_test.pt",
+        )
 
     # 6. Fine-tune the untied output projection
     if args.optimizer == "lbfgs":
@@ -717,20 +721,20 @@ def main():
         f"min={influence.min().item():.4f}, max={influence.max().item():.4f}"
     )
 
-    # 10. Save outputs
-    torch.save(model.output_proj.state_dict(), output_dir / "untied_output_proj.pt")
-
-    torch.save(
-        {
-            "influence": influence.cpu().float(),
-            "residual_norms": grad_norms.cpu().float(),
-            "target_ids": y_train.short(),
-            "sentence_offsets": offsets_train,
-            "d_model": args.d_model,
-            "split_id": args.split_id,
-        },
-        output_dir / "influence_train.pt",
-    )
+    # 10. Save outputs (unless --no-save-features)
+    if not args.no_save_features:
+        torch.save(model.output_proj.state_dict(), output_dir / "untied_output_proj.pt")
+        torch.save(
+            {
+                "influence": influence.cpu().float(),
+                "residual_norms": grad_norms.cpu().float(),
+                "target_ids": y_train.short(),
+                "sentence_offsets": offsets_train,
+                "d_model": args.d_model,
+                "split_id": args.split_id,
+            },
+            output_dir / "influence_train.pt",
+        )
 
     summary = {
         "model_path": str(args.model_path),
