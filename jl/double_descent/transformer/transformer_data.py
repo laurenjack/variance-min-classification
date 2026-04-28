@@ -393,6 +393,38 @@ def load_m2m100_split_ids(data_dir: str, split: str) -> Tuple[List[List[int]], L
     return src_ids, tgt_ids
 
 
+def load_m2m100_iwslt14(
+    data_dir: str,
+    train_samples: int = 4000,
+    subsample_seed: int = 42,
+) -> Tuple[M2M100TranslationDataset, M2M100TranslationDataset, M2M100TranslationDataset, M2M100Vocab]:
+    """Load M2M100-tokenized IWSLT'14 with subsampling.
+
+    Mirrors `load_iwslt14`'s signature/semantics (shuffle full train set with
+    `subsample_seed`, take first `train_samples`). Use this for normal/main
+    runs; use `load_m2m100_iwslt14_variance_split` for the disjoint-splits
+    variance experiment.
+    """
+    vocab = M2M100Vocab(str(Path(data_dir) / "vocab_mapping.json"))
+
+    train_src, train_tgt = load_m2m100_split_ids(data_dir, "train")
+    valid_src, valid_tgt = load_m2m100_split_ids(data_dir, "valid")
+    test_src, test_tgt = load_m2m100_split_ids(data_dir, "test")
+
+    if train_samples < len(train_src):
+        rng = random.Random(subsample_seed)
+        indices = list(range(len(train_src)))
+        rng.shuffle(indices)
+        indices = indices[:train_samples]
+        train_src = [train_src[i] for i in indices]
+        train_tgt = [train_tgt[i] for i in indices]
+
+    train_dataset = M2M100TranslationDataset(train_src, train_tgt, vocab)
+    valid_dataset = M2M100TranslationDataset(valid_src, valid_tgt, vocab)
+    test_dataset = M2M100TranslationDataset(test_src, test_tgt, vocab)
+    return train_dataset, valid_dataset, test_dataset, vocab
+
+
 def load_m2m100_iwslt14_variance_split(
     data_dir: str,
     split_id: int,

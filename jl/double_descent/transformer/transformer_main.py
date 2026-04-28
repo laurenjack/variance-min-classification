@@ -57,6 +57,12 @@ def parse_args():
         default="./data/iwslt14.tokenized.de-en",
         help="Path to preprocessed IWSLT'14 data"
     )
+    parser.add_argument(
+        "--m2m100",
+        action="store_true",
+        help="Use M2M100-tokenized data (compact ~18K vocab) instead of BPE 10K. "
+             "Expects --data-path to contain vocab_mapping.json + *.de.ids / *.en.ids."
+    )
     return parser.parse_args()
 
 
@@ -95,7 +101,7 @@ def run_double_descent(args, config):
             p = mp.Process(
                 target=train_single_model,
                 args=(gpu_id, d_model, train_samples, config,
-                      args.output_path, args.data_path)
+                      args.output_path, args.data_path, args.m2m100)
             )
             p.start()
             processes.append(p)
@@ -129,14 +135,23 @@ def main():
     os.makedirs(args.output_path, exist_ok=True)
 
     # Check for preprocessed data
-    required_files = ["train.de", "train.en", "valid.de", "valid.en", "test.de", "test.en", "code"]
+    if args.m2m100:
+        required_files = [
+            "vocab_mapping.json",
+            "train.de.ids", "train.en.ids",
+            "valid.de.ids", "valid.en.ids",
+            "test.de.ids", "test.en.ids",
+        ]
+        prep_hint = "  python -m jl.double_descent.transformer.prepare_m2m100_data\n"
+    else:
+        required_files = ["train.de", "train.en", "valid.de", "valid.en", "test.de", "test.en", "code"]
+        prep_hint = "  ./infra/prepare_iwslt14.sh\n"
     missing_files = [f for f in required_files if not os.path.isfile(os.path.join(args.data_path, f))]
     if missing_files:
         raise FileNotFoundError(
             f"Preprocessed IWSLT'14 data not found at {args.data_path}.\n"
             f"Missing files: {missing_files}\n\n"
-            "Please run preprocessing first:\n"
-            "  ./infra/prepare_iwslt14.sh\n"
+            "Please run preprocessing first:\n" + prep_hint
         )
     run_double_descent(args, config)
 

@@ -21,6 +21,7 @@ from jl.double_descent.transformer.transformer_data import (
     Vocab,
     collate_fn,
     load_iwslt14,
+    load_m2m100_iwslt14,
 )
 from jl.double_descent.transformer.transformer_model import TransformerModel, count_parameters
 
@@ -119,6 +120,7 @@ def train_single_model(
     config: TDDConfig,
     output_path: str,
     data_path: str,
+    m2m100: bool = False,
 ) -> None:
     """Train a single Transformer with embedding dimension d_model.
 
@@ -129,6 +131,7 @@ def train_single_model(
         config: Training configuration.
         output_path: Directory to save metrics.
         data_path: Directory containing preprocessed IWSLT data.
+        m2m100: If True, load M2M100-tokenized data via load_m2m100_iwslt14.
     """
     device = torch.device(f"cuda:{gpu_id}")
 
@@ -141,9 +144,14 @@ def train_single_model(
     process_logger.setLevel(logging.INFO)
 
     process_logger.info(f"Starting training for d_model={d_model}, {samples_k}K samples on GPU {gpu_id}")
-    train_dataset, valid_dataset, test_dataset, vocab = load_iwslt14(
-        data_path, train_samples, config.subsample_seed
-    )
+    if m2m100:
+        train_dataset, valid_dataset, test_dataset, vocab = load_m2m100_iwslt14(
+            data_path, train_samples, config.subsample_seed
+        )
+    else:
+        train_dataset, valid_dataset, test_dataset, vocab = load_iwslt14(
+            data_path, train_samples, config.subsample_seed
+        )
 
     process_logger.info(f"Loaded data: {len(train_dataset)} train, {len(valid_dataset)} valid, {len(test_dataset)} test")
     process_logger.info(f"Vocabulary size: {len(vocab)}")
