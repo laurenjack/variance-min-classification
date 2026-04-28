@@ -49,8 +49,12 @@ def parse_run(s: str):
     return label, Path(path)
 
 
-def load_run_assets(source_dir: Path, device: torch.device):
-    """Load features_train, features_test, output_proj and recompute (1-p_model)."""
+def load_run_assets(source_dir: Path, device: torch.device, factor: str):
+    """Load features_train, features_test, output_proj and compute the per-train factor.
+
+    factor='magnitude': train_factor_i = ||r_i||_2 = ||softmax(W phi_i + b) - one_hot(y_i)||_2
+    factor='correct':   train_factor_i = 1 - p_model(y_i)
+    """
     train_blob = torch.load(source_dir / "features_train.pt", map_location="cpu",
                             weights_only=False)
     test_blob = torch.load(source_dir / "features_test.pt", map_location="cpu",
@@ -69,22 +73,30 @@ def load_run_assets(source_dir: Path, device: torch.device):
     output_proj.load_state_dict({k: v.to(device) for k, v in proj_state.items()})
     output_proj.eval()
 
-    # 1 - p_model(y_i)
     n = phi_train.size(0)
-    correct_residual = torch.empty(n, device=device, dtype=torch.float32)
+    train_factor = torch.empty(n, device=device, dtype=torch.float32)
     chunk = 4096
     with torch.no_grad():
         for s in range(0, n, chunk):
             e = min(s + chunk, n)
             logits = output_proj(phi_train[s:e])
-            log_probs = F.log_softmax(logits, dim=-1)
-            log_p = log_probs.gather(-1, y_train[s:e].unsqueeze(-1)).squeeze(-1)
-            correct_residual[s:e] = 1.0 - log_p.exp()
+            probs = F.softmax(logits, dim=-1)
+            if factor == "magnitude":
+                # ||softmax - one_hot||_2 per token
+                probs_at_y = probs.gather(-1, y_train[s:e].unsqueeze(-1)).squeeze(-1)
+                # ||r||_2^2 = sum_j p_j^2  - 2 p_y + 1
+                sum_sq = probs.pow(2).sum(dim=-1)
+                train_factor[s:e] = (sum_sq - 2 * probs_at_y + 1.0).clamp_min(0.0).sqrt()
+            elif factor == "correct":
+                probs_at_y = probs.gather(-1, y_train[s:e].unsqueeze(-1)).squeeze(-1)
+                train_factor[s:e] = 1.0 - probs_at_y
+            else:
+                raise ValueError(f"Unknown factor: {factor!r}")
 
     return {
         "phi_train": phi_train,
         "phi_test": phi_test,
-        "correct_residual": correct_residual,
+        "train_factor": train_factor,
         "train_target_ids": train_blob["target_ids"].long(),
         "train_offsets": train_offsets,
     }
@@ -120,7 +132,7 @@ def align_oracle(train_target_ids, train_offsets, oracle):
 
 def bucket_share(
     phi_train: torch.Tensor,
-    correct_residual: torch.Tensor,
+    train_factor: torch.Tensor,
     bucket_id: torch.Tensor,
     phi_test: torch.Tensor,
     n_bins: int,
@@ -146,7 +158,7 @@ def bucket_share(
             for trs in range(0, n_train, train_chunk):
                 tre = min(trs + train_chunk, n_train)
                 dots = phi_train[trs:tre] @ phi_test_block.t()    # [trc, tc]
-                contrib = correct_residual[trs:tre].unsqueeze(1) * dots.abs()
+                contrib = train_factor[trs:tre].unsqueeze(1) * dots.abs()
                 # Per-bucket sum
                 local_buckets = bucket_id[trs:tre]
                 for b in range(n_bins):
@@ -169,6 +181,9 @@ def main():
     parser.add_argument("--oracle-path", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--n-bins", type=int, default=10)
+    parser.add_argument("--factor", choices=["magnitude", "correct"], default="magnitude",
+                        help="Per-train factor: 'magnitude' = ||r_i||_2 (matches CIFAR), "
+                             "'correct' = 1 - p_model(y_i)")
     parser.add_argument("--device", default=None)
     args = parser.parse_args()
 
@@ -209,8 +224,8 @@ def main():
 
     all_results = {}
     for label, source_dir in args.run:
-        logger.info(f"=== run {label}: {source_dir} ===")
-        a = load_run_assets(source_dir, device)
+        logger.info(f"=== run {label}: {source_dir} (factor={args.factor}) ===")
+        a = load_run_assets(source_dir, device, factor=args.factor)
 
         aligned_log_p, n_mismatch = align_oracle(
             a["train_target_ids"], a["train_offsets"], oracle,
@@ -222,11 +237,11 @@ def main():
 
         if n_valid < n_total:
             phi_train = a["phi_train"][valid]
-            correct_residual = a["correct_residual"][valid]
+            train_factor = a["train_factor"][valid]
             entropy_train = (-aligned_log_p[valid]).to(device)
         else:
             phi_train = a["phi_train"]
-            correct_residual = a["correct_residual"]
+            train_factor = a["train_factor"]
             entropy_train = (-aligned_log_p).to(device)
 
         # Assign to global buckets defined by oracle quantiles
@@ -241,7 +256,7 @@ def main():
             logger.info(f"  bucket {b}: {count} train tokens ({100*count/n_valid:.2f}%)")
 
         share = bucket_share(
-            phi_train, correct_residual, bucket_id, a["phi_test"],
+            phi_train, train_factor, bucket_id, a["phi_test"],
             n_bins=args.n_bins,
         )
         logger.info(f"  shares: {share.tolist()}")
@@ -252,12 +267,13 @@ def main():
         }
 
         # Free GPU memory between runs
-        del a, phi_train, correct_residual, entropy_train, bucket_id
+        del a, phi_train, train_factor, entropy_train, bucket_id
         torch.cuda.empty_cache()
 
     summary = {
         "n_bins": args.n_bins,
         "baseline_share": 1.0 / args.n_bins,
+        "factor": args.factor,
         "bucket_entropy_edges": edges.tolist(),
         "bucket_entropy_centers": bucket_centers.tolist(),
         "runs": all_results,
@@ -281,9 +297,12 @@ def main():
                alpha=0.8, label=f"Baseline (1/{args.n_bins})")
     ax.set_xlabel("Bucket entropy center (nats):  -log p_oracle(y_i)")
     ax.set_ylabel(f"Mean share over test points  (sums to 1 across {args.n_bins} buckets)")
+    if args.factor == "magnitude":
+        formula_tex = r"$c_{i,t} = \|r_i\|_2 \cdot |\varphi_i \cdot \varphi_t|$"
+    else:
+        formula_tex = r"$c_{i,t} = (1 - p_{model}(y_i)) \cdot |\varphi_i \cdot \varphi_t|$"
     ax.set_title(
-        "Influence-share by entropy bucket of training tokens\n"
-        r"$c_{i,t} = (1 - p_{model}(y_i)) \cdot |\varphi_i \cdot \varphi_t|$"
+        "Influence-share by entropy bucket of training tokens\n" + formula_tex
     )
     ax.legend()
     ax.grid(alpha=0.3)
