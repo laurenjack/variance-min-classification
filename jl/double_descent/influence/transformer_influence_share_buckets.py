@@ -43,17 +43,52 @@ logger = logging.getLogger(__name__)
 
 
 def parse_run(s: str):
+    """Accept LABEL=PATH or LABEL=PATH:DISTILL_ORIG_MODEL_PATH.
+
+    The optional 3rd token after `:` is the path to the original (pre-distill)
+    model checkpoint, used to compute the distill residual `softmax(W·phi) -
+    softmax(W_orig·phi)` for the per-train factor.
+    """
     if "=" not in s:
-        raise argparse.ArgumentTypeError(f"--run needs LABEL=PATH, got {s!r}")
-    label, path = s.split("=", 1)
-    return label, Path(path)
+        raise argparse.ArgumentTypeError(f"--run needs LABEL=PATH[:ORIG_MODEL], got {s!r}")
+    label, rest = s.split("=", 1)
+    if ":" in rest:
+        path_str, orig_model_str = rest.split(":", 1)
+        return label, Path(path_str), Path(orig_model_str)
+    return label, Path(rest), None
 
 
-def load_run_assets(source_dir: Path, device: torch.device, factor: str):
+def _recover_W_orig(orig_model_path: Path, vocab_size: int, d_model: int,
+                    pad_idx: int, device: torch.device):
+    """Re-instantiate the original model and untie its output_proj to recover
+    W_orig + b_orig (matching what untie_output_proj does at training time)."""
+    from jl.double_descent.transformer.transformer_config import TDDConfig
+    from jl.double_descent.transformer.transformer_model import TransformerModel
+    from jl.double_descent.influence.transformer_main import untie_output_proj
+    config = TDDConfig()
+    model = TransformerModel(
+        vocab_size=vocab_size, d_model=d_model,
+        n_layers=config.n_layers, n_heads=config.n_heads,
+        d_ff_multiplier=config.d_ff_multiplier, pad_idx=pad_idx,
+    ).to(device)
+    state = torch.load(orig_model_path, map_location=device, weights_only=True)
+    model.load_state_dict(state)
+    untie_output_proj(model)
+    return (
+        model.output_proj.weight.detach().clone(),
+        model.output_proj.bias.detach().clone(),
+    )
+
+
+def load_run_assets(source_dir: Path, device: torch.device, factor: str,
+                    orig_model_path: Path = None, pad_idx: int = 0):
     """Load features_train, features_test, output_proj and compute the per-train factor.
 
-    factor='magnitude': train_factor_i = ||r_i||_2 = ||softmax(W phi_i + b) - one_hot(y_i)||_2
-    factor='correct':   train_factor_i = 1 - p_model(y_i)
+    factor='magnitude': train_factor_i = ||softmax(W phi_i) - target||_2
+        target = one_hot(y_i)                         (default, label-CE training)
+        target = softmax(W_orig·phi_i + b_orig)       (when orig_model_path given,
+                                                       Yeh-Kim §3.2 distill residual)
+    factor='correct':   train_factor_i = 1 - p_model(y_i)  (label-target only)
     """
     train_blob = torch.load(source_dir / "features_train.pt", map_location="cpu",
                             weights_only=False)
@@ -73,6 +108,16 @@ def load_run_assets(source_dir: Path, device: torch.device, factor: str):
     output_proj.load_state_dict({k: v.to(device) for k, v in proj_state.items()})
     output_proj.eval()
 
+    distill_W_orig = None
+    distill_b_orig = None
+    if orig_model_path is not None:
+        if factor != "magnitude":
+            raise ValueError("orig_model_path requires factor='magnitude' (distill residual).")
+        distill_W_orig, distill_b_orig = _recover_W_orig(
+            orig_model_path, vocab_size, d_model, pad_idx, device,
+        )
+        logger.info(f"  loaded W_orig from {orig_model_path}")
+
     n = phi_train.size(0)
     train_factor = torch.empty(n, device=device, dtype=torch.float32)
     chunk = 4096
@@ -82,11 +127,17 @@ def load_run_assets(source_dir: Path, device: torch.device, factor: str):
             logits = output_proj(phi_train[s:e])
             probs = F.softmax(logits, dim=-1)
             if factor == "magnitude":
-                # ||softmax - one_hot||_2 per token
-                probs_at_y = probs.gather(-1, y_train[s:e].unsqueeze(-1)).squeeze(-1)
-                # ||r||_2^2 = sum_j p_j^2  - 2 p_y + 1
-                sum_sq = probs.pow(2).sum(dim=-1)
-                train_factor[s:e] = (sum_sq - 2 * probs_at_y + 1.0).clamp_min(0.0).sqrt()
+                if distill_W_orig is not None:
+                    # Distill residual: softmax(W·phi) - softmax(W_orig·phi + b_orig)
+                    orig_logits = phi_train[s:e] @ distill_W_orig.t() + distill_b_orig
+                    probs.sub_(F.softmax(orig_logits, dim=-1))
+                    train_factor[s:e] = probs.norm(dim=-1)
+                    del orig_logits
+                else:
+                    # Label residual: softmax(W·phi) - one_hot(y)
+                    probs_at_y = probs.gather(-1, y_train[s:e].unsqueeze(-1)).squeeze(-1)
+                    sum_sq = probs.pow(2).sum(dim=-1)
+                    train_factor[s:e] = (sum_sq - 2 * probs_at_y + 1.0).clamp_min(0.0).sqrt()
             elif factor == "correct":
                 probs_at_y = probs.gather(-1, y_train[s:e].unsqueeze(-1)).squeeze(-1)
                 train_factor[s:e] = 1.0 - probs_at_y
@@ -223,9 +274,20 @@ def main():
     )
 
     all_results = {}
-    for label, source_dir in args.run:
-        logger.info(f"=== run {label}: {source_dir} (factor={args.factor}) ===")
-        a = load_run_assets(source_dir, device, factor=args.factor)
+    for triple in args.run:
+        if len(triple) == 2:
+            label, source_dir = triple
+            orig_model_path = None
+        else:
+            label, source_dir, orig_model_path = triple
+        logger.info(
+            f"=== run {label}: {source_dir} (factor={args.factor}, "
+            f"distill_orig={orig_model_path}) ==="
+        )
+        a = load_run_assets(
+            source_dir, device, factor=args.factor,
+            orig_model_path=orig_model_path,
+        )
 
         aligned_log_p, n_mismatch = align_oracle(
             a["train_target_ids"], a["train_offsets"], oracle,
