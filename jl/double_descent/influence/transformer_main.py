@@ -403,17 +403,21 @@ def validate_decomposition_chunked(
     linear: nn.Linear,
     lambda_l2: float,
     chunk_size: int = 4096,
+    distill_W_orig: torch.Tensor = None,
+    distill_b_orig: torch.Tensor = None,
 ) -> dict:
     """Verify W ≈ -1/(2 lambda n) * R^T Phi, b ≈ -1/(2 lambda n) * sum(R).
 
-    Computes residuals, the reconstructed (W, b), and the KL between the
-    actual and reconstructed softmax — all chunked over tokens.
+    For label-CE training (default), R_i = softmax(W·phi_i) - one_hot(y_i).
+    For distillation training (distill_W_orig + distill_b_orig given, Yeh-Kim §3.2),
+        R_i = softmax(W·phi_i) - softmax(W_orig·phi_i + b_orig).
     """
     n = features.size(0)
     d = features.size(1)
     C = linear.out_features
     device = features.device
     scale = -1.0 / (2.0 * lambda_l2 * n)
+    distill = distill_W_orig is not None
 
     W_recon = torch.zeros(C, d, device=device, dtype=torch.float32)
     b_recon = torch.zeros(C, device=device, dtype=torch.float32)
@@ -422,11 +426,17 @@ def validate_decomposition_chunked(
     for s in range(0, n, chunk_size):
         e = min(s + chunk_size, n)
         phi = features[s:e].float()
-        y = targets[s:e]
         logits = phi @ linear.weight.float().t() + linear.bias.float()
         probs = F.softmax(logits, dim=-1)
-        # residual = probs - one_hot(y), in place
-        probs[torch.arange(e - s, device=device), y] -= 1.0
+        if distill:
+            # R_i = softmax(W·phi_i) - softmax(W_orig·phi_i + b_orig)
+            orig_logits = phi @ distill_W_orig.float().t() + distill_b_orig.float()
+            probs.sub_(F.softmax(orig_logits, dim=-1))
+            del orig_logits
+        else:
+            # R_i = softmax(W·phi_i) - one_hot(y_i)
+            y = targets[s:e]
+            probs[torch.arange(e - s, device=device), y] -= 1.0
         residuals = probs  # [chunk, C]
         W_recon += residuals.t() @ phi
         b_recon += residuals.sum(dim=0)
@@ -743,6 +753,7 @@ def main():
     val_stats = validate_decomposition_chunked(
         phi_train_dev, y_train_dev, model.output_proj,
         lambda_l2=args.lambda_l2, chunk_size=args.feature_chunk,
+        distill_W_orig=distill_W_orig, distill_b_orig=distill_b_orig,
     )
 
     # 9. Compute per-token influence
