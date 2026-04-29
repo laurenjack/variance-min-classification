@@ -33,10 +33,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Hardcoded experiment parameters
+# Default experiment parameters (overridable via CLI)
 TRAIN_SAMPLES = [36000]  # 36K samples
 D_MODEL_VALUES = list(range(8, 392, 8))  # [8, 16, 24, ..., 384] - 48 values
-REQUIRED_GPUS = 8
 
 
 
@@ -63,39 +62,48 @@ def parse_args():
         help="Use M2M100-tokenized data (compact ~18K vocab) instead of BPE 10K. "
              "Expects --data-path to contain vocab_mapping.json + *.de.ids / *.en.ids."
     )
+    parser.add_argument(
+        "--d-models",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Subset of d_model values to train (default: full sweep 8..384). "
+             "Number of available GPUs (CUDA_VISIBLE_DEVICES-aware) sets the per-batch parallelism."
+    )
     return parser.parse_args()
 
 
-def run_double_descent(args, config):
-    """Run the default double descent experiment (24 d_model values, 36K samples)."""
+def run_double_descent(args, config, d_models, num_gpus):
+    """Run the double-descent experiment.
+
+    d_models: list of d_model values to train.
+    num_gpus: per-batch parallelism = available GPUs (after CUDA_VISIBLE_DEVICES filtering).
+    """
     total_start = time.time()
 
     train_samples = TRAIN_SAMPLES[0]
     samples_k = train_samples // 1000
-    num_batches = len(D_MODEL_VALUES) // REQUIRED_GPUS
+    num_batches = (len(d_models) + num_gpus - 1) // num_gpus
 
-    logger.info("Transformer Double Descent - Full Experiment")
-    logger.info(f"d_model values: {D_MODEL_VALUES}")
+    logger.info("Transformer Double Descent")
+    logger.info(f"d_model values: {d_models}")
     logger.info(f"Train samples: {train_samples}")
-    logger.info(f"Total models: {len(D_MODEL_VALUES)}")
-    logger.info(f"Batches: {num_batches}")
+    logger.info(f"Total models: {len(d_models)}")
+    logger.info(f"GPUs available: {num_gpus}, batches: {num_batches}")
     logger.info(f"Max steps: {config.max_steps}, Max tokens/batch: {config.max_tokens}")
 
     logger.info(f"\n{'='*60}")
     logger.info(f"Starting {samples_k}K sample runs")
     logger.info(f"{'='*60}")
 
-    # Loop over d_model batches (3 batches of 8)
-    for batch_idx in range(0, len(D_MODEL_VALUES), REQUIRED_GPUS):
-        batch_d_models = D_MODEL_VALUES[batch_idx:batch_idx + REQUIRED_GPUS]
-        batch_num = batch_idx // REQUIRED_GPUS + 1
+    for batch_idx in range(0, len(d_models), num_gpus):
+        batch_d_models = d_models[batch_idx:batch_idx + num_gpus]
+        batch_num = batch_idx // num_gpus + 1
 
         logger.info(f"\n[{samples_k}K] Batch {batch_num}/{num_batches}: d_model = {batch_d_models}")
 
-        # Set multiprocessing start method (only needed once, but force=True handles it)
         mp.set_start_method('spawn', force=True)
 
-        # Spawn 8 training processes
         processes = []
         for gpu_id, d_model in enumerate(batch_d_models):
             p = mp.Process(
@@ -106,7 +114,6 @@ def run_double_descent(args, config):
             p.start()
             processes.append(p)
 
-        # Wait for batch to complete
         for p in processes:
             p.join()
 
@@ -123,13 +130,12 @@ def main():
     args = parse_args()
     config = TDDConfig()
 
-    # Require exactly 8 GPUs
+    # Use whatever GPUs are visible (CUDA_VISIBLE_DEVICES filters this).
     num_gpus = torch.cuda.device_count()
-    if num_gpus != REQUIRED_GPUS:
-        raise RuntimeError(
-            f"This experiment requires exactly {REQUIRED_GPUS} GPUs, "
-            f"but found {num_gpus}. Please run on an 8-GPU instance."
-        )
+    if num_gpus < 1:
+        raise RuntimeError("No CUDA GPUs visible to this process.")
+
+    d_models = args.d_models if args.d_models else D_MODEL_VALUES
 
     # Create output directory
     os.makedirs(args.output_path, exist_ok=True)
@@ -153,7 +159,7 @@ def main():
             f"Missing files: {missing_files}\n\n"
             "Please run preprocessing first:\n" + prep_hint
         )
-    run_double_descent(args, config)
+    run_double_descent(args, config, d_models, num_gpus)
 
 
 if __name__ == "__main__":
