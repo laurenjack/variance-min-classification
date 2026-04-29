@@ -446,8 +446,12 @@ def validate_decomposition_chunked(
     b_recon *= scale
 
     # Pass 2: compute KL between actual and reconstructed softmax (chunked)
+    # Also accumulate sums for Pearson correlation on logits and probabilities.
     kl_sum = 0.0
     mse_sum = 0.0
+    n_elem = 0  # total scalar logit count = n * C
+    sx_l = sy_l = sxx_l = syy_l = sxy_l = 0.0  # logits
+    sx_p = sy_p = sxx_p = syy_p = sxy_p = 0.0  # probabilities
     for s in range(0, n, chunk_size):
         e = min(s + chunk_size, n)
         phi = features[s:e].float()
@@ -456,11 +460,32 @@ def validate_decomposition_chunked(
         log_p_actual = F.log_softmax(logits_actual, dim=-1)
         p_actual = log_p_actual.exp()
         log_p_recon = F.log_softmax(logits_recon, dim=-1)
+        p_recon = log_p_recon.exp()
         # KL(p_actual || p_recon) = sum p_actual * (log p_actual - log p_recon)
         kl = (p_actual * (log_p_actual - log_p_recon)).sum(dim=-1).sum().item()
         mse = (logits_recon - logits_actual).pow(2).sum().item()
         kl_sum += kl
         mse_sum += mse
+        # Pearson sums (float64 for stability)
+        la = logits_actual.double().flatten()
+        lr = logits_recon.double().flatten()
+        pa = p_actual.double().flatten()
+        pr = p_recon.double().flatten()
+        sx_l += la.sum().item();   sy_l += lr.sum().item()
+        sxx_l += (la * la).sum().item(); syy_l += (lr * lr).sum().item()
+        sxy_l += (la * lr).sum().item()
+        sx_p += pa.sum().item();   sy_p += pr.sum().item()
+        sxx_p += (pa * pa).sum().item(); syy_p += (pr * pr).sum().item()
+        sxy_p += (pa * pr).sum().item()
+        n_elem += la.numel()
+
+    def _pearson(sx, sy, sxx, syy, sxy, n_e):
+        num = n_e * sxy - sx * sy
+        den = ((n_e * sxx - sx * sx) * (n_e * syy - sy * sy)) ** 0.5
+        return num / den if den > 0 else float("nan")
+
+    pearson_logits = _pearson(sx_l, sy_l, sxx_l, syy_l, sxy_l, n_elem)
+    pearson_probs = _pearson(sx_p, sy_p, sxx_p, syy_p, sxy_p, n_elem)
 
     kl_mean = kl_sum / n
     mse_mean = mse_sum / (n * C)
@@ -469,12 +494,15 @@ def validate_decomposition_chunked(
 
     logger.info(
         f"Decomposition validation: KL/token={kl_mean:.2e}, "
-        f"logit_MSE={mse_mean:.2e}, max|W-W_recon|={max_W_diff:.2e}, "
+        f"logit_MSE={mse_mean:.2e}, r_logits={pearson_logits:.6f}, "
+        f"r_probs={pearson_probs:.6f}, max|W-W_recon|={max_W_diff:.2e}, "
         f"max|b-b_recon|={max_b_diff:.2e}"
     )
     return {
         "kl_div_per_token": kl_mean,
         "logit_mse": mse_mean,
+        "pearson_logits": pearson_logits,
+        "pearson_probs": pearson_probs,
         "max_W_diff": max_W_diff,
         "max_b_diff": max_b_diff,
     }
