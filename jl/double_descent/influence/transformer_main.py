@@ -158,10 +158,16 @@ def l2_finetune_chunked(
     max_iter: int = 500,
     tolerance_grad: float = 1e-7,
     chunk_size: int = 4096,
+    distill_W_orig: torch.Tensor = None,
+    distill_b_orig: torch.Tensor = None,
 ) -> dict:
     """L-BFGS fine-tune of an nn.Linear (bias=True) on (features, targets).
 
     Loss = (1/n) * CE(features W^T + b, targets) + lambda * (||W||^2 + ||b||^2)
+
+    If distill_W_orig / distill_b_orig are given, the per-token loss is
+    distillation against softmax(distill_W_orig·phi + distill_b_orig) (Yeh-Kim
+    §3.2 model-matching), instead of cross-entropy against one-hot `targets`.
 
     Closure backprops in chunks to keep peak memory bounded by
     chunk_size * vocab_size, since features × W^T materializes [N, vocab] which
@@ -170,6 +176,7 @@ def l2_finetune_chunked(
     assert linear.bias is not None
     n = features.size(0)
     device = features.device
+    distill = distill_W_orig is not None
 
     W = linear.weight.detach().clone().to(device).requires_grad_(True)
     b = linear.bias.detach().clone().to(device).requires_grad_(True)
@@ -192,10 +199,18 @@ def l2_finetune_chunked(
         for s in range(0, n, chunk_size):
             e = min(s + chunk_size, n)
             chunk_phi = features[s:e]
-            chunk_y = targets[s:e]
             chunk_logits = chunk_phi @ W.t() + b
-            # sum over chunk, divide by n at end → matches mean over all tokens
-            ce_chunk = F.cross_entropy(chunk_logits, chunk_y, reduction="sum") / n
+            if distill:
+                with torch.no_grad():
+                    soft_target = F.softmax(
+                        chunk_phi @ distill_W_orig.t() + distill_b_orig, dim=-1
+                    )
+                log_p_new = F.log_softmax(chunk_logits, dim=-1)
+                ce_chunk = -(soft_target * log_p_new).sum(dim=-1).sum() / n
+            else:
+                ce_chunk = F.cross_entropy(
+                    chunk_logits, targets[s:e], reduction="sum"
+                ) / n
             ce_chunk.backward()
             ce_total = ce_total + ce_chunk.detach()
 
@@ -768,6 +783,8 @@ def main():
             lambda_l2=args.lambda_l2, max_iter=args.polish_max_iter,
             tolerance_grad=args.polish_tolerance_grad,
             chunk_size=args.feature_chunk,
+            distill_W_orig=distill_W_orig,
+            distill_b_orig=distill_b_orig,
         )
 
     # 7. FT test loss after fine-tuning
