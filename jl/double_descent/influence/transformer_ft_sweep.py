@@ -35,9 +35,16 @@ def launch_one(d_model: int, gpu_id: int, args, log_path: Path):
     """Spawn transformer_main on a single GPU."""
     out_dir = Path(args.output_dir) / f"d{d_model}_split{args.split_id}"
     out_dir.mkdir(parents=True, exist_ok=True)
+    # The model file naming convention differs between variance runs (model_d{N}_split{K}.pt)
+    # and standard DD runs (model_d{N}_36k.pt). Probe both.
+    candidates = [
+        Path(args.model_dir) / f"model_d{d_model}_split{args.split_id}.pt",
+        Path(args.model_dir) / f"model_d{d_model}_36k.pt",
+    ]
+    model_path = next((p for p in candidates if p.exists()), candidates[0])
     cmd = [
         sys.executable, "-m", "jl.double_descent.influence.transformer_main",
-        "--model-path", str(Path(args.model_dir) / f"model_d{d_model}_split{args.split_id}.pt"),
+        "--model-path", str(model_path),
         "--d-model", str(d_model),
         "--split-id", str(args.split_id),
         "--data-path", str(args.data_path),
@@ -47,9 +54,12 @@ def launch_one(d_model: int, gpu_id: int, args, log_path: Path):
         "--num-adam-steps", str(args.num_adam_steps),
         "--adam-lr", str(args.adam_lr),
         "--adam-warmup-steps", str(args.adam_warmup_steps),
+        "--adam-beta1", str(args.adam_beta1),
         "--adam-beta2", str(args.adam_beta2),
         "--batch-size", str(args.batch_size),
     ]
+    if args.distill:
+        cmd.append("--distill")
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     log_file = open(log_path, "w")
@@ -71,8 +81,11 @@ def main():
     parser.add_argument("--num-adam-steps", type=int, default=3000)
     parser.add_argument("--adam-lr", type=float, default=1e-2)
     parser.add_argument("--adam-warmup-steps", type=int, default=150)
+    parser.add_argument("--adam-beta1", type=float, default=0.9)
     parser.add_argument("--adam-beta2", type=float, default=0.9999)
     parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--distill", action="store_true",
+                        help="Yeh-Kim §3.2: distill against original-model softmax (preserves predictions).")
     args = parser.parse_args()
 
     logging.basicConfig(

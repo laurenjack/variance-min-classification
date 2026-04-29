@@ -236,9 +236,15 @@ def _full_batch_grad(
     targets: torch.Tensor,
     lambda_l2: float,
     chunk_size: int,
+    distill_W_orig: torch.Tensor = None,
+    distill_b_orig: torch.Tensor = None,
 ) -> tuple:
     """Accumulate full-batch gradient of (1/n)*CE + lambda*(||W||^2 + ||b||^2)
     into W.grad / b.grad via chunked backprop. Returns (ce_value, l2_value).
+
+    If distill_W_orig / distill_b_orig are given, the per-token loss is
+    distillation against softmax(distill_W_orig·phi + distill_b_orig) (Yeh & Kim
+    §3.2 model-matching), instead of cross-entropy against one-hot `targets`.
     """
     if W.grad is not None:
         W.grad.zero_()
@@ -247,10 +253,20 @@ def _full_batch_grad(
 
     n = features.size(0)
     ce_total = 0.0
+    distill = distill_W_orig is not None
     for s in range(0, n, chunk_size):
         e = min(s + chunk_size, n)
-        chunk_logits = features[s:e] @ W.t() + b
-        ce_chunk = F.cross_entropy(chunk_logits, targets[s:e], reduction="sum") / n
+        chunk_phi = features[s:e]
+        chunk_logits = chunk_phi @ W.t() + b
+        if distill:
+            with torch.no_grad():
+                soft_target = F.softmax(
+                    chunk_phi @ distill_W_orig.t() + distill_b_orig, dim=-1
+                )
+            log_p_new = F.log_softmax(chunk_logits, dim=-1)
+            ce_chunk = -(soft_target * log_p_new).sum(dim=-1).sum() / n
+        else:
+            ce_chunk = F.cross_entropy(chunk_logits, targets[s:e], reduction="sum") / n
         ce_chunk.backward()
         ce_total += float(ce_chunk.item())
 
@@ -272,6 +288,8 @@ def adam_finetune_chunked(
     eps: float = 1e-8,
     chunk_size: int = 4096,
     log_interval: int = 50,
+    distill_W_orig: torch.Tensor = None,
+    distill_b_orig: torch.Tensor = None,
 ) -> dict:
     """Full-batch Adam fine-tune with linear warmup + cosine LR decay to zero.
 
@@ -316,7 +334,10 @@ def adam_finetune_chunked(
 
     for step in range(num_steps):
         optimizer.zero_grad()
-        ce_val, l2_val = _full_batch_grad(W, b, features, targets, lambda_l2, chunk_size)
+        ce_val, l2_val = _full_batch_grad(
+            W, b, features, targets, lambda_l2, chunk_size,
+            distill_W_orig=distill_W_orig, distill_b_orig=distill_b_orig,
+        )
         with torch.no_grad():
             grad_norm = torch.cat([W.grad.flatten(), b.grad.flatten()]).norm().item()
         last_grad_norm = grad_norm
@@ -343,7 +364,10 @@ def adam_finetune_chunked(
     with torch.no_grad():
         pass
     optimizer.zero_grad()
-    final_ce, final_l2 = _full_batch_grad(W, b, features, targets, lambda_l2, chunk_size)
+    final_ce, final_l2 = _full_batch_grad(
+        W, b, features, targets, lambda_l2, chunk_size,
+        distill_W_orig=distill_W_orig, distill_b_orig=distill_b_orig,
+    )
     with torch.no_grad():
         final_grad_norm = torch.cat([W.grad.flatten(), b.grad.flatten()]).norm().item()
 
@@ -536,6 +560,11 @@ def main():
     parser.add_argument("--no-save-features", action="store_true",
                         help="Skip writing features_train/test.pt, untied_output_proj.pt, "
                              "and influence_train.pt. validation.json is still written.")
+    parser.add_argument("--distill", action="store_true",
+                        help="Yeh-Kim §3.2 distillation: fine-tune against the original "
+                             "model's softmax outputs (frozen W_orig, b_orig captured at "
+                             "untie time) instead of one-hot training labels. Predictions "
+                             "should be preserved.")
     parser.add_argument("--num-splits", type=int, default=4)
     parser.add_argument("--samples-per-split", type=int, default=36000)
     parser.add_argument("--subsample-seed", type=int, default=42)
@@ -600,6 +629,14 @@ def main():
     assert abs(untie_test_loss - original_test_loss) < 1e-5, (
         f"Untie changed loss: {original_test_loss} -> {untie_test_loss}"
     )
+
+    # 4a. If distilling, snapshot W_orig + b_orig (used as frozen soft-target source).
+    distill_W_orig = None
+    distill_b_orig = None
+    if args.distill:
+        distill_W_orig = model.output_proj.weight.detach().clone().to(device)
+        distill_b_orig = model.output_proj.bias.detach().clone().to(device)
+        logger.info("Distillation mode: soft targets come from σ(W_orig·φ + b_orig).")
 
     # 4b. Optionally override output_proj weights from a previous run
     # (e.g., warm-start L-BFGS from an Adam checkpoint).
@@ -677,6 +714,8 @@ def main():
             beta1=args.adam_beta1,
             beta2=args.adam_beta2,
             chunk_size=args.feature_chunk,
+            distill_W_orig=distill_W_orig,
+            distill_b_orig=distill_b_orig,
         )
 
     # 6b. Optional L-BFGS polish stage (warm start from prior optimizer's result)
