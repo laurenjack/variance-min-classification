@@ -108,6 +108,27 @@ def main():
             "running in batches."
         )
 
+    out_jsonl = output_dir / "ft_sweep.jsonl"
+
+    def _write_jsonl(summaries):
+        rows = []
+        for d_model in sorted(summaries.keys()):
+            s = summaries[d_model]
+            rows.append({
+                "d_model": d_model,
+                "split_id": args.split_id,
+                "original_test_loss": s["original_test_loss"],
+                "ft_test_loss": s["ft_test_loss"],
+                "ft_test_loss_delta": s["ft_test_loss_delta"],
+                "lambda_l2": args.lambda_l2,
+                "adam_grad_norm": s["lbfgs"].get("grad_norm") if s["lbfgs"] else None,
+                "kl_div_per_token": s["decomposition"]["kl_div_per_token"],
+            })
+        with open(out_jsonl, "w") as f:
+            for r in rows:
+                f.write(json.dumps(r) + "\n")
+        return rows
+
     # Launch in batches of len(args.gpus)
     summaries = {}
     n_gpus = len(args.gpus)
@@ -138,25 +159,11 @@ def main():
         for fh in files:
             fh.close()
 
-    # Aggregate
-    rows = []
-    for d_model in sorted(summaries.keys()):
-        s = summaries[d_model]
-        rows.append({
-            "d_model": d_model,
-            "split_id": args.split_id,
-            "original_test_loss": s["original_test_loss"],
-            "ft_test_loss": s["ft_test_loss"],
-            "ft_test_loss_delta": s["ft_test_loss_delta"],
-            "lambda_l2": args.lambda_l2,
-            "adam_grad_norm": s["lbfgs"].get("grad_norm") if s["lbfgs"] else None,
-            "kl_div_per_token": s["decomposition"]["kl_div_per_token"],
-        })
-    out_jsonl = output_dir / "ft_sweep.jsonl"
-    with open(out_jsonl, "w") as f:
-        for r in rows:
-            f.write(json.dumps(r) + "\n")
-    logger.info(f"Wrote {out_jsonl}")
+        rows = _write_jsonl(summaries)
+        logger.info(f"Wrote {out_jsonl} ({len(rows)} rows so far)")
+
+    rows = _write_jsonl(summaries)
+    logger.info(f"Final: {out_jsonl} ({len(rows)} rows)")
 
     # Plot
     try:
