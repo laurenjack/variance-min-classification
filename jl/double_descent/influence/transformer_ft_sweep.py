@@ -57,11 +57,14 @@ def launch_one(d_model: int, gpu_id: int, args, log_path: Path):
         "--adam-beta1", str(args.adam_beta1),
         "--adam-beta2", str(args.adam_beta2),
         "--batch-size", str(args.batch_size),
+        "--device", f"cuda:{gpu_id}",
     ]
     if args.distill:
         cmd.append("--distill")
+    # Inherit parent's env (including any CUDA_VISIBLE_DEVICES the parent was
+    # launched with). gpu_id is the *relative* index into the parent's visible
+    # GPU set, so cuda:gpu_id maps to the right physical GPU.
     env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     log_file = open(log_path, "w")
     proc = subprocess.Popen(cmd, env=env, stdout=log_file, stderr=subprocess.STDOUT)
     return proc, log_file
