@@ -17,14 +17,19 @@ dependencies = [
 # GPU experiments (double descent, etc.)
 # Note: torch and torchvision are installed separately via setup.sh
 # (requires --index-url for CUDA builds that pyproject.toml cannot express)
+#
+# transformers + sentencepiece + protobuf are needed by M2M100Vocab.decode()
+# (called from compute_bleu in transformer experiments). Including them here
+# so transformer DD runs work out of the box.
 gpu = [
     "scikit-learn>=1.3",
     "datasets>=2.19",
-]
-# LLM reward model training - adds HuggingFace ecosystem + Flash Attention 3
-llm = [
     "transformers>=4.41",
-    "datasets>=2.19",
+    "sentencepiece>=0.2",
+    "protobuf>=4.0",
+]
+# LLM reward model training - adds Flash Attention 3 stack on top of gpu
+llm = [
     "tokenizers>=0.15.2",
     "safetensors>=0.4.2",
     "accelerate>=0.30",

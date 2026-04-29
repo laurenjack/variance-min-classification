@@ -29,7 +29,8 @@ fi
 source venv/bin/activate
 
 # Install dependencies
-# Use ./infra/setup.sh --llm to also install reward model deps (transformers, flash attention, etc.)
+# [gpu] includes transformers/sentencepiece (needed by M2M100Vocab.decode in BLEU).
+# Use ./infra/setup.sh --llm to add the FlashAttention 3 stack for reward model training.
 pip install --upgrade pip
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 if [[ "${1:-}" == "--llm" ]]; then
