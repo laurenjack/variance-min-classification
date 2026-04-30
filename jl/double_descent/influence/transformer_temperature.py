@@ -42,6 +42,7 @@ from torch.utils.data import DataLoader
 from jl.double_descent.transformer.transformer_config import TDDConfig
 from jl.double_descent.transformer.transformer_data import (
     M2M100Vocab,
+    M2M100TranslationDataset,
     collate_fn,
     load_m2m100_iwslt14_variance_split,
 )
@@ -79,6 +80,61 @@ def _newton_pass(beta, W, b, features, targets, chunk_size):
         eq_z2 = (q * z_chunk * z_chunk).sum(dim=-1)
         h_ce += float((eq_z2 - eq_z * eq_z).sum().item())
     return g_ce, h_ce, n
+
+
+@torch.no_grad()
+def _ft_metrics(beta, W, b, features, targets, chunk_size):
+    """At a given β, compute test loss (CE/token) plus KL(orig || FT) per token,
+    plus Pearson r on flattened logits and probabilities (orig vs FT model).
+    Used to quantify how much the temperature scaling diverges from β=1.
+    """
+    n = features.size(0)
+    C = W.size(0)
+    device = features.device
+    ce_sum = 0.0
+    kl_sum = 0.0
+    n_elem = 0
+    sx_l = sy_l = sxx_l = syy_l = sxy_l = 0.0
+    sx_p = sy_p = sxx_p = syy_p = sxy_p = 0.0
+    for s in range(0, n, chunk_size):
+        e = min(s + chunk_size, n)
+        f_chunk = features[s:e].float()
+        z_chunk = f_chunk @ W.t() + b               # original logits
+        log_p_orig = F.log_softmax(z_chunk, dim=-1)
+        p_orig = log_p_orig.exp()
+        z_ft = beta * z_chunk
+        log_p_ft = F.log_softmax(z_ft, dim=-1)
+        p_ft = log_p_ft.exp()
+        # CE on target (FT predictions)
+        y = targets[s:e]
+        ce_sum += -log_p_ft[torch.arange(e - s, device=device), y].sum().item()
+        # KL(orig || FT) per-token, summed
+        kl_sum += (p_orig * (log_p_orig - log_p_ft)).sum(dim=-1).sum().item()
+        # Pearson sums
+        la = z_chunk.double().flatten()
+        lr = z_ft.double().flatten()
+        pa = p_orig.double().flatten()
+        pr = p_ft.double().flatten()
+        sx_l += la.sum().item();   sy_l += lr.sum().item()
+        sxx_l += (la * la).sum().item(); syy_l += (lr * lr).sum().item()
+        sxy_l += (la * lr).sum().item()
+        sx_p += pa.sum().item();   sy_p += pr.sum().item()
+        sxx_p += (pa * pa).sum().item(); syy_p += (pr * pr).sum().item()
+        sxy_p += (pa * pr).sum().item()
+        n_elem += la.numel()
+
+    def pearson(sx, sy, sxx, syy, sxy, ne):
+        num = ne * sxy - sx * sy
+        den = ((ne * sxx - sx * sx) * (ne * syy - sy * sy)) ** 0.5
+        return num / den if den > 0 else float("nan")
+
+    return {
+        "n_tokens": n,
+        "ce_per_token": ce_sum / n,
+        "kl_orig_to_ft_per_token": kl_sum / n,
+        "pearson_logits_orig_vs_ft": pearson(sx_l, sy_l, sxx_l, syy_l, sxy_l, n_elem),
+        "pearson_probs_orig_vs_ft": pearson(sx_p, sy_p, sxx_p, syy_p, sxy_p, n_elem),
+    }
 
 
 @torch.no_grad()
@@ -194,7 +250,7 @@ def main():
     logger.info(f"Using device: {device}")
 
     # 1. Load data + model
-    train_dataset, _valid_dataset, _test_dataset, vocab = load_m2m100_iwslt14_variance_split(
+    train_dataset, _valid_dataset, test_dataset, vocab = load_m2m100_iwslt14_variance_split(
         data_dir=args.data_path,
         split_id=args.split_id,
         num_splits=4,
@@ -216,7 +272,7 @@ def main():
     W = model.output_proj.weight.detach().clone().to(device)
     b = model.output_proj.bias.detach().clone().to(device)
 
-    # 2. Extract features (post-decoder_norm, pre-projection)
+    # 2. Extract features (post-decoder_norm, pre-projection) for train + test
     logger.info("Extracting train decoder features...")
     f_train, y_train, offsets_train = extract_decoder_features(
         model, train_dataset, vocab, device, batch_size=args.batch_size,
@@ -224,6 +280,14 @@ def main():
     f_train = f_train.to(device)
     y_train = y_train.long().to(device)
     logger.info(f"Train: {f_train.size(0)} tokens, d={f_train.size(1)}")
+
+    logger.info("Extracting test decoder features...")
+    f_test, y_test, _offsets_test = extract_decoder_features(
+        model, test_dataset, vocab, device, batch_size=args.batch_size,
+    )
+    f_test = f_test.to(device)
+    y_test = y_test.long().to(device)
+    logger.info(f"Test:  {f_test.size(0)} tokens")
 
     # 3. Bracket + bisect on β (robust to ill-conditioning that breaks Newton)
     beta_star, history = fit_beta_safe(
@@ -234,14 +298,31 @@ def main():
 
     # 4. Compute α_i for each train token at β*
     alphas = _alpha_pass(beta_star, W, b, f_train, y_train, args.feature_chunk)
+    beta_recon = alphas.sum().item() / (2 * args.lambda_l2 * alphas.size(0))
     logger.info(
         f"|α| stats: mean={alphas.abs().mean().item():.4e}, "
         f"max={alphas.abs().max().item():.4e}, "
-        f"sum={alphas.sum().item():.4e}, "
-        f"|sum/(2λn) = {alphas.sum().item()/(2*args.lambda_l2*alphas.size(0)):.4e} (should ≈ β*)"
+        f"β* = {beta_star:.6e}, β_recon = {beta_recon:.6e}, "
+        f"rel_diff = {abs(beta_recon - beta_star) / max(abs(beta_star), 1e-30):.3e}"
     )
 
-    # 5. Save outputs
+    # 5. Q1: how much does the FT model differ from the original?
+    #    Compute test loss at β=1 (original) and β=β* (FT) plus KL between them.
+    logger.info("Computing original vs FT test-side metrics...")
+    metrics_orig = _ft_metrics(1.0, W, b, f_test, y_test, args.feature_chunk)
+    metrics_ft = _ft_metrics(beta_star, W, b, f_test, y_test, args.feature_chunk)
+    test_ce_orig = metrics_orig["ce_per_token"]
+    test_ce_ft = metrics_ft["ce_per_token"]
+    test_kl_orig_vs_ft = metrics_ft["kl_orig_to_ft_per_token"]
+    logger.info(
+        f"Test loss: orig={test_ce_orig:.4f}, FT={test_ce_ft:.4f}, "
+        f"|delta|={abs(test_ce_orig - test_ce_ft):.4f}; "
+        f"KL(orig||FT)/token = {test_kl_orig_vs_ft:.3e}, "
+        f"r_logits = {metrics_ft['pearson_logits_orig_vs_ft']:.6f}, "
+        f"r_probs = {metrics_ft['pearson_probs_orig_vs_ft']:.6f}"
+    )
+
+    # 6. Save outputs
     torch.save(
         {
             "alphas": alphas.cpu(),
@@ -261,12 +342,17 @@ def main():
         "split_id": args.split_id,
         "lambda_l2": args.lambda_l2,
         "n_train_tokens": int(f_train.size(0)),
+        "n_test_tokens": int(f_test.size(0)),
         "beta_star": beta_star,
+        "beta_recon_from_alphas": beta_recon,
         "alpha_stats": {
             "mean_abs": float(alphas.abs().mean().item()),
             "max_abs": float(alphas.abs().max().item()),
             "sum": float(alphas.sum().item()),
         },
+        "test_metrics_original": metrics_orig,
+        "test_metrics_ft": metrics_ft,
+        "test_loss_delta": abs(test_ce_orig - test_ce_ft),
         "newton_history": history,
     }
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2))
