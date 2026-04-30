@@ -3,7 +3,7 @@
 oracle entropy of the training token.
 
 For each (train i, test t) define
-    c_{i,t} = (1 - p_model(y_i)) * |phi_i . phi_t|
+    c_{i,t} = (1 - p_model(y_i)) * |f_i . f_t|
 
 (correct-token residual magnitude * absolute feature dot product, the
 per-(i,t) factor inside our correct-token-only RMS influence).
@@ -46,8 +46,8 @@ def parse_run(s: str):
     """Accept LABEL=PATH or LABEL=PATH:DISTILL_ORIG_MODEL_PATH.
 
     The optional 3rd token after `:` is the path to the original (pre-distill)
-    model checkpoint, used to compute the distill residual `softmax(W·phi) -
-    softmax(W_orig·phi)` for the per-train factor.
+    model checkpoint, used to compute the distill residual `softmax(W·f) -
+    softmax(W_orig·f)` for the per-train factor.
     """
     if "=" not in s:
         raise argparse.ArgumentTypeError(f"--run needs LABEL=PATH[:ORIG_MODEL], got {s!r}")
@@ -84,9 +84,9 @@ def load_run_assets(source_dir: Path, device: torch.device, factor: str,
                     orig_model_path: Path = None, pad_idx: int = 0):
     """Load features_train, features_test, output_proj and compute the per-train factor.
 
-    factor='magnitude': train_factor_i = ||softmax(W phi_i) - target||_2
+    factor='magnitude': train_factor_i = ||softmax(W f_i) - target||_2
         target = one_hot(y_i)                         (default, label-CE training)
-        target = softmax(W_orig·phi_i + b_orig)       (when orig_model_path given,
+        target = softmax(W_orig·f_i + b_orig)       (when orig_model_path given,
                                                        Yeh-Kim §3.2 distill residual)
     factor='correct':   train_factor_i = 1 - p_model(y_i)  (label-target only)
     """
@@ -97,12 +97,12 @@ def load_run_assets(source_dir: Path, device: torch.device, factor: str,
     proj_state = torch.load(source_dir / "untied_output_proj.pt", map_location="cpu",
                             weights_only=True)
 
-    phi_train = train_blob["features"].float().to(device)
+    f_train = train_blob["features"].float().to(device)
     y_train = train_blob["target_ids"].long().to(device)
     train_offsets = train_blob["sentence_offsets"]
-    phi_test = test_blob["features"].float().to(device)
+    f_test = test_blob["features"].float().to(device)
 
-    d_model = phi_train.size(1)
+    d_model = f_train.size(1)
     vocab_size = proj_state["weight"].size(0)
     output_proj = nn.Linear(d_model, vocab_size, bias=True).to(device)
     output_proj.load_state_dict({k: v.to(device) for k, v in proj_state.items()})
@@ -118,23 +118,23 @@ def load_run_assets(source_dir: Path, device: torch.device, factor: str,
         )
         logger.info(f"  loaded W_orig from {orig_model_path}")
 
-    n = phi_train.size(0)
+    n = f_train.size(0)
     train_factor = torch.empty(n, device=device, dtype=torch.float32)
     chunk = 4096
     with torch.no_grad():
         for s in range(0, n, chunk):
             e = min(s + chunk, n)
-            logits = output_proj(phi_train[s:e])
+            logits = output_proj(f_train[s:e])
             probs = F.softmax(logits, dim=-1)
             if factor == "magnitude":
                 if distill_W_orig is not None:
-                    # Distill residual: softmax(W·phi) - softmax(W_orig·phi + b_orig)
-                    orig_logits = phi_train[s:e] @ distill_W_orig.t() + distill_b_orig
+                    # Distill residual: softmax(W·f) - softmax(W_orig·f + b_orig)
+                    orig_logits = f_train[s:e] @ distill_W_orig.t() + distill_b_orig
                     probs.sub_(F.softmax(orig_logits, dim=-1))
                     train_factor[s:e] = probs.norm(dim=-1)
                     del orig_logits
                 else:
-                    # Label residual: softmax(W·phi) - one_hot(y)
+                    # Label residual: softmax(W·f) - one_hot(y)
                     probs_at_y = probs.gather(-1, y_train[s:e].unsqueeze(-1)).squeeze(-1)
                     sum_sq = probs.pow(2).sum(dim=-1)
                     train_factor[s:e] = (sum_sq - 2 * probs_at_y + 1.0).clamp_min(0.0).sqrt()
@@ -145,8 +145,8 @@ def load_run_assets(source_dir: Path, device: torch.device, factor: str,
                 raise ValueError(f"Unknown factor: {factor!r}")
 
     return {
-        "phi_train": phi_train,
-        "phi_test": phi_test,
+        "f_train": f_train,
+        "f_test": f_test,
         "train_factor": train_factor,
         "train_target_ids": train_blob["target_ids"].long(),
         "train_offsets": train_offsets,
@@ -182,10 +182,10 @@ def align_oracle(train_target_ids, train_offsets, oracle):
 
 
 def bucket_share(
-    phi_train: torch.Tensor,
+    f_train: torch.Tensor,
     train_factor: torch.Tensor,
     bucket_id: torch.Tensor,
-    phi_test: torch.Tensor,
+    f_test: torch.Tensor,
     n_bins: int,
     train_chunk: int = 4096,
     test_chunk: int = 4096,
@@ -194,9 +194,9 @@ def bucket_share(
 
     Returns: array of shape (n_bins,) summing to ~1.
     """
-    n_train = phi_train.size(0)
-    n_test = phi_test.size(0)
-    device = phi_train.device
+    n_train = f_train.size(0)
+    n_test = f_test.size(0)
+    device = f_train.device
 
     # Per-test-point accumulators
     bucket_contrib = torch.zeros(n_bins, n_test, device=device, dtype=torch.float32)
@@ -205,10 +205,10 @@ def bucket_share(
     with torch.no_grad():
         for ts in range(0, n_test, test_chunk):
             te = min(ts + test_chunk, n_test)
-            phi_test_block = phi_test[ts:te]                      # [tc, d]
+            phi_test_block = f_test[ts:te]                      # [tc, d]
             for trs in range(0, n_train, train_chunk):
                 tre = min(trs + train_chunk, n_train)
-                dots = phi_train[trs:tre] @ phi_test_block.t()    # [trc, tc]
+                dots = f_train[trs:tre] @ phi_test_block.t()    # [trc, tc]
                 contrib = train_factor[trs:tre].unsqueeze(1) * dots.abs()
                 # Per-bucket sum
                 local_buckets = bucket_id[trs:tre]
@@ -298,11 +298,11 @@ def main():
         logger.info(f"  aligned: {n_valid}/{n_total} train tokens (mismatched sentences: {n_mismatch})")
 
         if n_valid < n_total:
-            phi_train = a["phi_train"][valid]
+            f_train = a["f_train"][valid]
             train_factor = a["train_factor"][valid]
             entropy_train = (-aligned_log_p[valid]).to(device)
         else:
-            phi_train = a["phi_train"]
+            f_train = a["f_train"]
             train_factor = a["train_factor"]
             entropy_train = (-aligned_log_p).to(device)
 
@@ -318,18 +318,18 @@ def main():
             logger.info(f"  bucket {b}: {count} train tokens ({100*count/n_valid:.2f}%)")
 
         share = bucket_share(
-            phi_train, train_factor, bucket_id, a["phi_test"],
+            f_train, train_factor, bucket_id, a["f_test"],
             n_bins=args.n_bins,
         )
         logger.info(f"  shares: {share.tolist()}")
         all_results[label] = {
             "n_valid_train": n_valid,
-            "n_test": int(a["phi_test"].size(0)),
+            "n_test": int(a["f_test"].size(0)),
             "share_per_bucket": share.tolist(),
         }
 
         # Free GPU memory between runs
-        del a, phi_train, train_factor, entropy_train, bucket_id
+        del a, f_train, train_factor, entropy_train, bucket_id
         torch.cuda.empty_cache()
 
     summary = {

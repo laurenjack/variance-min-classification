@@ -49,13 +49,13 @@ def _build_W_recon(features, linear, lambda_l2, distill_W_orig, distill_b_orig,
     b_recon = torch.zeros(C, device=device, dtype=torch.float32)
     for s in range(0, n, chunk_size):
         e = min(s + chunk_size, n)
-        phi = features[s:e].float()
-        logits = phi @ linear.weight.float().t() + linear.bias.float()
+        f = features[s:e].float()
+        logits = f @ linear.weight.float().t() + linear.bias.float()
         probs = F.softmax(logits, dim=-1)
-        orig_logits = phi @ distill_W_orig.float().t() + distill_b_orig.float()
+        orig_logits = f @ distill_W_orig.float().t() + distill_b_orig.float()
         probs.sub_(F.softmax(orig_logits, dim=-1))
         residuals = probs
-        W_recon += residuals.t() @ phi
+        W_recon += residuals.t() @ f
         b_recon += residuals.sum(dim=0)
         del residuals, probs, logits, orig_logits
     scale = -1.0 / (2.0 * lambda_l2 * n)
@@ -76,9 +76,9 @@ def _eval_recon(features, linear, W_recon, b_recon, chunk_size=4096):
     sx_p = sy_p = sxx_p = syy_p = sxy_p = 0.0
     for s in range(0, n, chunk_size):
         e = min(s + chunk_size, n)
-        phi = features[s:e].float()
-        logits_actual = phi @ linear.weight.float().t() + linear.bias.float()
-        logits_recon = phi @ W_recon.t() + b_recon
+        f = features[s:e].float()
+        logits_actual = f @ linear.weight.float().t() + linear.bias.float()
+        logits_recon = f @ W_recon.t() + b_recon
         log_p_actual = F.log_softmax(logits_actual, dim=-1)
         p_actual = log_p_actual.exp()
         log_p_recon = F.log_softmax(logits_recon, dim=-1)
@@ -131,10 +131,10 @@ def main():
     train_blob = torch.load(src / "features_train.pt", map_location="cpu", weights_only=False)
     test_blob = torch.load(src / "features_test.pt", map_location="cpu", weights_only=False)
     proj_state = torch.load(src / "untied_output_proj.pt", map_location="cpu", weights_only=True)
-    phi_train = train_blob["features"].float().to(device)
-    phi_test = test_blob["features"].float().to(device)
+    f_train = train_blob["features"].float().to(device)
+    f_test = test_blob["features"].float().to(device)
 
-    d_model = phi_train.size(1)
+    d_model = f_train.size(1)
     vocab_size = proj_state["weight"].size(0)
     assert d_model == args.d_model
 
@@ -156,13 +156,13 @@ def main():
     del model
 
     W_recon, b_recon = _build_W_recon(
-        phi_train, output_proj, args.lambda_l2, distill_W_orig, distill_b_orig,
+        f_train, output_proj, args.lambda_l2, distill_W_orig, distill_b_orig,
         chunk_size=args.feature_chunk,
     )
 
-    train_stats = _eval_recon(phi_train, output_proj, W_recon, b_recon,
+    train_stats = _eval_recon(f_train, output_proj, W_recon, b_recon,
                               chunk_size=args.feature_chunk)
-    test_stats = _eval_recon(phi_test, output_proj, W_recon, b_recon,
+    test_stats = _eval_recon(f_test, output_proj, W_recon, b_recon,
                              chunk_size=args.feature_chunk)
     max_W = (output_proj.weight.float() - W_recon).abs().max().item()
     max_b = (output_proj.bias.float() - b_recon).abs().max().item()

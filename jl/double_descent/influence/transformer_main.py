@@ -13,7 +13,7 @@ Loads a single trained Transformer (e.g. d_model=96, variance split 0) and:
   4. Validates the Yeh & Kim (2018) decomposition: KL between actual and
      reconstructed softmax should be ~0.
   5. Computes per-training-token influence scores against the test set:
-        score_i = ||r_i||_2 * mean_t(phi_train[i] . phi_test[t])
+        score_i = ||r_i||_2 * mean_t(f_train[i] . f_test[t])
      normalized to mean 1.
   6. Records: original vs fine-tuned test loss, decomposition KL/MSE, L-BFGS
      gradient norm, and per-token influence with sentence offsets.
@@ -130,15 +130,15 @@ def extract_decoder_features(
         for src, tgt in loader:
             src = src.to(device); tgt = tgt.to(device)
             _ = model(src, tgt[:, :-1])
-            phi = captured["out"]               # [B, T-1, d_model]
+            f = captured["out"]               # [B, T-1, d_model]
             target = tgt[:, 1:]                 # [B, T-1]
             mask = target != vocab.pad_idx      # [B, T-1]
 
-            for b in range(phi.shape[0]):
+            for b in range(f.shape[0]):
                 m = mask[b]
                 n = int(m.sum().item())
                 if n > 0:
-                    feats.append(phi[b][m].cpu())
+                    feats.append(f[b][m].cpu())
                     targs.append(target[b][m].cpu())
                 offsets.append(offsets[-1] + n)
     finally:
@@ -166,7 +166,7 @@ def l2_finetune_chunked(
     Loss = (1/n) * CE(features W^T + b, targets) + lambda * (||W||^2 + ||b||^2)
 
     If distill_W_orig / distill_b_orig are given, the per-token loss is
-    distillation against softmax(distill_W_orig·phi + distill_b_orig) (Yeh-Kim
+    distillation against softmax(distill_W_orig·f + distill_b_orig) (Yeh-Kim
     §3.2 model-matching), instead of cross-entropy against one-hot `targets`.
 
     Closure backprops in chunks to keep peak memory bounded by
@@ -198,12 +198,12 @@ def l2_finetune_chunked(
         ce_total = torch.zeros((), device=device)
         for s in range(0, n, chunk_size):
             e = min(s + chunk_size, n)
-            chunk_phi = features[s:e]
-            chunk_logits = chunk_phi @ W.t() + b
+            chunk_f = features[s:e]
+            chunk_logits = chunk_f @ W.t() + b
             if distill:
                 with torch.no_grad():
                     soft_target = F.softmax(
-                        chunk_phi @ distill_W_orig.t() + distill_b_orig, dim=-1
+                        chunk_f @ distill_W_orig.t() + distill_b_orig, dim=-1
                     )
                 log_p_new = F.log_softmax(chunk_logits, dim=-1)
                 ce_chunk = -(soft_target * log_p_new).sum(dim=-1).sum() / n
@@ -258,7 +258,7 @@ def _full_batch_grad(
     into W.grad / b.grad via chunked backprop. Returns (ce_value, l2_value).
 
     If distill_W_orig / distill_b_orig are given, the per-token loss is
-    distillation against softmax(distill_W_orig·phi + distill_b_orig) (Yeh & Kim
+    distillation against softmax(distill_W_orig·f + distill_b_orig) (Yeh & Kim
     §3.2 model-matching), instead of cross-entropy against one-hot `targets`.
     """
     if W.grad is not None:
@@ -271,12 +271,12 @@ def _full_batch_grad(
     distill = distill_W_orig is not None
     for s in range(0, n, chunk_size):
         e = min(s + chunk_size, n)
-        chunk_phi = features[s:e]
-        chunk_logits = chunk_phi @ W.t() + b
+        chunk_f = features[s:e]
+        chunk_logits = chunk_f @ W.t() + b
         if distill:
             with torch.no_grad():
                 soft_target = F.softmax(
-                    chunk_phi @ distill_W_orig.t() + distill_b_orig, dim=-1
+                    chunk_f @ distill_W_orig.t() + distill_b_orig, dim=-1
                 )
             log_p_new = F.log_softmax(chunk_logits, dim=-1)
             ce_chunk = -(soft_target * log_p_new).sum(dim=-1).sum() / n
@@ -420,10 +420,10 @@ def _compute_loss_chunked_no_grad(W, b, features, targets, lambda_l2, chunk_size
     with torch.no_grad():
         for s in range(0, n, chunk_size):
             e = min(s + chunk_size, n)
-            chunk_phi = features[s:e]
-            chunk_logits = chunk_phi @ W.t() + b
+            chunk_f = features[s:e]
+            chunk_logits = chunk_f @ W.t() + b
             if distill:
-                soft_target = F.softmax(chunk_phi @ distill_W_orig.t() + distill_b_orig, dim=-1)
+                soft_target = F.softmax(chunk_f @ distill_W_orig.t() + distill_b_orig, dim=-1)
                 log_p = F.log_softmax(chunk_logits, dim=-1)
                 ce_chunk = -(soft_target * log_p).sum() / n
             else:
@@ -445,11 +445,11 @@ def _compute_grad_chunked(W, b, features, targets, lambda_l2, chunk_size,
     ce_total = 0.0
     for s in range(0, n, chunk_size):
         e = min(s + chunk_size, n)
-        chunk_phi = features[s:e]
-        chunk_logits = chunk_phi @ W.t() + b
+        chunk_f = features[s:e]
+        chunk_logits = chunk_f @ W.t() + b
         if distill:
             with torch.no_grad():
-                soft_target = F.softmax(chunk_phi @ distill_W_orig.t() + distill_b_orig, dim=-1)
+                soft_target = F.softmax(chunk_f @ distill_W_orig.t() + distill_b_orig, dim=-1)
             log_p = F.log_softmax(chunk_logits, dim=-1)
             ce_chunk = -(soft_target * log_p).sum() / n
         else:
@@ -475,11 +475,11 @@ def _hvp_chunked(W, b, v_W, v_b, features, targets, lambda_l2, chunk_size,
     hv_b = torch.zeros_like(b)
     for s in range(0, n, chunk_size):
         e = min(s + chunk_size, n)
-        chunk_phi = features[s:e]
-        chunk_logits = chunk_phi @ W.t() + b
+        chunk_f = features[s:e]
+        chunk_logits = chunk_f @ W.t() + b
         if distill:
             with torch.no_grad():
-                soft_target = F.softmax(chunk_phi @ distill_W_orig.t() + distill_b_orig, dim=-1)
+                soft_target = F.softmax(chunk_f @ distill_W_orig.t() + distill_b_orig, dim=-1)
             log_p = F.log_softmax(chunk_logits, dim=-1)
             ce_chunk = -(soft_target * log_p).sum() / n
         else:
@@ -676,9 +676,9 @@ def validate_decomposition_chunked(
 ) -> dict:
     """Verify W ≈ -1/(2 lambda n) * R^T Phi, b ≈ -1/(2 lambda n) * sum(R).
 
-    For label-CE training (default), R_i = softmax(W·phi_i) - one_hot(y_i).
+    For label-CE training (default), R_i = softmax(W·f_i) - one_hot(y_i).
     For distillation training (distill_W_orig + distill_b_orig given, Yeh-Kim §3.2),
-        R_i = softmax(W·phi_i) - softmax(W_orig·phi_i + b_orig).
+        R_i = softmax(W·f_i) - softmax(W_orig·f_i + b_orig).
     """
     n = features.size(0)
     d = features.size(1)
@@ -693,20 +693,20 @@ def validate_decomposition_chunked(
     # Pass 1: build reconstruction
     for s in range(0, n, chunk_size):
         e = min(s + chunk_size, n)
-        phi = features[s:e].float()
-        logits = phi @ linear.weight.float().t() + linear.bias.float()
+        f = features[s:e].float()
+        logits = f @ linear.weight.float().t() + linear.bias.float()
         probs = F.softmax(logits, dim=-1)
         if distill:
-            # R_i = softmax(W·phi_i) - softmax(W_orig·phi_i + b_orig)
-            orig_logits = phi @ distill_W_orig.float().t() + distill_b_orig.float()
+            # R_i = softmax(W·f_i) - softmax(W_orig·f_i + b_orig)
+            orig_logits = f @ distill_W_orig.float().t() + distill_b_orig.float()
             probs.sub_(F.softmax(orig_logits, dim=-1))
             del orig_logits
         else:
-            # R_i = softmax(W·phi_i) - one_hot(y_i)
+            # R_i = softmax(W·f_i) - one_hot(y_i)
             y = targets[s:e]
             probs[torch.arange(e - s, device=device), y] -= 1.0
         residuals = probs  # [chunk, C]
-        W_recon += residuals.t() @ phi
+        W_recon += residuals.t() @ f
         b_recon += residuals.sum(dim=0)
         del residuals, probs, logits
 
@@ -722,9 +722,9 @@ def validate_decomposition_chunked(
     sx_p = sy_p = sxx_p = syy_p = sxy_p = 0.0  # probabilities
     for s in range(0, n, chunk_size):
         e = min(s + chunk_size, n)
-        phi = features[s:e].float()
-        logits_actual = phi @ linear.weight.float().t() + linear.bias.float()
-        logits_recon = phi @ W_recon.t() + b_recon
+        f = features[s:e].float()
+        logits_actual = f @ linear.weight.float().t() + linear.bias.float()
+        logits_recon = f @ W_recon.t() + b_recon
         log_p_actual = F.log_softmax(logits_actual, dim=-1)
         p_actual = log_p_actual.exp()
         log_p_recon = F.log_softmax(logits_recon, dim=-1)
@@ -783,7 +783,7 @@ def compute_residual_norms_chunked(
     linear: nn.Linear,
     chunk_size: int = 4096,
 ) -> torch.Tensor:
-    """Per-token L2 norm of residual r_i = softmax(W phi_i + b) - e_{y_i}.
+    """Per-token L2 norm of residual r_i = softmax(W f_i + b) - e_{y_i}.
 
     Avoids materializing the full [N, vocab] residual matrix.
     """
@@ -792,8 +792,8 @@ def compute_residual_norms_chunked(
     norms = torch.empty(n, device=device, dtype=torch.float32)
     for s in range(0, n, chunk_size):
         e = min(s + chunk_size, n)
-        phi = features[s:e].float()
-        logits = phi @ linear.weight.float().t() + linear.bias.float()
+        f = features[s:e].float()
+        logits = f @ linear.weight.float().t() + linear.bias.float()
         probs = F.softmax(logits, dim=-1)
         probs[torch.arange(e - s, device=device), targets[s:e]] -= 1.0
         norms[s:e] = probs.norm(dim=-1)
@@ -802,13 +802,13 @@ def compute_residual_norms_chunked(
 
 @torch.no_grad()
 def compute_influence_scores_chunked(
-    phi_train: torch.Tensor,
-    phi_test: torch.Tensor,
+    f_train: torch.Tensor,
+    f_test: torch.Tensor,
     grad_norms: torch.Tensor,
     train_chunk: int = 16384,
     test_chunk: int = 16384,
 ) -> torch.Tensor:
-    """influence_i = ||r_i|| · RMS_t(phi_train[i] · phi_test[t]), normalized
+    """influence_i = ||r_i|| · RMS_t(f_train[i] · f_test[t]), normalized
     so mean(influence) = 1.
 
     RMS over test points keeps the score non-negative even when features can
@@ -816,17 +816,17 @@ def compute_influence_scores_chunked(
     the L2 norm of the per-(class, test-point) Yeh & Kim contribution matrix
     divided by sqrt(N_test). Computed with two-level chunking.
     """
-    n_train = phi_train.size(0)
-    n_test = phi_test.size(0)
-    device = phi_train.device
+    n_train = f_train.size(0)
+    n_test = f_test.size(0)
+    device = f_train.device
 
     sum_sq_dots = torch.zeros(n_train, device=device, dtype=torch.float32)
     for ts in range(0, n_test, test_chunk):
         te = min(ts + test_chunk, n_test)
-        phi_test_block = phi_test[ts:te].float()
+        phi_test_block = f_test[ts:te].float()
         for trs in range(0, n_train, train_chunk):
             tre = min(trs + train_chunk, n_train)
-            dots = phi_train[trs:tre].float() @ phi_test_block.t()
+            dots = f_train[trs:tre].float() @ phi_test_block.t()
             sum_sq_dots[trs:tre] += dots.pow(2).sum(dim=1)
     rms_sim = (sum_sq_dots / n_test).sqrt()
 
@@ -963,40 +963,40 @@ def main():
 
     # 5. Extract decoder features for train + test
     logger.info("Extracting train decoder features...")
-    phi_train, y_train, offsets_train = extract_decoder_features(
+    f_train, y_train, offsets_train = extract_decoder_features(
         model, train_dataset, vocab, device, args.batch_size
     )
     logger.info(
-        f"Train: {phi_train.shape[0]} tokens, d={phi_train.shape[1]}, "
+        f"Train: {f_train.shape[0]} tokens, d={f_train.shape[1]}, "
         f"sentences={len(offsets_train) - 1}"
     )
 
     logger.info("Extracting test decoder features...")
-    phi_test, y_test, offsets_test = extract_decoder_features(
+    f_test, y_test, offsets_test = extract_decoder_features(
         model, test_dataset, vocab, device, args.batch_size
     )
     logger.info(
-        f"Test:  {phi_test.shape[0]} tokens, d={phi_test.shape[1]}, "
+        f"Test:  {f_test.shape[0]} tokens, d={f_test.shape[1]}, "
         f"sentences={len(offsets_test) - 1}"
     )
 
     # Move to device for L-BFGS / chunked passes
-    phi_train_dev = phi_train.to(device)
+    f_train_dev = f_train.to(device)
     y_train_dev = y_train.to(device).long()
-    phi_test_dev = phi_test.to(device)
+    f_test_dev = f_test.to(device)
 
     # Save features for downstream analysis (unless --no-save-features)
     if not args.no_save_features:
         torch.save(
             {
-                "features": phi_train.half(), "target_ids": y_train.short(),
+                "features": f_train.half(), "target_ids": y_train.short(),
                 "sentence_offsets": offsets_train,
             },
             output_dir / "features_train.pt",
         )
         torch.save(
             {
-                "features": phi_test.half(), "target_ids": y_test.short(),
+                "features": f_test.half(), "target_ids": y_test.short(),
                 "sentence_offsets": offsets_test,
             },
             output_dir / "features_test.pt",
@@ -1006,7 +1006,7 @@ def main():
     if args.optimizer == "lbfgs":
         logger.info(f"L-BFGS fine-tune (lambda={args.lambda_l2}, max_iter={args.max_iter})...")
         ft_stats = l2_finetune_chunked(
-            model.output_proj, phi_train_dev, y_train_dev,
+            model.output_proj, f_train_dev, y_train_dev,
             lambda_l2=args.lambda_l2, max_iter=args.max_iter,
             chunk_size=args.feature_chunk,
             distill_W_orig=distill_W_orig,
@@ -1019,7 +1019,7 @@ def main():
             f"tol_grad={args.newton_tol_grad})..."
         )
         ft_stats = newton_cg_finetune_chunked(
-            model.output_proj, phi_train_dev, y_train_dev,
+            model.output_proj, f_train_dev, y_train_dev,
             lambda_l2=args.lambda_l2,
             max_iter=args.newton_max_iter,
             cg_max_iter=args.cg_max_iter,
@@ -1036,7 +1036,7 @@ def main():
             f"betas=({args.adam_beta1}, {args.adam_beta2}))..."
         )
         ft_stats = adam_finetune_chunked(
-            model.output_proj, phi_train_dev, y_train_dev,
+            model.output_proj, f_train_dev, y_train_dev,
             lambda_l2=args.lambda_l2,
             num_steps=args.num_adam_steps,
             lr_init=args.adam_lr,
@@ -1056,7 +1056,7 @@ def main():
             f"tol_grad={args.polish_tolerance_grad})..."
         )
         polish_stats = l2_finetune_chunked(
-            model.output_proj, phi_train_dev, y_train_dev,
+            model.output_proj, f_train_dev, y_train_dev,
             lambda_l2=args.lambda_l2, max_iter=args.polish_max_iter,
             tolerance_grad=args.polish_tolerance_grad,
             chunk_size=args.feature_chunk,
@@ -1073,7 +1073,7 @@ def main():
 
     # 8. Validate decomposition identity (train side; +test if newton_cg)
     val_stats = validate_decomposition_chunked(
-        phi_train_dev, y_train_dev, model.output_proj,
+        f_train_dev, y_train_dev, model.output_proj,
         lambda_l2=args.lambda_l2, chunk_size=args.feature_chunk,
         distill_W_orig=distill_W_orig, distill_b_orig=distill_b_orig,
     )
@@ -1082,12 +1082,12 @@ def main():
             _build_W_recon, _eval_recon,
         )
         W_recon, b_recon = _build_W_recon(
-            phi_train_dev, model.output_proj, args.lambda_l2,
+            f_train_dev, model.output_proj, args.lambda_l2,
             distill_W_orig, distill_b_orig, chunk_size=args.feature_chunk,
         )
-        train_eval = _eval_recon(phi_train_dev, model.output_proj, W_recon, b_recon,
+        train_eval = _eval_recon(f_train_dev, model.output_proj, W_recon, b_recon,
                                  chunk_size=args.feature_chunk)
-        test_eval = _eval_recon(phi_test_dev, model.output_proj, W_recon, b_recon,
+        test_eval = _eval_recon(f_test_dev, model.output_proj, W_recon, b_recon,
                                 chunk_size=args.feature_chunk)
         val_stats["train"] = train_eval
         val_stats["test"] = test_eval
@@ -1101,11 +1101,11 @@ def main():
     # 9. Compute per-token influence
     logger.info("Computing per-token residual norms...")
     grad_norms = compute_residual_norms_chunked(
-        phi_train_dev, y_train_dev, model.output_proj, chunk_size=args.feature_chunk,
+        f_train_dev, y_train_dev, model.output_proj, chunk_size=args.feature_chunk,
     )
     logger.info("Computing per-token influence scores against test set...")
     influence = compute_influence_scores_chunked(
-        phi_train_dev, phi_test_dev, grad_norms,
+        f_train_dev, f_test_dev, grad_norms,
     )
     logger.info(
         f"Influence: mean={influence.mean().item():.4f}, "
@@ -1133,8 +1133,8 @@ def main():
         "d_model": args.d_model,
         "split_id": args.split_id,
         "lambda_l2": args.lambda_l2,
-        "n_train_tokens": int(phi_train.shape[0]),
-        "n_test_tokens": int(phi_test.shape[0]),
+        "n_train_tokens": int(f_train.shape[0]),
+        "n_test_tokens": int(f_test.shape[0]),
         "original_test_loss": original_test_loss,
         "ft_test_loss": ft_test_loss,
         "ft_test_loss_delta": abs(original_test_loss - ft_test_loss),

@@ -61,10 +61,10 @@ def main():
     # 1) Load cached features + untied output_proj
     train_blob = torch.load(src / "features_train.pt", map_location="cpu", weights_only=False)
     proj_state = torch.load(src / "untied_output_proj.pt", map_location="cpu", weights_only=True)
-    phi_train = train_blob["features"].float().to(device)
+    f_train = train_blob["features"].float().to(device)
     y_train = train_blob["target_ids"].long().to(device)
 
-    d_model = phi_train.size(1)
+    d_model = f_train.size(1)
     vocab_size = proj_state["weight"].size(0)
     assert d_model == args.d_model, f"feature dim {d_model} != --d-model {args.d_model}"
 
@@ -92,7 +92,7 @@ def main():
 
     # 3) Run validate with the *distillation* residual
     val_stats = validate_decomposition_chunked(
-        phi_train, y_train, output_proj,
+        f_train, y_train, output_proj,
         lambda_l2=args.lambda_l2, chunk_size=args.feature_chunk,
         distill_W_orig=distill_W_orig, distill_b_orig=distill_b_orig,
     )
