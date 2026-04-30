@@ -153,12 +153,15 @@ def main():
     logger.info(f"Using device: {device}")
 
     # 1. Load data + model
-    train_dataset, _, vocab = load_m2m100_iwslt14_variance_split(
-        args.data_path, args.split_id, max_train_sentences=36000,
+    train_dataset, _valid_dataset, _test_dataset, vocab = load_m2m100_iwslt14_variance_split(
+        data_dir=args.data_path,
+        split_id=args.split_id,
+        num_splits=4,
+        samples_per_split=36000,
     )
     config = TDDConfig()
     model = TransformerModel(
-        vocab_size=vocab.size, d_model=args.d_model,
+        vocab_size=len(vocab), d_model=args.d_model,
         n_layers=config.n_layers, n_heads=config.n_heads,
         d_ff_multiplier=config.d_ff_multiplier, pad_idx=vocab.pad_idx,
     ).to(device)
