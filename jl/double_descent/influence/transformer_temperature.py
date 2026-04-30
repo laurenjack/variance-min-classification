@@ -98,32 +98,73 @@ def _alpha_pass(beta, W, b, features, targets, chunk_size):
     return alphas
 
 
-def fit_beta_newton(W, b, features, targets, lambda_l2, chunk_size,
-                    beta_init=None, max_iter=20, tol_grad=1e-10):
-    """1D Newton on β. Returns (β*, history)."""
-    if beta_init is None:
-        # ||W|| Frobenius is the natural scale.
-        beta = float(W.float().norm().item())
-        # But the "current" model has β = 1.0 (unscaled logits). Start from 1.
-        beta = 1.0
-    else:
-        beta = float(beta_init)
+def _grad_at(beta, W, b, features, targets, lambda_l2, chunk_size):
+    g_ce, _, n = _newton_pass(beta, W, b, features, targets, chunk_size)
+    return g_ce / n + 2.0 * lambda_l2 * beta
 
+
+def fit_beta_safe(W, b, features, targets, lambda_l2, chunk_size,
+                  max_bracket_iter=20, max_bisect_iter=60, tol=1e-10):
+    """Bracket-then-bisect 1D solver on g(β) = 0.
+
+    Robust: handles ill-conditioned curvature where naive Newton diverges.
+    Each iter is one chunked forward pass (~3s). Total ~30-50 evals per d_model.
+    """
     history = []
-    for it in range(max_iter):
-        g_ce, h_ce, n = _newton_pass(beta, W, b, features, targets, chunk_size)
-        grad = g_ce / n + 2.0 * lambda_l2 * beta
-        hess = h_ce / n + 2.0 * lambda_l2
-        history.append({"iter": it, "beta": beta, "grad": grad, "hess": hess})
-        logger.info(
-            f"Newton iter {it}: β={beta:.6e}, grad={grad:.3e}, hess={hess:.3e}"
-        )
-        if abs(grad) < tol_grad:
-            break
-        # Newton step (Hessian is positive, so direction is toward minimum)
-        step = grad / hess
-        beta = beta - step
-    return beta, history
+
+    def call(b_):
+        g = _grad_at(b_, W, b, features, targets, lambda_l2, chunk_size)
+        history.append({"beta": float(b_), "grad": float(g)})
+        return g
+
+    g_at_1 = call(1.0)
+    logger.info(f"  g(β=1) = {g_at_1:.3e}")
+
+    # Decide direction. β* is where g flips sign.
+    if abs(g_at_1) < tol:
+        return 1.0, history
+
+    if g_at_1 > 0:
+        # Loss increasing in β at β=1 → β* < 1. Bracket downward.
+        hi, g_hi = 1.0, g_at_1
+        lo = 0.5
+        for _ in range(max_bracket_iter):
+            g_lo = call(lo)
+            if g_lo <= 0:
+                break
+            hi, g_hi = lo, g_lo
+            lo /= 2.0
+        else:
+            raise RuntimeError(f"Failed to bracket downward; β* may be < {lo}")
+    else:
+        # β* > 1. Bracket upward.
+        lo, g_lo = 1.0, g_at_1
+        hi = 2.0
+        for _ in range(max_bracket_iter):
+            g_hi = call(hi)
+            if g_hi >= 0:
+                break
+            lo, g_lo = hi, g_hi
+            hi *= 2.0
+        else:
+            raise RuntimeError(f"Failed to bracket upward; β* may be > {hi}")
+
+    logger.info(f"  bracketed: lo={lo:.4e} (g={g_lo:.3e}), hi={hi:.4e} (g={g_hi:.3e})")
+
+    # Bisect. Stop when grad is below tol OR interval is below tol.
+    for it in range(max_bisect_iter):
+        mid = 0.5 * (lo + hi)
+        g_mid = call(mid)
+        if abs(g_mid) < tol or (hi - lo) < tol * max(1.0, abs(mid)):
+            return mid, history
+        if g_mid > 0:
+            hi, g_hi = mid, g_mid
+        else:
+            lo, g_lo = mid, g_mid
+        if it % 5 == 0:
+            logger.info(f"  bisect iter {it}: β={mid:.6e}, g={g_mid:.3e}, "
+                        f"interval=[{lo:.4e}, {hi:.4e}]")
+    return 0.5 * (lo + hi), history
 
 
 def main():
@@ -184,10 +225,10 @@ def main():
     y_train = y_train.long().to(device)
     logger.info(f"Train: {f_train.size(0)} tokens, d={f_train.size(1)}")
 
-    # 3. 1D Newton on β
-    beta_star, history = fit_beta_newton(
+    # 3. Bracket + bisect on β (robust to ill-conditioning that breaks Newton)
+    beta_star, history = fit_beta_safe(
         W, b, f_train, y_train, args.lambda_l2, args.feature_chunk,
-        max_iter=args.max_iter, tol_grad=args.tol_grad,
+        tol=args.tol_grad,
     )
     logger.info(f"β* = {beta_star:.8f}")
 
