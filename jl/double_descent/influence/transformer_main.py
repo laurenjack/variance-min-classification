@@ -411,6 +411,259 @@ def adam_finetune_chunked(
     }
 
 
+def _compute_loss_chunked_no_grad(W, b, features, targets, lambda_l2, chunk_size,
+                                   distill_W_orig=None, distill_b_orig=None):
+    """Forward-only loss (no autograd graph). Used by line search."""
+    n = features.size(0)
+    distill = distill_W_orig is not None
+    ce_total = 0.0
+    with torch.no_grad():
+        for s in range(0, n, chunk_size):
+            e = min(s + chunk_size, n)
+            chunk_phi = features[s:e]
+            chunk_logits = chunk_phi @ W.t() + b
+            if distill:
+                soft_target = F.softmax(chunk_phi @ distill_W_orig.t() + distill_b_orig, dim=-1)
+                log_p = F.log_softmax(chunk_logits, dim=-1)
+                ce_chunk = -(soft_target * log_p).sum() / n
+            else:
+                ce_chunk = F.cross_entropy(chunk_logits, targets[s:e], reduction="sum") / n
+            ce_total += ce_chunk.item()
+        l2 = lambda_l2 * (W.pow(2).sum() + b.pow(2).sum())
+    return ce_total + l2.item()
+
+
+def _compute_grad_chunked(W, b, features, targets, lambda_l2, chunk_size,
+                          distill_W_orig=None, distill_b_orig=None):
+    """Compute full-batch gradient. Returns (grad_W, grad_b, ce_value, l2_value)."""
+    if W.grad is not None:
+        W.grad.zero_()
+    if b.grad is not None:
+        b.grad.zero_()
+    n = features.size(0)
+    distill = distill_W_orig is not None
+    ce_total = 0.0
+    for s in range(0, n, chunk_size):
+        e = min(s + chunk_size, n)
+        chunk_phi = features[s:e]
+        chunk_logits = chunk_phi @ W.t() + b
+        if distill:
+            with torch.no_grad():
+                soft_target = F.softmax(chunk_phi @ distill_W_orig.t() + distill_b_orig, dim=-1)
+            log_p = F.log_softmax(chunk_logits, dim=-1)
+            ce_chunk = -(soft_target * log_p).sum() / n
+        else:
+            ce_chunk = F.cross_entropy(chunk_logits, targets[s:e], reduction="sum") / n
+        ce_chunk.backward()
+        ce_total += float(ce_chunk.item())
+    l2 = lambda_l2 * (W.pow(2).sum() + b.pow(2).sum())
+    l2.backward()
+    return W.grad.detach().clone(), b.grad.detach().clone(), ce_total, float(l2.item())
+
+
+def _hvp_chunked(W, b, v_W, v_b, features, targets, lambda_l2, chunk_size,
+                 distill_W_orig=None, distill_b_orig=None):
+    """Compute Hessian-vector product H @ [v_W; v_b] via chunked double-backward.
+
+    For each chunk, we build a 1st-order grad with create_graph=True, take its
+    inner product with v, then differentiate again to get the chunk's HVP.
+    L2's contribution (2λI · v) is added analytically at the end.
+    """
+    n = features.size(0)
+    distill = distill_W_orig is not None
+    hv_W = torch.zeros_like(W)
+    hv_b = torch.zeros_like(b)
+    for s in range(0, n, chunk_size):
+        e = min(s + chunk_size, n)
+        chunk_phi = features[s:e]
+        chunk_logits = chunk_phi @ W.t() + b
+        if distill:
+            with torch.no_grad():
+                soft_target = F.softmax(chunk_phi @ distill_W_orig.t() + distill_b_orig, dim=-1)
+            log_p = F.log_softmax(chunk_logits, dim=-1)
+            ce_chunk = -(soft_target * log_p).sum() / n
+        else:
+            ce_chunk = F.cross_entropy(chunk_logits, targets[s:e], reduction="sum") / n
+        grad_W_chunk, grad_b_chunk = torch.autograd.grad(
+            ce_chunk, [W, b], create_graph=True,
+        )
+        inner = (grad_W_chunk * v_W).sum() + (grad_b_chunk * v_b).sum()
+        hv_W_chunk, hv_b_chunk = torch.autograd.grad(inner, [W, b])
+        hv_W = hv_W + hv_W_chunk.detach()
+        hv_b = hv_b + hv_b_chunk.detach()
+        del grad_W_chunk, grad_b_chunk, inner, hv_W_chunk, hv_b_chunk
+    # L2 contribution: ∇²(λ‖W‖²) = 2λI
+    hv_W = hv_W + 2.0 * lambda_l2 * v_W
+    hv_b = hv_b + 2.0 * lambda_l2 * v_b
+    return hv_W, hv_b
+
+
+def _cg_solve(hvp_fn, b_W, b_b, max_iter=50, tol=1e-10):
+    """Solve H · x = b via CG using HVP closure. Returns (x_W, x_b, iters, resid)."""
+    x_W = torch.zeros_like(b_W)
+    x_b = torch.zeros_like(b_b)
+    r_W = b_W.clone()
+    r_b = b_b.clone()
+    p_W = r_W.clone()
+    p_b = r_b.clone()
+    rs_old = (r_W * r_W).sum() + (r_b * r_b).sum()
+    if rs_old.sqrt().item() < tol:
+        return x_W, x_b, 0, rs_old.sqrt().item()
+    iters = 0
+    for i in range(max_iter):
+        iters = i + 1
+        Hp_W, Hp_b = hvp_fn(p_W, p_b)
+        pHp = (p_W * Hp_W).sum() + (p_b * Hp_b).sum()
+        if pHp.item() <= 0:
+            # Negative curvature — fall back to steepest-descent on first iter,
+            # otherwise return current iterate (CG truncated).
+            if i == 0:
+                return b_W.clone(), b_b.clone(), iters, float("inf")
+            break
+        alpha = rs_old / pHp
+        x_W = x_W + alpha * p_W
+        x_b = x_b + alpha * p_b
+        r_W = r_W - alpha * Hp_W
+        r_b = r_b - alpha * Hp_b
+        rs_new = (r_W * r_W).sum() + (r_b * r_b).sum()
+        if rs_new.sqrt().item() < tol:
+            break
+        beta = rs_new / rs_old
+        p_W = r_W + beta * p_W
+        p_b = r_b + beta * p_b
+        rs_old = rs_new
+    return x_W, x_b, iters, rs_old.sqrt().item()
+
+
+def newton_cg_finetune_chunked(
+    linear: nn.Linear,
+    features: torch.Tensor,
+    targets: torch.Tensor,
+    lambda_l2: float,
+    max_iter: int = 50,
+    tol_grad: float = 1e-10,
+    cg_max_iter: int = 50,
+    chunk_size: int = 4096,
+    distill_W_orig: torch.Tensor = None,
+    distill_b_orig: torch.Tensor = None,
+) -> dict:
+    """Newton-CG with chunked HVPs and Armijo line search.
+
+    Solves the L2-regularized softmax-CE (or distillation) problem to high
+    precision. Uses Eisenstat-Walker inner-CG forcing tolerances.
+    """
+    assert linear.bias is not None
+    device = features.device
+    W = linear.weight.detach().clone().to(device).requires_grad_(True)
+    b = linear.bias.detach().clone().to(device).requires_grad_(True)
+
+    history = []
+    last_grad_norm = float("inf")
+    last_ce = float("nan")
+    last_l2 = float("nan")
+
+    for k in range(max_iter):
+        # 1) Gradient
+        grad_W, grad_b, ce_val, l2_val = _compute_grad_chunked(
+            W, b, features, targets, lambda_l2, chunk_size,
+            distill_W_orig=distill_W_orig, distill_b_orig=distill_b_orig,
+        )
+        grad_norm = torch.sqrt((grad_W * grad_W).sum() + (grad_b * grad_b).sum()).item()
+        last_grad_norm = grad_norm
+        last_ce = ce_val
+        last_l2 = l2_val
+        loss_val = ce_val + l2_val
+
+        history.append({
+            "iter": k, "loss": loss_val, "ce": ce_val, "l2": l2_val,
+            "grad_norm": grad_norm,
+        })
+
+        if grad_norm < tol_grad:
+            logger.info(
+                f"Newton-CG iter {k}: grad_norm={grad_norm:.3e} < tol={tol_grad:.0e} — converged"
+            )
+            break
+
+        # 2) CG inner solve for Newton direction: H · d = -g.
+        # Eisenstat-Walker forcing term: ||r|| ≤ min(0.5, sqrt(||g||)) · ||g||
+        forcing = min(0.5, grad_norm ** 0.5)
+        cg_tol = forcing * grad_norm
+
+        def hvp(v_W, v_b):
+            return _hvp_chunked(
+                W, b, v_W, v_b, features, targets, lambda_l2, chunk_size,
+                distill_W_orig=distill_W_orig, distill_b_orig=distill_b_orig,
+            )
+
+        d_W, d_b, cg_iters, cg_resid = _cg_solve(
+            hvp, -grad_W, -grad_b, max_iter=cg_max_iter, tol=cg_tol,
+        )
+
+        # Verify descent direction. For convex L2-CE this should always hold.
+        directional = (grad_W * d_W).sum().item() + (grad_b * d_b).sum().item()
+        if directional >= 0:
+            logger.warning(
+                f"Newton-CG iter {k}: non-descent direction (dᵀg={directional:.2e}), "
+                f"falling back to steepest descent"
+            )
+            d_W = -grad_W
+            d_b = -grad_b
+            directional = -(grad_norm ** 2)
+
+        # 3) Armijo line search
+        c1 = 1e-4
+        alpha = 1.0
+        ls_iters = 0
+        loss_new = float("inf")
+        for ls_iters in range(30):
+            W_trial = (W + alpha * d_W).detach()
+            b_trial = (b + alpha * d_b).detach()
+            loss_new = _compute_loss_chunked_no_grad(
+                W_trial, b_trial, features, targets, lambda_l2, chunk_size,
+                distill_W_orig=distill_W_orig, distill_b_orig=distill_b_orig,
+            )
+            if loss_new <= loss_val + c1 * alpha * directional:
+                break
+            alpha *= 0.5
+        else:
+            logger.warning(f"Newton-CG iter {k}: line search did not satisfy Armijo")
+
+        # 4) Update
+        with torch.no_grad():
+            W.copy_(W + alpha * d_W)
+            b.copy_(b + alpha * d_b)
+
+        logger.info(
+            f"Newton-CG iter {k}: loss={loss_val:.6f}→{loss_new:.6f}, "
+            f"grad_norm={grad_norm:.3e}, cg_iters={cg_iters}, cg_resid={cg_resid:.2e}, "
+            f"alpha={alpha:.3f}, ls_iters={ls_iters + 1}"
+        )
+
+    # Copy final params back into the linear module
+    with torch.no_grad():
+        linear.weight.copy_(W)
+        linear.bias.copy_(b)
+
+    logger.info(
+        f"Newton-CG done: {k + 1} outer iters, final loss={last_ce + last_l2:.6f} "
+        f"(CE={last_ce:.6f}, L2={last_l2:.6f}), final_grad_norm={last_grad_norm:.3e}"
+    )
+    return {
+        "optimizer": "newton_cg",
+        "final_loss": last_ce + last_l2,
+        "final_ce": last_ce,
+        "final_l2": last_l2,
+        "grad_norm": last_grad_norm,
+        "n_iters": k + 1,
+        "max_iter": max_iter,
+        "cg_max_iter": cg_max_iter,
+        "tol_grad": tol_grad,
+        "lambda_l2": lambda_l2,
+        "history": history,
+    }
+
+
 @torch.no_grad()
 def validate_decomposition_chunked(
     features: torch.Tensor,
@@ -591,7 +844,13 @@ def main():
                         help="Directory with M2M100-preprocessed IWSLT data")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--lambda-l2", type=float, default=1e-5)
-    parser.add_argument("--optimizer", choices=["adam", "lbfgs"], default="adam")
+    parser.add_argument("--optimizer", choices=["adam", "lbfgs", "newton_cg"], default="adam")
+    parser.add_argument("--newton-max-iter", type=int, default=50,
+                        help="Newton-CG only: max outer Newton iterations")
+    parser.add_argument("--cg-max-iter", type=int, default=50,
+                        help="Newton-CG only: max inner CG iterations per Newton step")
+    parser.add_argument("--newton-tol-grad", type=float, default=1e-10,
+                        help="Newton-CG only: convergence tol on grad_norm")
     parser.add_argument("--max-iter", type=int, default=3000,
                         help="L-BFGS only: max_iter passed to torch.optim.LBFGS")
     parser.add_argument("--num-adam-steps", type=int, default=3000,
@@ -750,6 +1009,24 @@ def main():
             model.output_proj, phi_train_dev, y_train_dev,
             lambda_l2=args.lambda_l2, max_iter=args.max_iter,
             chunk_size=args.feature_chunk,
+            distill_W_orig=distill_W_orig,
+            distill_b_orig=distill_b_orig,
+        )
+    elif args.optimizer == "newton_cg":
+        logger.info(
+            f"Newton-CG fine-tune (lambda={args.lambda_l2}, "
+            f"max_iter={args.newton_max_iter}, cg_max_iter={args.cg_max_iter}, "
+            f"tol_grad={args.newton_tol_grad})..."
+        )
+        ft_stats = newton_cg_finetune_chunked(
+            model.output_proj, phi_train_dev, y_train_dev,
+            lambda_l2=args.lambda_l2,
+            max_iter=args.newton_max_iter,
+            cg_max_iter=args.cg_max_iter,
+            tol_grad=args.newton_tol_grad,
+            chunk_size=args.feature_chunk,
+            distill_W_orig=distill_W_orig,
+            distill_b_orig=distill_b_orig,
         )
     else:
         logger.info(
@@ -794,12 +1071,32 @@ def main():
         f"|delta|={abs(original_test_loss - ft_test_loss):.6f}"
     )
 
-    # 8. Validate decomposition identity
+    # 8. Validate decomposition identity (train side; +test if newton_cg)
     val_stats = validate_decomposition_chunked(
         phi_train_dev, y_train_dev, model.output_proj,
         lambda_l2=args.lambda_l2, chunk_size=args.feature_chunk,
         distill_W_orig=distill_W_orig, distill_b_orig=distill_b_orig,
     )
+    if args.optimizer == "newton_cg":
+        from jl.double_descent.influence.transformer_validate_split import (
+            _build_W_recon, _eval_recon,
+        )
+        W_recon, b_recon = _build_W_recon(
+            phi_train_dev, model.output_proj, args.lambda_l2,
+            distill_W_orig, distill_b_orig, chunk_size=args.feature_chunk,
+        )
+        train_eval = _eval_recon(phi_train_dev, model.output_proj, W_recon, b_recon,
+                                 chunk_size=args.feature_chunk)
+        test_eval = _eval_recon(phi_test_dev, model.output_proj, W_recon, b_recon,
+                                chunk_size=args.feature_chunk)
+        val_stats["train"] = train_eval
+        val_stats["test"] = test_eval
+        logger.info(
+            f"Train r_probs={train_eval['pearson_probs']:.6f} "
+            f"(KL={train_eval['kl_div_per_token']:.2e}), "
+            f"Test r_probs={test_eval['pearson_probs']:.6f} "
+            f"(KL={test_eval['kl_div_per_token']:.2e})"
+        )
 
     # 9. Compute per-token influence
     logger.info("Computing per-token residual norms...")
