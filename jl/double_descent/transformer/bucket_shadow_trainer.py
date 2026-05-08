@@ -298,12 +298,22 @@ def train_single_model_bucket_shadow(
         f"[bucket-shadow] d_model={d_model}, {samples_k}K samples on GPU {gpu_id}"
     )
 
+    process_logger.info(
+        f"DEBUG: data_path={data_path!r}, train_samples={train_samples}, "
+        f"config.subsample_seed={config.subsample_seed}"
+    )
     train_dataset, valid_dataset, test_dataset, vocab = load_m2m100_iwslt14(
         data_path, train_samples, config.subsample_seed
     )
     process_logger.info(
         f"Loaded data: {len(train_dataset)} train / {len(valid_dataset)} valid / "
         f"{len(test_dataset)} test;  vocab={len(vocab)}"
+    )
+    process_logger.info(
+        f"DEBUG: train_dataset.tgt_encoded[0][:10] = {train_dataset.tgt_encoded[0][:10]}"
+    )
+    process_logger.info(
+        f"DEBUG: train_dataset.tgt_encoded[1][:10] = {train_dataset.tgt_encoded[1][:10]}"
     )
 
     bucket_id_sequences, edges, centers = compute_bucket_id_sequences(
