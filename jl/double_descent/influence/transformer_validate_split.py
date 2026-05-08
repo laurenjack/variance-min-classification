@@ -45,14 +45,15 @@ def _build_W_recon(features, linear, lambda_l2, distill_W_orig, distill_b_orig,
     d = features.size(1)
     C = linear.out_features
     device = features.device
-    W_recon = torch.zeros(C, d, device=device, dtype=torch.float32)
-    b_recon = torch.zeros(C, device=device, dtype=torch.float32)
+    work_dtype = features.dtype
+    W_recon = torch.zeros(C, d, device=device, dtype=work_dtype)
+    b_recon = torch.zeros(C, device=device, dtype=work_dtype)
     for s in range(0, n, chunk_size):
         e = min(s + chunk_size, n)
-        f = features[s:e].float()
-        logits = f @ linear.weight.float().t() + linear.bias.float()
+        f = features[s:e]
+        logits = f @ linear.weight.t() + linear.bias
         probs = F.softmax(logits, dim=-1)
-        orig_logits = f @ distill_W_orig.float().t() + distill_b_orig.float()
+        orig_logits = f @ distill_W_orig.t() + distill_b_orig
         probs.sub_(F.softmax(orig_logits, dim=-1))
         residuals = probs
         W_recon += residuals.t() @ f
@@ -76,8 +77,8 @@ def _eval_recon(features, linear, W_recon, b_recon, chunk_size=4096):
     sx_p = sy_p = sxx_p = syy_p = sxy_p = 0.0
     for s in range(0, n, chunk_size):
         e = min(s + chunk_size, n)
-        f = features[s:e].float()
-        logits_actual = f @ linear.weight.float().t() + linear.bias.float()
+        f = features[s:e]
+        logits_actual = f @ linear.weight.t() + linear.bias
         logits_recon = f @ W_recon.t() + b_recon
         log_p_actual = F.log_softmax(logits_actual, dim=-1)
         p_actual = log_p_actual.exp()
@@ -115,6 +116,7 @@ def main():
     parser.add_argument("--data-path", required=True)
     parser.add_argument("--lambda-l2", type=float, required=True)
     parser.add_argument("--feature-chunk", type=int, default=4096)
+    parser.add_argument("--use-float64", action="store_true")
     parser.add_argument("--device", default=None)
     args = parser.parse_args()
 
@@ -128,18 +130,19 @@ def main():
     src = Path(args.source_dir)
     vocab = M2M100Vocab(str(Path(args.data_path) / "vocab_mapping.json"))
 
+    work_dtype = torch.float64 if args.use_float64 else torch.float32
     train_blob = torch.load(src / "features_train.pt", map_location="cpu", weights_only=False)
     test_blob = torch.load(src / "features_test.pt", map_location="cpu", weights_only=False)
     proj_state = torch.load(src / "untied_output_proj.pt", map_location="cpu", weights_only=True)
-    f_train = train_blob["features"].float().to(device)
-    f_test = test_blob["features"].float().to(device)
+    f_train = train_blob["features"].to(work_dtype).to(device)
+    f_test = test_blob["features"].to(work_dtype).to(device)
 
     d_model = f_train.size(1)
     vocab_size = proj_state["weight"].size(0)
     assert d_model == args.d_model
 
-    output_proj = nn.Linear(d_model, vocab_size, bias=True).to(device)
-    output_proj.load_state_dict({k: v.to(device) for k, v in proj_state.items()})
+    output_proj = nn.Linear(d_model, vocab_size, bias=True).to(device).to(work_dtype)
+    output_proj.load_state_dict({k: v.to(device).to(work_dtype) for k, v in proj_state.items()})
     output_proj.eval()
 
     config = TDDConfig()
@@ -151,8 +154,8 @@ def main():
     state = torch.load(args.orig_model_path, map_location=device, weights_only=True)
     model.load_state_dict(state)
     untie_output_proj(model)
-    distill_W_orig = model.output_proj.weight.detach().clone()
-    distill_b_orig = model.output_proj.bias.detach().clone()
+    distill_W_orig = model.output_proj.weight.detach().clone().to(work_dtype)
+    distill_b_orig = model.output_proj.bias.detach().clone().to(work_dtype)
     del model
 
     W_recon, b_recon = _build_W_recon(
@@ -164,8 +167,8 @@ def main():
                               chunk_size=args.feature_chunk)
     test_stats = _eval_recon(f_test, output_proj, W_recon, b_recon,
                              chunk_size=args.feature_chunk)
-    max_W = (output_proj.weight.float() - W_recon).abs().max().item()
-    max_b = (output_proj.bias.float() - b_recon).abs().max().item()
+    max_W = (output_proj.weight - W_recon).abs().max().item()
+    max_b = (output_proj.bias - b_recon).abs().max().item()
 
     out = {
         "d_model": args.d_model,

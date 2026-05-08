@@ -687,18 +687,21 @@ def validate_decomposition_chunked(
     scale = -1.0 / (2.0 * lambda_l2 * n)
     distill = distill_W_orig is not None
 
-    W_recon = torch.zeros(C, d, device=device, dtype=torch.float32)
-    b_recon = torch.zeros(C, device=device, dtype=torch.float32)
+    # Use the input dtype throughout; this lets callers run in float64 for
+    # tighter precision on the (1/(2λn))·Σ residual sum at small λ.
+    work_dtype = features.dtype
+    W_recon = torch.zeros(C, d, device=device, dtype=work_dtype)
+    b_recon = torch.zeros(C, device=device, dtype=work_dtype)
 
     # Pass 1: build reconstruction
     for s in range(0, n, chunk_size):
         e = min(s + chunk_size, n)
-        f = features[s:e].float()
-        logits = f @ linear.weight.float().t() + linear.bias.float()
+        f = features[s:e]
+        logits = f @ linear.weight.t() + linear.bias
         probs = F.softmax(logits, dim=-1)
         if distill:
             # R_i = softmax(W·f_i) - softmax(W_orig·f_i + b_orig)
-            orig_logits = f @ distill_W_orig.float().t() + distill_b_orig.float()
+            orig_logits = f @ distill_W_orig.t() + distill_b_orig
             probs.sub_(F.softmax(orig_logits, dim=-1))
             del orig_logits
         else:
@@ -722,8 +725,8 @@ def validate_decomposition_chunked(
     sx_p = sy_p = sxx_p = syy_p = sxy_p = 0.0  # probabilities
     for s in range(0, n, chunk_size):
         e = min(s + chunk_size, n)
-        f = features[s:e].float()
-        logits_actual = f @ linear.weight.float().t() + linear.bias.float()
+        f = features[s:e]
+        logits_actual = f @ linear.weight.t() + linear.bias
         logits_recon = f @ W_recon.t() + b_recon
         log_p_actual = F.log_softmax(logits_actual, dim=-1)
         p_actual = log_p_actual.exp()
@@ -757,8 +760,8 @@ def validate_decomposition_chunked(
 
     kl_mean = kl_sum / n
     mse_mean = mse_sum / (n * C)
-    max_W_diff = (linear.weight.float() - W_recon).abs().max().item()
-    max_b_diff = (linear.bias.float() - b_recon).abs().max().item()
+    max_W_diff = (linear.weight - W_recon).abs().max().item()
+    max_b_diff = (linear.bias - b_recon).abs().max().item()
 
     logger.info(
         f"Decomposition validation: KL/token={kl_mean:.2e}, "
@@ -789,11 +792,11 @@ def compute_residual_norms_chunked(
     """
     n = features.size(0)
     device = features.device
-    norms = torch.empty(n, device=device, dtype=torch.float32)
+    norms = torch.empty(n, device=device, dtype=features.dtype)
     for s in range(0, n, chunk_size):
         e = min(s + chunk_size, n)
-        f = features[s:e].float()
-        logits = f @ linear.weight.float().t() + linear.bias.float()
+        f = features[s:e]
+        logits = f @ linear.weight.t() + linear.bias
         probs = F.softmax(logits, dim=-1)
         probs[torch.arange(e - s, device=device), targets[s:e]] -= 1.0
         norms[s:e] = probs.norm(dim=-1)
@@ -820,17 +823,17 @@ def compute_influence_scores_chunked(
     n_test = f_test.size(0)
     device = f_train.device
 
-    sum_sq_dots = torch.zeros(n_train, device=device, dtype=torch.float32)
+    sum_sq_dots = torch.zeros(n_train, device=device, dtype=f_train.dtype)
     for ts in range(0, n_test, test_chunk):
         te = min(ts + test_chunk, n_test)
-        phi_test_block = f_test[ts:te].float()
+        phi_test_block = f_test[ts:te]
         for trs in range(0, n_train, train_chunk):
             tre = min(trs + train_chunk, n_train)
-            dots = f_train[trs:tre].float() @ phi_test_block.t()
+            dots = f_train[trs:tre] @ phi_test_block.t()
             sum_sq_dots[trs:tre] += dots.pow(2).sum(dim=1)
     rms_sim = (sum_sq_dots / n_test).sqrt()
 
-    raw = grad_norms.float() * rms_sim
+    raw = grad_norms.to(rms_sim.dtype) * rms_sim
     return raw / raw.mean()
 
 
@@ -845,6 +848,12 @@ def main():
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--lambda-l2", type=float, default=1e-5)
     parser.add_argument("--optimizer", choices=["adam", "lbfgs", "newton_cg"], default="adam")
+    parser.add_argument("--use-float64", action="store_true",
+                        help="Run the FT optimizer + decomposition validation in "
+                             "float64 (≈2× memory, ~2× compute). Lowers the sum-precision "
+                             "noise floor from ~1e-4 to ~1e-13 — useful at very small "
+                             "lambda where the kernel-identity divisor 1/(2λn) amplifies "
+                             "summation noise.")
     parser.add_argument("--newton-max-iter", type=int, default=50,
                         help="Newton-CG only: max outer Newton iterations")
     parser.add_argument("--cg-max-iter", type=int, default=50,
@@ -981,9 +990,19 @@ def main():
     )
 
     # Move to device for L-BFGS / chunked passes
-    f_train_dev = f_train.to(device)
+    work_dtype = torch.float64 if args.use_float64 else torch.float32
+    if args.use_float64:
+        logger.info("Using float64 for FT optimizer + validation (precision mode).")
+    f_train_dev = f_train.to(device).to(work_dtype)
     y_train_dev = y_train.to(device).long()
-    f_test_dev = f_test.to(device)
+    f_test_dev = f_test.to(device).to(work_dtype)
+    # Cast model.output_proj's weight/bias so the optimizer state and forward
+    # pass run in work_dtype.
+    model.output_proj.weight.data = model.output_proj.weight.data.to(work_dtype)
+    model.output_proj.bias.data = model.output_proj.bias.data.to(work_dtype)
+    if distill_W_orig is not None:
+        distill_W_orig = distill_W_orig.to(work_dtype)
+        distill_b_orig = distill_b_orig.to(work_dtype)
 
     # Save features for downstream analysis (unless --no-save-features)
     if not args.no_save_features:
