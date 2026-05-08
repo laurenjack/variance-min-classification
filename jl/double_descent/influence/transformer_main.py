@@ -936,6 +936,11 @@ def main():
     ).to(device)
     state = torch.load(args.model_path, map_location=device, weights_only=True)
     model.load_state_dict(state)
+    if args.use_float64:
+        # Cast entire model to float64 so the encoder/decoder produce float64
+        # features that feed cleanly into the float64 output_proj.
+        model = model.to(torch.float64)
+        logger.info("Model cast to float64 (--use-float64).")
     model.eval()
     logger.info(f"Loaded checkpoint from {args.model_path}")
 
