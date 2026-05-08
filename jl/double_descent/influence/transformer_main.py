@@ -157,6 +157,8 @@ def l2_finetune_chunked(
     lambda_l2: float,
     max_iter: int = 500,
     tolerance_grad: float = 1e-7,
+    history_size: int = 100,
+    line_search_fn: str = "strong_wolfe",
     chunk_size: int = 4096,
     distill_W_orig: torch.Tensor = None,
     distill_b_orig: torch.Tensor = None,
@@ -186,8 +188,8 @@ def l2_finetune_chunked(
         max_iter=max_iter,
         tolerance_grad=tolerance_grad,
         tolerance_change=0,
-        line_search_fn="strong_wolfe",
-        history_size=100,
+        line_search_fn=line_search_fn if line_search_fn != "none" else None,
+        history_size=history_size,
     )
 
     eval_count = [0]
@@ -871,6 +873,14 @@ def main():
                         help="L-BFGS only: tolerance_grad passed to torch.optim.LBFGS. "
                              "Default 1e-7 is the PyTorch default; tighten for very "
                              "small lambda (e.g. 1e-12 with --use-float64).")
+    parser.add_argument("--lbfgs-history-size", type=int, default=100,
+                        help="L-BFGS only: history_size for the LBFGS limited-memory "
+                             "Hessian estimate. Default 100. Smaller (e.g. 20) is more "
+                             "adaptive to local curvature.")
+    parser.add_argument("--lbfgs-line-search", type=str, default="strong_wolfe",
+                        choices=["strong_wolfe", "none"],
+                        help="L-BFGS only: 'strong_wolfe' (default; aggressive) or "
+                             "'none' (PyTorch's plain backtracking, just Armijo).")
     parser.add_argument("--num-adam-steps", type=int, default=3000,
                         help="Adam only: number of full-batch steps")
     parser.add_argument("--adam-lr", type=float, default=1e-3,
@@ -1039,12 +1049,15 @@ def main():
     if args.optimizer == "lbfgs":
         logger.info(
             f"L-BFGS fine-tune (lambda={args.lambda_l2}, max_iter={args.max_iter}, "
-            f"tol_grad={args.lbfgs_tolerance_grad})..."
+            f"tol_grad={args.lbfgs_tolerance_grad}, history_size={args.lbfgs_history_size}, "
+            f"line_search={args.lbfgs_line_search})..."
         )
         ft_stats = l2_finetune_chunked(
             model.output_proj, f_train_dev, y_train_dev,
             lambda_l2=args.lambda_l2, max_iter=args.max_iter,
             tolerance_grad=args.lbfgs_tolerance_grad,
+            history_size=args.lbfgs_history_size,
+            line_search_fn=args.lbfgs_line_search,
             chunk_size=args.feature_chunk,
             distill_W_orig=distill_W_orig,
             distill_b_orig=distill_b_orig,
