@@ -44,7 +44,7 @@ from jl.double_descent.transformer.transformer_data import (
     MaxTokensBatchSampler,
     TranslationDataset,
     Vocab,
-    load_m2m100_iwslt14,
+    load_m2m100_iwslt14_variance_split,
 )
 from jl.double_descent.transformer.transformer_model import TransformerModel, count_parameters
 
@@ -112,20 +112,10 @@ def compute_bucket_id_sequences(
         train_targets = np.asarray(tgt_encoded[1:], dtype=np.int64)
         oa, ob = int(o_offsets[s]), int(o_offsets[s + 1])
         oracle_targets = o_targets[oa:ob]
-        if s < 3:
-            logger.info(
-                f"  align[s={s}]: train_len={len(train_targets)} oracle_len={len(oracle_targets)} "
-                f"train_head={train_targets[:5].tolist()} oracle_head={oracle_targets[:5].tolist()}"
-            )
         if len(train_targets) != len(oracle_targets) or not np.array_equal(
             train_targets, oracle_targets
         ):
             n_mismatch += 1
-            if n_mismatch <= 3:
-                logger.warning(
-                    f"  MISMATCH at s={s}: lens train={len(train_targets)} oracle={len(oracle_targets)} "
-                    f"train_head={train_targets[:5].tolist()} oracle_head={oracle_targets[:5].tolist()}"
-                )
             # Mark whole sentence as no-bucket so it never enters L_b sums.
             bucket_id_sequences.append([BUCKET_PAD] * len(train_targets))
             continue
@@ -298,22 +288,15 @@ def train_single_model_bucket_shadow(
         f"[bucket-shadow] d_model={d_model}, {samples_k}K samples on GPU {gpu_id}"
     )
 
-    process_logger.info(
-        f"DEBUG: data_path={data_path!r}, train_samples={train_samples}, "
-        f"config.subsample_seed={config.subsample_seed}"
-    )
-    train_dataset, valid_dataset, test_dataset, vocab = load_m2m100_iwslt14(
-        data_path, train_samples, config.subsample_seed
+    # Use variance_split(split_id=0) so subsample_seed is locked to 42, matching
+    # how train_split0_log_probs.pt (the oracle) was generated.  The default
+    # config.subsample_seed (currently 674931) does NOT match.
+    train_dataset, valid_dataset, test_dataset, vocab = load_m2m100_iwslt14_variance_split(
+        data_path, split_id=0, num_splits=4, samples_per_split=train_samples,
     )
     process_logger.info(
         f"Loaded data: {len(train_dataset)} train / {len(valid_dataset)} valid / "
         f"{len(test_dataset)} test;  vocab={len(vocab)}"
-    )
-    process_logger.info(
-        f"DEBUG: train_dataset.tgt_encoded[0][:10] = {train_dataset.tgt_encoded[0][:10]}"
-    )
-    process_logger.info(
-        f"DEBUG: train_dataset.tgt_encoded[1][:10] = {train_dataset.tgt_encoded[1][:10]}"
     )
 
     bucket_id_sequences, edges, centers = compute_bucket_id_sequences(
