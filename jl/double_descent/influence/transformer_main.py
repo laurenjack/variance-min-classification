@@ -752,7 +752,12 @@ def validate_decomposition_chunked(
 
     def _pearson(sx, sy, sxx, syy, sxy, n_e):
         num = n_e * sxy - sx * sy
-        den = ((n_e * sxx - sx * sx) * (n_e * syy - sy * sy)) ** 0.5
+        # Cancellation in the variance terms can produce a slightly-negative
+        # radicand when both sums are very nearly aligned (float roundoff).
+        # Clamp to 0; if the variance is genuinely zero, correlation is undefined.
+        var_x = max(0.0, n_e * sxx - sx * sx)
+        var_y = max(0.0, n_e * syy - sy * sy)
+        den = (var_x * var_y) ** 0.5
         return num / den if den > 0 else float("nan")
 
     pearson_logits = _pearson(sx_l, sy_l, sxx_l, syy_l, sxy_l, n_elem)
@@ -862,6 +867,10 @@ def main():
                         help="Newton-CG only: convergence tol on grad_norm")
     parser.add_argument("--max-iter", type=int, default=3000,
                         help="L-BFGS only: max_iter passed to torch.optim.LBFGS")
+    parser.add_argument("--lbfgs-tolerance-grad", type=float, default=1e-7,
+                        help="L-BFGS only: tolerance_grad passed to torch.optim.LBFGS. "
+                             "Default 1e-7 is the PyTorch default; tighten for very "
+                             "small lambda (e.g. 1e-12 with --use-float64).")
     parser.add_argument("--num-adam-steps", type=int, default=3000,
                         help="Adam only: number of full-batch steps")
     parser.add_argument("--adam-lr", type=float, default=1e-3,
@@ -1028,10 +1037,14 @@ def main():
 
     # 6. Fine-tune the untied output projection
     if args.optimizer == "lbfgs":
-        logger.info(f"L-BFGS fine-tune (lambda={args.lambda_l2}, max_iter={args.max_iter})...")
+        logger.info(
+            f"L-BFGS fine-tune (lambda={args.lambda_l2}, max_iter={args.max_iter}, "
+            f"tol_grad={args.lbfgs_tolerance_grad})..."
+        )
         ft_stats = l2_finetune_chunked(
             model.output_proj, f_train_dev, y_train_dev,
             lambda_l2=args.lambda_l2, max_iter=args.max_iter,
+            tolerance_grad=args.lbfgs_tolerance_grad,
             chunk_size=args.feature_chunk,
             distill_W_orig=distill_W_orig,
             distill_b_orig=distill_b_orig,
