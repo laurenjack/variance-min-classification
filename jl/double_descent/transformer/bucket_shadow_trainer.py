@@ -112,10 +112,20 @@ def compute_bucket_id_sequences(
         train_targets = np.asarray(tgt_encoded[1:], dtype=np.int64)
         oa, ob = int(o_offsets[s]), int(o_offsets[s + 1])
         oracle_targets = o_targets[oa:ob]
+        if s < 3:
+            logger.info(
+                f"  align[s={s}]: train_len={len(train_targets)} oracle_len={len(oracle_targets)} "
+                f"train_head={train_targets[:5].tolist()} oracle_head={oracle_targets[:5].tolist()}"
+            )
         if len(train_targets) != len(oracle_targets) or not np.array_equal(
             train_targets, oracle_targets
         ):
             n_mismatch += 1
+            if n_mismatch <= 3:
+                logger.warning(
+                    f"  MISMATCH at s={s}: lens train={len(train_targets)} oracle={len(oracle_targets)} "
+                    f"train_head={train_targets[:5].tolist()} oracle_head={oracle_targets[:5].tolist()}"
+                )
             # Mark whole sentence as no-bucket so it never enters L_b sums.
             bucket_id_sequences.append([BUCKET_PAD] * len(train_targets))
             continue
