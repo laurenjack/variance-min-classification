@@ -1,26 +1,29 @@
-"""Single-model trainer that, in addition to the main AdamW update,
-maintains 10 zero-init "shadow" parameter sets — one per oracle-entropy
-bucket of the target tokens.
+"""Single-model trainer that decomposes the AdamW trajectory by oracle
+entropy bucket of the target tokens.
 
-At each step we run one forward pass, then 10 backward passes — each
-computing the gradient of the bucket-restricted scaled-mean loss
+We replace torch.optim.AdamW with a manual implementation so we can keep
+**per-bucket** first moments while sharing the second moment.  The math:
 
-    L_b = (1 / N_active) * sum_{t in bucket b} per_token_loss_t
+    g_t = sum_b g_t^b      (the per-bucket gradients we already get
+                             from 10 backward passes per step)
+    m_t   = beta1 * m_{t-1}   + (1 - beta1) * g_t
+    m_t^b = beta1 * m_{t-1}^b + (1 - beta1) * g_t^b
+            => m_t = sum_b m_t^b   (linear in g)
+    v_t   = beta2 * v_{t-1} + (1 - beta2) * g_t^2
+            (NOT decomposable per bucket; shared)
+    Delta W_t = -lr * m_hat_t / (sqrt(v_hat_t) + eps)
+              = sum_b [ -lr * m_hat_t^b / (sqrt(v_hat_t) + eps) ]
+              = sum_b Delta W_t^b
+    shadow_b += Delta W_t^b
 
-The shadow weights are updated by vanilla SGD with the same lr schedule
-as the main optimizer:
+So sum_b shadow_b == sum_t Delta W_t exactly — the per-bucket shadows
+additively decompose the actual W trajectory under AdamW.  Weight decay
+(W -= lr * wd * W) is W's self-shrinkage and is NOT attributed to any
+bucket; it's the same background force regardless of which bucket
+contributed gradients.
 
-    shadow_b -= lr * grad(L_b)        # per parameter, in-place
-
-so that
-
-    sum_b shadow_b  ==  -lr * sum_step grad(L_actual)  step-by-step
-                     ==  the cumulative SGD update if we had used SGD
-                          instead of AdamW.
-
-The main W still trains with AdamW (un-changed dynamics). After
-training, ||shadow_b||_F (global L2 over all parameters, flattened) is
-bucket b's accumulated push to the parameters.
+After training, ||shadow_b||_2 (global L2 over all params) is bucket b's
+cumulative push to W via the AdamW update path.
 """
 
 import json
@@ -321,30 +324,35 @@ def train_single_model_bucket_shadow(
     ).to(device)
     process_logger.info(f"Model parameters: {count_parameters(model):,}")
 
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=config.learning_rate,
-        betas=(0.9, 0.98),
-        eps=1e-9,
-    )
+    # Manual AdamW so we can keep per-bucket first moments.  Hyperparameters
+    # match the canonical trainer: betas=(0.9, 0.98), eps=1e-9, wd=0.01.
+    BETA1, BETA2 = 0.9, 0.98
+    ADAM_EPS = 1e-9
+    WEIGHT_DECAY = 0.01
 
-    def lr_lambda(step: int) -> float:
+    def lr_at(step: int) -> float:
         if step < config.warmup_steps:
-            return step / config.warmup_steps
+            return config.learning_rate * step / config.warmup_steps
         progress = (step - config.warmup_steps) / max(
             1, config.max_steps - config.warmup_steps
         )
-        return 0.5 * (1 + math.cos(math.pi * progress))
+        return config.learning_rate * 0.5 * (1 + math.cos(math.pi * progress))
 
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     criterion = nn.CrossEntropyLoss(
         ignore_index=vocab.pad_idx,
         label_smoothing=config.label_smoothing or 0.0,
     )
 
+    # Per-bucket first moments + shadows (10x model size each).  Shared v.
+    params = list(model.parameters())
+    adam_m_per_bucket = [
+        [torch.zeros_like(p, device=device) for p in params] for _ in range(n_bins)
+    ]
+    adam_v = [torch.zeros_like(p, device=device) for p in params]
     shadows = init_shadows(model, n_bins, device)
     process_logger.info(
-        f"Allocated {n_bins} shadow parameter sets ({n_bins}x model size)."
+        f"Allocated {n_bins} per-bucket m + {n_bins} shadow tensors "
+        f"+ shared v ({2 * n_bins + 1}x model size)."
     )
 
     train_sampler = MaxTokensBatchSampler(
@@ -398,17 +406,22 @@ def train_single_model_bucket_shadow(
             n_active = mask_active.sum().clamp_min(1).float()
             bids_flat = bids.reshape(-1)
 
-            current_lr = scheduler.get_last_lr()[0]
+            current_lr = lr_at(step)
 
-            params = list(model.parameters())
-            optimizer.zero_grad(set_to_none=True)
-
-            # 10 backwards: per-bucket grad of L_b = sum_{t in b} loss_t / N_active
+            # 10 backwards.  In the same loop:
+            #   (1) update per-bucket m_b in place: m_b *= beta1; m_b += (1-beta1)*g_b
+            #   (2) accumulate total_grad for the shared v update
+            total_grad = [None] * len(params)
+            buckets_seen = [False] * n_bins
             for b in range(n_bins):
                 mask_b = (bids_flat == b)
-                # mask_b already excludes BUCKET_PAD; redundant-but-safe AND with mask_active.
                 if not torch.any(mask_b):
+                    # m_b decays even when bucket b has no tokens this step
+                    with torch.no_grad():
+                        for p_idx in range(len(params)):
+                            adam_m_per_bucket[b][p_idx].mul_(BETA1)
                     continue
+                buckets_seen[b] = True
                 L_b = (per_token_loss * mask_b.float()).sum() / n_active
                 grads_b = torch.autograd.grad(
                     L_b, params,
@@ -416,20 +429,49 @@ def train_single_model_bucket_shadow(
                     allow_unused=True,
                 )
                 with torch.no_grad():
-                    for p_idx, (p, g) in enumerate(zip(params, grads_b)):
+                    for p_idx, g in enumerate(grads_b):
                         if g is None:
+                            adam_m_per_bucket[b][p_idx].mul_(BETA1)
                             continue
-                        # vanilla-SGD shadow update
-                        shadows[b][p_idx].add_(g, alpha=-current_lr)
-                        # accumulate full gradient for the actual AdamW step
-                        if p.grad is None:
-                            p.grad = g.detach().clone()
+                        # m_b ← beta1 * m_b + (1-beta1) * g_b
+                        adam_m_per_bucket[b][p_idx].mul_(BETA1).add_(g, alpha=(1.0 - BETA1))
+                        if total_grad[p_idx] is None:
+                            total_grad[p_idx] = g.detach().clone()
                         else:
-                            p.grad.add_(g)
+                            total_grad[p_idx].add_(g)
+                del grads_b  # free per-bucket grads before next backward
 
-            optimizer.step()
-            scheduler.step()
             step += 1
+            bias_correction1 = 1.0 - BETA1 ** step
+            bias_correction2 = 1.0 - BETA2 ** step
+
+            # Shared v + per-bucket update + W step.  Order matches
+            # torch.optim.AdamW: weight decay FIRST (decoupled), then m/v update.
+            with torch.no_grad():
+                for p_idx, p in enumerate(params):
+                    # Weight decay (W -= lr * wd * W), NOT attributed to any bucket.
+                    p.mul_(1.0 - current_lr * WEIGHT_DECAY)
+
+                    g_total = total_grad[p_idx]
+                    if g_total is None:
+                        # No bucket contributed a gradient to this param this step.
+                        # v decays.  m_b's already decayed above.  No m/v W update.
+                        adam_v[p_idx].mul_(BETA2)
+                        continue
+                    # v ← beta2 * v + (1-beta2) * g_total^2
+                    adam_v[p_idx].mul_(BETA2).addcmul_(g_total, g_total, value=(1.0 - BETA2))
+                    # denom = sqrt(v_hat) + eps
+                    denom = (adam_v[p_idx] / bias_correction2).sqrt_().add_(ADAM_EPS)
+                    total_update = torch.zeros_like(p)
+                    for b in range(n_bins):
+                        # Per-bucket update: -lr * m_hat_b / denom
+                        m_hat_b = adam_m_per_bucket[b][p_idx] / bias_correction1
+                        update_b = -current_lr * m_hat_b / denom
+                        shadows[b][p_idx].add_(update_b)
+                        total_update.add_(update_b)
+                    p.add_(total_update)
+                    del denom, total_update
+            del total_grad
 
             if step % config.log_interval == 0:
                 # batch-level training accuracy
@@ -508,7 +550,7 @@ def train_single_model_bucket_shadow(
         "test_acc": test_acc,
         "train_bleu": train_bleu,
         "test_bleu": test_bleu,
-        "lr": scheduler.get_last_lr()[0],
+        "lr": lr_at(step),
     }
     log_metrics(output_path, d_model, output_suffix, final_metrics)
 
