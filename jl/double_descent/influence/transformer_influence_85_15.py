@@ -48,8 +48,28 @@ import torch.nn.functional as F
 
 from jl.double_descent.influence.transformer_influence_share_buckets import (
     align_oracle,
-    parse_run,
 )
+
+
+def parse_run_with_test(s: str):
+    """Accept either:
+      LABEL=PATH
+      LABEL=PATH:ORIG_MODEL_PATH
+      LABEL=PATH:ORIG_MODEL_PATH:TEST_FEATURES_PATH
+
+    Returns: (label, source_dir, orig_model_path_or_None, test_features_path_or_None)
+    """
+    import argparse as _argparse
+    if "=" not in s:
+        raise _argparse.ArgumentTypeError(
+            f"--run needs LABEL=PATH[:ORIG_MODEL[:TEST_FEATURES_PATH]], got {s!r}"
+        )
+    label, rest = s.split("=", 1)
+    parts = rest.split(":")
+    source_dir = Path(parts[0])
+    orig = Path(parts[1]) if len(parts) > 1 else None
+    test_feat = Path(parts[2]) if len(parts) > 2 else None
+    return label, source_dir, orig, test_feat
 
 logger = logging.getLogger(__name__)
 
@@ -76,14 +96,21 @@ def _recover_W_orig(orig_model_path: Path, vocab_size: int, d_model: int,
 
 
 def load_assets(source_dir: Path, device: torch.device, orig_model_path: Path = None,
-                pad_idx: int = 0):
+                pad_idx: int = 0, test_features_path: Path = None):
     """Load features_train, features_test, output_proj.  Returns dict with
     raw tensors plus both label and distill (if orig provided) train
-    factors."""
+    factors.
+
+    If test_features_path is set, that file is used INSTEAD of
+    source_dir/features_test.pt (lets you swap in an in-distribution
+    held-out set, e.g. variance split 1).
+    """
     train_blob = torch.load(source_dir / "features_train.pt", map_location="cpu",
                             weights_only=False)
-    test_blob = torch.load(source_dir / "features_test.pt", map_location="cpu",
-                           weights_only=False)
+    test_path = test_features_path if test_features_path is not None \
+        else source_dir / "features_test.pt"
+    test_blob = torch.load(test_path, map_location="cpu", weights_only=False)
+    logger.info(f"  test features loaded from {test_path}")
     proj_state = torch.load(source_dir / "untied_output_proj.pt", map_location="cpu",
                             weights_only=True)
 
@@ -181,9 +208,12 @@ def share_top_vs_baseline(
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--run", action="append", type=parse_run, required=True,
-                        help="LABEL=PATH or LABEL=PATH:ORIG_MODEL_PATH "
-                             "(ORIG_MODEL_PATH required for distill factor).")
+    parser.add_argument("--run", action="append", type=parse_run_with_test, required=True,
+                        help="LABEL=PATH | LABEL=PATH:ORIG_MODEL_PATH | "
+                             "LABEL=PATH:ORIG_MODEL_PATH:TEST_FEATURES_PATH "
+                             "(orig path required for distill factor; test path "
+                             "overrides source_dir/features_test.pt with a custom file "
+                             "e.g. an in-distribution held-out split).")
     parser.add_argument("--train-oracle-path", required=True,
                         help="train_split0_log_probs.pt - per-token log p_oracle for TRAIN")
     parser.add_argument("--test-oracle-path", required=True,
@@ -221,19 +251,20 @@ def main():
         f"{int((1-args.top_frac)*100)}th-percentile entropy = {cutoff:.4f} nats"
     )
 
-    # Test oracle: reference_logits.pt has full distribution log_probs [N, V]
-    # plus target_ids + sentence_offsets.  For consistency with train oracle
-    # (which uses surprise = -log p_oracle(y_target)), gather log p(y) from the
-    # full distribution.  Then expose as `log_probs` (flat) so align_oracle
-    # can be reused for sentence alignment.
+    # Test oracle: either flat [N] log_probs (variance-split oracle) or
+    # 2D [N, V] log_probs (reference_logits.pt has the full distribution).
+    # Normalize to flat per-token log p_oracle(y_target) for align_oracle.
     test_oracle_raw = torch.load(args.test_oracle_path, map_location="cpu",
                                  weights_only=False)
-    if test_oracle_raw["log_probs"].dim() == 2:
-        log_p_y = test_oracle_raw["log_probs"].float().gather(
+    test_lp = test_oracle_raw["log_probs"].float()
+    if test_lp.dim() == 2:
+        log_p_y = test_lp.gather(
             1, test_oracle_raw["target_ids"].long().unsqueeze(1),
         ).squeeze(1)
+        logger.info("Test oracle: 2D log_probs [N, V] -> gathered log p(y).")
     else:
-        log_p_y = test_oracle_raw["log_probs"].float()
+        log_p_y = test_lp
+        logger.info("Test oracle: flat [N] log_probs (per-target).")
     test_oracle = {
         "log_probs": log_p_y,
         "target_ids": test_oracle_raw["target_ids"],
@@ -243,15 +274,18 @@ def main():
                 f"(median surprise = {(-log_p_y).median().item():.3f} nats)")
 
     all_results = []
-    for triple in args.run:
-        if len(triple) == 2:
-            label, source_dir = triple
-            orig_model_path = None
-        else:
-            label, source_dir, orig_model_path = triple
-        logger.info(f"\n=== {label}: {source_dir} (orig={orig_model_path}) ===")
+    for run_tuple in args.run:
+        label, source_dir, orig_model_path, test_features_path = run_tuple
+        logger.info(
+            f"\n=== {label}: {source_dir} (orig={orig_model_path}, "
+            f"test_features={test_features_path}) ==="
+        )
 
-        a = load_assets(source_dir, device, orig_model_path=orig_model_path)
+        a = load_assets(
+            source_dir, device,
+            orig_model_path=orig_model_path,
+            test_features_path=test_features_path,
+        )
 
         # --- Align TRAIN entropy with feature ordering ---
         train_aligned_log_p, n_mis_train = align_oracle(
@@ -306,6 +340,7 @@ def main():
             "label": label,
             "source_dir": str(source_dir),
             "orig_model_path": str(orig_model_path) if orig_model_path else None,
+            "test_features_path": str(test_features_path) if test_features_path else None,
             "top_frac": args.top_frac,
             "entropy_cutoff": cutoff,
             "n_train_aligned": n_train_valid,
