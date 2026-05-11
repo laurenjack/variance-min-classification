@@ -340,21 +340,18 @@ def main():
     json_path.write_text(json.dumps(summary, indent=2))
     logger.info(f"\nWrote {json_path}")
 
-    # Plot share vs d_model (parse from label "d=XXX")
+    # Plot share vs d_model (parse digits from label, e.g. "d112" -> 112)
     plt.rcParams.update({"font.family": "serif", "font.size": 11})
     fig, ax = plt.subplots(1, 1, figsize=(8, 5), dpi=150)
-    # Parse d_model from label
+    import re
     ds = []
     s_label = []
     s_distill = []
     for r in all_results:
-        lbl = r["label"]
-        if not lbl.startswith("d="):
+        m = re.search(r"\d+", r["label"])
+        if not m:
             continue
-        try:
-            d = int(lbl[2:])
-        except ValueError:
-            continue
+        d = int(m.group(0))
         ds.append(d)
         s_label.append(r["share_top_label"])
         s_distill.append(r.get("share_top_distill"))
