@@ -221,20 +221,26 @@ def main():
         f"{int((1-args.top_frac)*100)}th-percentile entropy = {cutoff:.4f} nats"
     )
 
-    # Test oracle: reference_logits.pt has entropy + target_ids + sentence_offsets
-    test_oracle = torch.load(args.test_oracle_path, map_location="cpu",
-                             weights_only=False)
-    if "entropy" in test_oracle:
-        test_o_entropy = test_oracle["entropy"].float()
+    # Test oracle: reference_logits.pt has full distribution log_probs [N, V]
+    # plus target_ids + sentence_offsets.  For consistency with train oracle
+    # (which uses surprise = -log p_oracle(y_target)), gather log p(y) from the
+    # full distribution.  Then expose as `log_probs` (flat) so align_oracle
+    # can be reused for sentence alignment.
+    test_oracle_raw = torch.load(args.test_oracle_path, map_location="cpu",
+                                 weights_only=False)
+    if test_oracle_raw["log_probs"].dim() == 2:
+        log_p_y = test_oracle_raw["log_probs"].float().gather(
+            1, test_oracle_raw["target_ids"].long().unsqueeze(1),
+        ).squeeze(1)
     else:
-        # Fall back to recomputing from log_probs if present
-        lp = test_oracle["log_probs"].float()
-        if lp.dim() == 2:
-            p = lp.exp()
-            test_o_entropy = -(p * lp).sum(dim=-1)
-        else:
-            raise ValueError("test_oracle has no 'entropy' field nor full distribution log_probs")
-    logger.info(f"Test oracle: {test_o_entropy.numel():,} tokens")
+        log_p_y = test_oracle_raw["log_probs"].float()
+    test_oracle = {
+        "log_probs": log_p_y,
+        "target_ids": test_oracle_raw["target_ids"],
+        "sentence_offsets": test_oracle_raw["sentence_offsets"],
+    }
+    logger.info(f"Test oracle: {log_p_y.numel():,} tokens "
+                f"(median surprise = {(-log_p_y).median().item():.3f} nats)")
 
     all_results = []
     for triple in args.run:
