@@ -113,12 +113,13 @@ def save_influence_jsonl(
     original_labels: list,
     output_dir: Path,
     k: int,
+    file_suffix: str = "",
 ) -> Path:
     """Write per-training-point influence data to JSONL.
 
     Each line: {index, influence, mislabeled, original_label, noisy_label}
     """
-    path = output_dir / f"influence_k{k}.jsonl"
+    path = output_dir / f"influence_k{k}{file_suffix}.jsonl"
     influence_cpu = influence.cpu().numpy()
 
     with open(path, "w") as f:

@@ -60,6 +60,7 @@ def l2_finetune(
     lambda_l2: float = 1e-4,
     max_iter: int = 200,
     tolerance_grad: float = 1e-7,
+    use_float64: bool = False,
 ) -> float:
     """Fine-tune model.linear via L-BFGS on pre-extracted features.
 
@@ -74,6 +75,10 @@ def l2_finetune(
         lambda_l2: L2 regularization strength.
         max_iter: Maximum L-BFGS iterations.
         tolerance_grad: Convergence threshold on gradient norm.
+        use_float64: Cast features, W, b to float64 inside L-BFGS.  Needed
+            when grad_norm must drop below FP32's noise floor (~ε·√n in
+            relative terms), which happens at small lambda since the
+            reconstruction error bound is grad_norm/(2λ).
 
     Returns:
         Final gradient norm (float).
@@ -81,8 +86,10 @@ def l2_finetune(
     n = features.size(0)
     num_classes = model.linear.out_features
 
-    W = model.linear.weight.detach().clone().requires_grad_(True)
-    b = model.linear.bias.detach().clone().requires_grad_(True)
+    work_dtype = torch.float64 if use_float64 else features.dtype
+    features_w = features.to(work_dtype) if use_float64 else features
+    W = model.linear.weight.detach().clone().to(work_dtype).requires_grad_(True)
+    b = model.linear.bias.detach().clone().to(work_dtype).requires_grad_(True)
 
     optimizer = torch.optim.LBFGS(
         [W, b],
@@ -96,7 +103,7 @@ def l2_finetune(
 
     def closure():
         optimizer.zero_grad()
-        logits = features @ W.t() + b
+        logits = features_w @ W.t() + b
         ce_loss = F.cross_entropy(logits, labels)
         l2_term = lambda_l2 * (W.pow(2).sum() + b.pow(2).sum())
         loss = ce_loss + l2_term
@@ -108,12 +115,14 @@ def l2_finetune(
 
     grad_norm = torch.cat([W.grad.flatten(), b.grad.flatten()]).norm().item()
     logger.info(
-        f"L-BFGS converged in {step_count[0]} closure evals: "
+        f"L-BFGS converged in {step_count[0]} closure evals "
+        f"(dtype={work_dtype}, lambda={lambda_l2}): "
         f"loss={final_loss.item():.6f}, grad_norm={grad_norm:.2e}"
     )
 
     with torch.no_grad():
-        model.linear.weight.copy_(W)
-        model.linear.bias.copy_(b)
+        # cast back to the model's parameter dtype before copying
+        model.linear.weight.copy_(W.to(model.linear.weight.dtype))
+        model.linear.bias.copy_(b.to(model.linear.bias.dtype))
 
     return grad_norm

@@ -61,6 +61,8 @@ def process_k(
     lambda_l2: float,
     output_dir: Path,
     device: torch.device,
+    use_float64: bool = False,
+    file_suffix: str = "",
 ) -> dict:
     """Run the full influence pipeline for one k value.
 
@@ -84,19 +86,42 @@ def process_k(
     )
 
     # L2 fine-tune
-    logger.info("Fine-tuning final layer with L-BFGS...")
+    logger.info(f"Fine-tuning final layer with L-BFGS (dtype={'float64' if use_float64 else 'float32'})...")
+    # Snapshot original W,b so we can compute rotation/scale diagnostics
+    W_orig = model.linear.weight.detach().clone().float()
+    b_orig = model.linear.bias.detach().clone().float()
     grad_norm = l2_finetune(
-        model, phi_train, train_labels, lambda_l2=lambda_l2
+        model, phi_train, train_labels, lambda_l2=lambda_l2,
+        use_float64=use_float64,
     )
+    W_ft = model.linear.weight.detach().float()
+    b_ft = model.linear.bias.detach().float()
 
     # Validate decomposition identity
     val_record = validate_decomposition(
         phi_train, train_labels, model.linear, lambda_l2
     )
     val_record["grad_norm"] = grad_norm
+    val_record["lambda_l2"] = lambda_l2
+    val_record["use_float64"] = use_float64
+    # Rotation / scale diagnostics
+    cos_per_class = torch.nn.functional.cosine_similarity(
+        W_orig, W_ft, dim=1,
+    ).cpu().tolist()
+    frob_cos = float(
+        (W_orig * W_ft).sum() / (W_orig.norm() * W_ft.norm() + 1e-30)
+    )
+    norm_ratio_per_class = (
+        W_ft.norm(dim=1) / W_orig.norm(dim=1).clamp_min(1e-30)
+    ).cpu().tolist()
+    val_record["cos_per_class"] = cos_per_class
+    val_record["mean_per_class_cos"] = float(sum(cos_per_class) / len(cos_per_class))
+    val_record["frob_cos"] = frob_cos
+    val_record["norm_ratio_per_class"] = norm_ratio_per_class
+    val_record["mean_norm_ratio"] = float(sum(norm_ratio_per_class) / len(norm_ratio_per_class))
 
     # Save validation
-    val_path = output_dir / f"validation_k{k}.json"
+    val_path = output_dir / f"validation_k{k}{file_suffix}.json"
     with open(val_path, "w") as f:
         json.dump(val_record, f, indent=2)
 
@@ -116,10 +141,11 @@ def process_k(
     save_influence_jsonl(
         influence, mislabel_mask, train_indices,
         noisy_labels, original_labels, output_dir, k,
+        file_suffix=file_suffix,
     )
 
     # Save fine-tuned linear layer
-    ft_path = output_dir / f"finetune_k{k}.pt"
+    ft_path = output_dir / f"finetune_k{k}{file_suffix}.pt"
     torch.save(model.linear.state_dict(), ft_path)
 
     # Summary stats
@@ -162,6 +188,17 @@ def main():
     parser.add_argument(
         "--device", default=None,
         help="Device (default: cuda if available, else cpu)",
+    )
+    parser.add_argument(
+        "--use-float64", action="store_true",
+        help="Cast features/W to float64 inside L-BFGS. Needed at small lambda "
+             "where the FP32 noise floor exceeds the reconstruction tolerance.",
+    )
+    parser.add_argument(
+        "--file-suffix", default=None,
+        help="Suffix appended to finetune_k*.pt / validation_k*.json / "
+             "influence_k*.jsonl filenames to disambiguate lambda sweeps. "
+             "Default: auto = '_lam{lambda:g}_fp{32|64}'.",
     )
     args = parser.parse_args()
 
@@ -231,6 +268,18 @@ def main():
     finetuned_metrics = {}
     summary_records = []
 
+    if args.file_suffix is not None:
+        file_suffix = args.file_suffix
+    else:
+        # Auto: _lam1e-05_fp64 etc.  Only suffix when lambda or fp64 differs
+        # from the (old) default so we don't break the original 04-11-1602 run.
+        if args.lambda_l2 != 1e-4 or args.use_float64:
+            file_suffix = f"_lam{args.lambda_l2:g}_fp{64 if args.use_float64 else 32}"
+        else:
+            file_suffix = ""
+    if file_suffix:
+        logger.info(f"Output file suffix: '{file_suffix}'")
+
     for k, model_path in sorted(models.items()):
         result = process_k(
             k=k,
@@ -244,6 +293,8 @@ def main():
             lambda_l2=args.lambda_l2,
             output_dir=output_dir,
             device=device,
+            use_float64=args.use_float64,
+            file_suffix=file_suffix,
         )
         finetuned_metrics[k] = result.pop("metrics")
         summary_records.append({"k": k, **result})
