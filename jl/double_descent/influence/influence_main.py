@@ -63,6 +63,7 @@ def process_k(
     device: torch.device,
     use_float64: bool = False,
     file_suffix: str = "",
+    distill: bool = False,
 ) -> dict:
     """Run the full influence pipeline for one k value.
 
@@ -86,24 +87,34 @@ def process_k(
     )
 
     # L2 fine-tune
-    logger.info(f"Fine-tuning final layer with L-BFGS (dtype={'float64' if use_float64 else 'float32'})...")
+    loss_mode = "distill" if distill else "label-CE"
+    logger.info(
+        f"Fine-tuning final layer with L-BFGS "
+        f"(dtype={'float64' if use_float64 else 'float32'}, loss={loss_mode})..."
+    )
     # Snapshot original W,b so we can compute rotation/scale diagnostics
+    # AND use as distillation soft-target if distill=True
     W_orig = model.linear.weight.detach().clone().float()
     b_orig = model.linear.bias.detach().clone().float()
     grad_norm = l2_finetune(
         model, phi_train, train_labels, lambda_l2=lambda_l2,
         use_float64=use_float64,
+        distill_W_orig=W_orig if distill else None,
+        distill_b_orig=b_orig if distill else None,
     )
     W_ft = model.linear.weight.detach().float()
     b_ft = model.linear.bias.detach().float()
 
     # Validate decomposition identity
     val_record = validate_decomposition(
-        phi_train, train_labels, model.linear, lambda_l2
+        phi_train, train_labels, model.linear, lambda_l2,
+        distill_W_orig=W_orig if distill else None,
+        distill_b_orig=b_orig if distill else None,
     )
     val_record["grad_norm"] = grad_norm
     val_record["lambda_l2"] = lambda_l2
     val_record["use_float64"] = use_float64
+    val_record["loss_mode"] = loss_mode
     # Rotation / scale diagnostics
     cos_per_class = torch.nn.functional.cosine_similarity(
         W_orig, W_ft, dim=1,
@@ -198,7 +209,14 @@ def main():
         "--file-suffix", default=None,
         help="Suffix appended to finetune_k*.pt / validation_k*.json / "
              "influence_k*.jsonl filenames to disambiguate lambda sweeps. "
-             "Default: auto = '_lam{lambda:g}_fp{32|64}'.",
+             "Default: auto = '_lam{lambda:g}_fp{32|64}[_distill]'.",
+    )
+    parser.add_argument(
+        "--distill", action="store_true",
+        help="Use Yeh-Kim 3.2 distillation loss: KL(softmax(W_orig*f) || "
+             "softmax(W*f)) + lambda * ||W||^2. Anchors W_FT close to the "
+             "original trained linear; influence decomposition residual is "
+             "computed accordingly.",
     )
     args = parser.parse_args()
 
@@ -271,10 +289,12 @@ def main():
     if args.file_suffix is not None:
         file_suffix = args.file_suffix
     else:
-        # Auto: _lam1e-05_fp64 etc.  Only suffix when lambda or fp64 differs
-        # from the (old) default so we don't break the original 04-11-1602 run.
-        if args.lambda_l2 != 1e-4 or args.use_float64:
+        # Auto: _lam1e-05_fp64[_distill] etc.  Only suffix when lambda differs
+        # from the (old) default, fp64 is on, or distill is used.
+        if args.lambda_l2 != 1e-4 or args.use_float64 or args.distill:
             file_suffix = f"_lam{args.lambda_l2:g}_fp{64 if args.use_float64 else 32}"
+            if args.distill:
+                file_suffix += "_distill"
         else:
             file_suffix = ""
     if file_suffix:
@@ -295,6 +315,7 @@ def main():
             device=device,
             use_float64=args.use_float64,
             file_suffix=file_suffix,
+            distill=args.distill,
         )
         finetuned_metrics[k] = result.pop("metrics")
         summary_records.append({"k": k, **result})

@@ -61,35 +61,34 @@ def l2_finetune(
     max_iter: int = 200,
     tolerance_grad: float = 1e-7,
     use_float64: bool = False,
+    distill_W_orig: torch.Tensor = None,
+    distill_b_orig: torch.Tensor = None,
 ) -> float:
     """Fine-tune model.linear via L-BFGS on pre-extracted features.
 
-    Optimizes: (1/n) CE(Phi @ W.T + b, labels) + lambda * (||W||^2 + ||b||^2)
+    Default loss (label-CE; Yeh-Kim 3.1):
+        (1/n) CE(Phi @ W.T + b, labels) + lambda * (||W||^2 + ||b||^2)
+
+    If distill_W_orig / distill_b_orig are given (Yeh-Kim 3.2 model-matching):
+        (1/n) KL(softmax(Phi @ W_orig.T + b_orig) || softmax(Phi @ W.T + b))
+        + lambda * (||W||^2 + ||b||^2)
+    i.e. soft-target cross-entropy against the ORIGINAL model's distribution.
 
     Mutates model.linear in place.
-
-    Args:
-        model: Model whose .linear layer will be updated.
-        features: (N, d) pre-extracted penultimate features.
-        labels: (N,) integer labels.
-        lambda_l2: L2 regularization strength.
-        max_iter: Maximum L-BFGS iterations.
-        tolerance_grad: Convergence threshold on gradient norm.
-        use_float64: Cast features, W, b to float64 inside L-BFGS.  Needed
-            when grad_norm must drop below FP32's noise floor (~ε·√n in
-            relative terms), which happens at small lambda since the
-            reconstruction error bound is grad_norm/(2λ).
-
-    Returns:
-        Final gradient norm (float).
     """
     n = features.size(0)
     num_classes = model.linear.out_features
+    distill = distill_W_orig is not None
 
     work_dtype = torch.float64 if use_float64 else features.dtype
     features_w = features.to(work_dtype) if use_float64 else features
     W = model.linear.weight.detach().clone().to(work_dtype).requires_grad_(True)
     b = model.linear.bias.detach().clone().to(work_dtype).requires_grad_(True)
+    if distill:
+        W_orig_w = distill_W_orig.to(features_w.device).to(work_dtype)
+        b_orig_w = distill_b_orig.to(features_w.device).to(work_dtype)
+        with torch.no_grad():
+            soft_target = F.softmax(features_w @ W_orig_w.t() + b_orig_w, dim=1)
 
     optimizer = torch.optim.LBFGS(
         [W, b],
@@ -104,7 +103,11 @@ def l2_finetune(
     def closure():
         optimizer.zero_grad()
         logits = features_w @ W.t() + b
-        ce_loss = F.cross_entropy(logits, labels)
+        if distill:
+            log_p = F.log_softmax(logits, dim=1)
+            ce_loss = -(soft_target * log_p).sum(dim=1).mean()
+        else:
+            ce_loss = F.cross_entropy(logits, labels)
         l2_term = lambda_l2 * (W.pow(2).sum() + b.pow(2).sum())
         loss = ce_loss + l2_term
         loss.backward()
@@ -116,7 +119,8 @@ def l2_finetune(
     grad_norm = torch.cat([W.grad.flatten(), b.grad.flatten()]).norm().item()
     logger.info(
         f"L-BFGS converged in {step_count[0]} closure evals "
-        f"(dtype={work_dtype}, lambda={lambda_l2}): "
+        f"(dtype={work_dtype}, lambda={lambda_l2}, "
+        f"loss={'distill' if distill else 'label-CE'}): "
         f"loss={final_loss.item():.6f}, grad_norm={grad_norm:.2e}"
     )
 

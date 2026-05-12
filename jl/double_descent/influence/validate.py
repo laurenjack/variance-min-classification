@@ -24,29 +24,34 @@ def validate_decomposition(
     labels: torch.Tensor,
     linear: nn.Linear,
     lambda_l2: float,
+    distill_W_orig: torch.Tensor = None,
+    distill_b_orig: torch.Tensor = None,
 ) -> Dict[str, float]:
     """Check that the analytic decomposition reproduces the fine-tuned W.
 
-    At stationarity: W = -(1/2*lambda*n) * R^T @ Phi
-    where R_ij = softmax(f(x_i))_j - 1{j == y_i}
+    At stationarity (label-CE+L2):
+        W = -(1/(2*lambda*n)) * R^T @ Phi
+        R_ij = softmax(Wf)_j - 1{j == y_i}
 
-    Args:
-        features: (N, d) training features.
-        labels: (N,) integer labels.
-        linear: Fine-tuned linear layer.
-        lambda_l2: L2 regularization strength used in fine-tuning.
-
-    Returns:
-        Dict with kl_div, logit_mse, max_W_diff, max_b_diff.
+    At stationarity (distill+L2; pass distill_W_orig / distill_b_orig):
+        W = -(1/(2*lambda*n)) * R^T @ Phi
+        R_ij = softmax(Wf)_j - softmax(W_orig * f)_j
     """
     n = features.size(0)
     num_classes = linear.out_features
+    distill = distill_W_orig is not None
 
     with torch.no_grad():
         logits_actual = features @ linear.weight.t() + linear.bias
         probs_actual = F.softmax(logits_actual, dim=1)
-        one_hot = F.one_hot(labels, num_classes=num_classes).float()
-        residuals = probs_actual - one_hot  # (N, C)
+        if distill:
+            soft_target = F.softmax(
+                features @ distill_W_orig.t() + distill_b_orig, dim=1
+            )
+            residuals = probs_actual - soft_target
+        else:
+            one_hot = F.one_hot(labels, num_classes=num_classes).float()
+            residuals = probs_actual - one_hot  # (N, C)
 
         scale = -1.0 / (2.0 * lambda_l2 * n)
         W_reconstructed = scale * (residuals.t() @ features)  # (C, d)
