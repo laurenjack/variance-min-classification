@@ -312,10 +312,16 @@ def main():
         else model_dir / "evaluation.jsonl"
     )
     if ts_eval_path.exists():
-        plot_figure_x(
-            ts_eval_path, finetuned_metrics,
-            output_dir / "figure_x.png",
-        )
+        try:
+            plot_figure_x(
+                ts_eval_path, finetuned_metrics,
+                output_dir / "figure_x.png",
+            )
+        except KeyError as e:
+            logger.warning(
+                f"plot_figure_x skipped: {ts_eval_path} missing TS fields ({e}). "
+                "Run with --val-split if you want temperature-scaled comparison."
+            )
     else:
         logger.warning(
             f"No temperature_scaled_evaluation.jsonl found at {ts_eval_path}, "
