@@ -157,6 +157,17 @@ def train_single_model(
     os.makedirs(output_path, exist_ok=True)
     metrics_path = Path(output_path) / f"metrics_{model_label}.jsonl"
 
+    # Early-stop checkpoint setup.  Requires val tracking; fail-fast otherwise.
+    if val_loader is None:
+        raise RuntimeError(
+            "Early-stop checkpoint saving requires --val-split (val_loader is None)."
+        )
+    es_dir = Path(output_path) / "early_stop"
+    es_dir.mkdir(parents=True, exist_ok=True)
+    es_model_path = es_dir / f"model_{model_label}.pt"
+    best_val_loss = float("inf")
+    best_val_epoch = 0
+
     # Clear metrics file
     with open(metrics_path, 'w') as f:
         pass
@@ -222,6 +233,12 @@ def train_single_model(
         with open(metrics_path, 'a') as f:
             f.write(json.dumps(metrics) + "\n")
 
+        # Save early-stop checkpoint when val_loss improves
+        if val_loss is not None and val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_val_epoch = epoch + 1
+            torch.save(model.state_dict(), es_model_path)
+
         # Print progress
         if (epoch + 1) % config.log_interval == 0 or epoch == 0:
             val_str = (
@@ -247,4 +264,22 @@ def train_single_model(
     compute_final_metrics(
         model, test_loader, metrics_path, eval_output, model_label,
         model_params, device, val_loader=val_loader,
+        best_val_epoch=best_val_epoch, best_val_loss=best_val_loss,
     )
+
+    # Also evaluate the early-stop checkpoint (mirrors the transformer pattern).
+    print(
+        f"[GPU {gpu_id}] {model_label} evaluating early-stop checkpoint "
+        f"(best val_loss={best_val_loss:.4f} at epoch {best_val_epoch})"
+    )
+    es_model = model_factory().to(device)
+    es_model.load_state_dict(
+        torch.load(es_model_path, map_location=device, weights_only=True)
+    )
+    es_model.eval()
+    compute_final_metrics(
+        es_model, test_loader, metrics_path, es_dir, model_label,
+        model_params, device, val_loader=val_loader,
+        best_val_epoch=best_val_epoch, best_val_loss=best_val_loss,
+    )
+    del es_model

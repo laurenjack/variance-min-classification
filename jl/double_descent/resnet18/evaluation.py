@@ -161,6 +161,8 @@ def compute_final_metrics(
     model_params: Dict,
     device: torch.device,
     val_loader: "Optional[DataLoader]" = None,
+    best_val_epoch: "Optional[int]" = None,
+    best_val_loss: "Optional[float]" = None,
 ) -> Dict:
     """Compute final metrics for a trained model.
 
@@ -218,6 +220,11 @@ def compute_final_metrics(
         result['ts_loss'] = round(ts_metrics['ts_loss'], 6)
         result['ts_error'] = round(ts_metrics['ts_error'], 6)
         result['ts_ece'] = round(ts_metrics['ts_ece'], 6)
+
+    if best_val_epoch is not None:
+        result['best_val_epoch'] = int(best_val_epoch)
+    if best_val_loss is not None:
+        result['best_val_loss'] = round(float(best_val_loss), 6)
 
     # Append to evaluation.jsonl
     eval_file = output_path / 'evaluation.jsonl'

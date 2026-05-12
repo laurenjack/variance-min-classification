@@ -123,6 +123,14 @@ def parse_args():
         help="Train the 8 large-k models (72..128) instead of the default "
              "20-value sweep (2..64).",
     )
+    parser.add_argument(
+        "--k-values",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Explicit list of k values to train, overriding K_VALUES / "
+             "LARGE_K_VALUES.  Used to split a sweep across multiple pods.",
+    )
     return parser.parse_args()
 
 
@@ -206,7 +214,12 @@ def main():
         config.use_val_split = True
 
     # Determine k values and check GPUs
-    k_values = LARGE_K_VALUES if args.large_k else K_VALUES
+    if args.k_values is not None:
+        if args.large_k:
+            raise RuntimeError("--k-values and --large-k are mutually exclusive.")
+        k_values = list(args.k_values)
+    else:
+        k_values = LARGE_K_VALUES if args.large_k else K_VALUES
     num_gpus = torch.cuda.device_count()
     if num_gpus == 0:
         raise RuntimeError("No GPUs found. This experiment requires at least 1 GPU.")
