@@ -25,7 +25,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision import transforms
 
 from jl.double_descent.influence.decompose import build_mislabel_mask
@@ -36,6 +36,36 @@ from jl.double_descent.resnet18.resnet18_data import (
 from jl.double_descent.resnet18.resnet18k import make_resnet18k
 
 logger = logging.getLogger(__name__)
+
+
+class GPUTensorDataset(Dataset):
+    """Pre-tensorized dataset that lives entirely on the GPU.
+
+    Eliminates the CPU dataloader bottleneck by loading all (image, label)
+    pairs into a single GPU tensor once at startup. __getitem__ becomes a
+    cheap GPU index op rather than a PIL→tensor→cuda transfer.
+    """
+
+    def __init__(self, source: Dataset, device: torch.device, preload_batch: int = 1024):
+        loader = DataLoader(
+            source, batch_size=preload_batch, shuffle=False, num_workers=0
+        )
+        imgs, labels = [], []
+        for batch_imgs, batch_labels in loader:
+            imgs.append(batch_imgs)
+            labels.append(batch_labels)
+        self.images = torch.cat(imgs, dim=0).to(device)
+        self.labels = torch.cat(labels, dim=0).to(device)
+        logger.info(
+            f"GPUTensorDataset loaded: images {tuple(self.images.shape)} "
+            f"({self.images.dtype}), labels {tuple(self.labels.shape)} on {device}"
+        )
+
+    def __len__(self) -> int:
+        return self.images.shape[0]
+
+    def __getitem__(self, idx):
+        return self.images[idx], self.labels[idx]
 
 
 # ----------------------------- Kronfluence Task --------------------------- #
@@ -257,6 +287,10 @@ def main():
     parser.add_argument("--bf16", action="store_true",
                         help="Use bfloat16 AMP for factor + score phases "
                              "(eigendecomposition stays FP64)")
+    parser.add_argument("--gpu-cifar", action="store_true",
+                        help="Pre-load entire CIFAR-10 onto GPU as a tensor "
+                             "dataset to eliminate dataloader CPU bottleneck. "
+                             "Requires ~700 MB extra VRAM.")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -305,6 +339,13 @@ def main():
         f"Train: {len(train_subset)} samples, {n_mis} mislabeled "
         f"({100*n_mis/len(train_subset):.1f}%)"
     )
+
+    if args.gpu_cifar:
+        if device.type != "cuda":
+            raise RuntimeError("--gpu-cifar requires a CUDA device")
+        logger.info("Pre-tensorizing CIFAR-10 onto GPU...")
+        train_subset = GPUTensorDataset(train_subset, device)
+        test_dataset = GPUTensorDataset(test_dataset, device)
 
     # Discover models
     model_paths = {}
