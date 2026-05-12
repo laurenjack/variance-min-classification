@@ -132,8 +132,14 @@ def run_for_k(
     device: torch.device,
     factor_batch_size: int = 128,
     query_batch_size: int = 64,
+    bf16: bool = False,
 ) -> dict:
-    """Run the full Kronfluence pipeline for one (k, model checkpoint)."""
+    """Run the full Kronfluence pipeline for one (k, model checkpoint).
+
+    When bf16=True, FactorArguments / ScoreArguments use amp_dtype=bfloat16.
+    Eigendecomposition stays FP64 (kronfluence default) for numerical
+    stability.
+    """
     from kronfluence.analyzer import Analyzer, prepare_model
     from kronfluence.arguments import FactorArguments, ScoreArguments
 
@@ -155,10 +161,15 @@ def run_for_k(
         output_dir=str(output_dir / "kronfluence_internal"),
     )
 
+    amp_dtype = torch.bfloat16 if bf16 else None
+
     # Factor computation phase
     factors_name = f"ekfac_k{k}"
-    factor_args = FactorArguments(strategy="ekfac")
-    logger.info(f"  fitting EK-FAC factors (strategy=ekfac, batch={factor_batch_size})...")
+    factor_args = FactorArguments(strategy="ekfac", amp_dtype=amp_dtype)
+    logger.info(
+        f"  fitting EK-FAC factors (strategy=ekfac, batch={factor_batch_size}, "
+        f"amp_dtype={amp_dtype})..."
+    )
     analyzer.fit_all_factors(
         factors_name=factors_name,
         dataset=train_dataset,
@@ -169,7 +180,7 @@ def run_for_k(
 
     # Score computation phase
     scores_name = f"scores_k{k}"
-    score_args = ScoreArguments()
+    score_args = ScoreArguments(amp_dtype=amp_dtype)
     logger.info(f"  computing pairwise scores (query batch={query_batch_size})...")
     analyzer.compute_pairwise_scores(
         scores_name=scores_name,
@@ -243,6 +254,9 @@ def main():
                         help="Only run these k values (overrides --k)")
     parser.add_argument("--factor-batch-size", type=int, default=128)
     parser.add_argument("--query-batch-size", type=int, default=64)
+    parser.add_argument("--bf16", action="store_true",
+                        help="Use bfloat16 AMP for factor + score phases "
+                             "(eigendecomposition stays FP64)")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -322,6 +336,7 @@ def main():
                 mislabel_mask, output_dir, device,
                 factor_batch_size=args.factor_batch_size,
                 query_batch_size=args.query_batch_size,
+                bf16=args.bf16,
             )
             with open(records_path, "a") as f:
                 f.write(json.dumps(rec) + "\n")

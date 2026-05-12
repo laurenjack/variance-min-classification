@@ -27,6 +27,7 @@ gpu = [
     "transformers>=4.41",
     "sentencepiece>=0.2",
     "protobuf>=4.0",
+    "kronfluence>=1.0",
 ]
 # LLM reward model training - adds Flash Attention 3 stack on top of gpu
 llm = [
