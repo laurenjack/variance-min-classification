@@ -64,6 +64,7 @@ def process_k(
     use_float64: bool = False,
     file_suffix: str = "",
     distill: bool = False,
+    temperature: float = None,
 ) -> dict:
     """Run the full influence pipeline for one k value.
 
@@ -78,6 +79,19 @@ def process_k(
     )
     model.eval()
 
+    # Optional: pre-scale the linear layer by 1/T so that the distill target
+    # and the L-BFGS init both live in the TS-scaled space.  The features
+    # phi remain unscaled (TS rescales logits, not features), and the
+    # diagnostic comparisons (cos, norm_ratio) are then done in scaled
+    # space (cosine is scale-invariant; norm ratio uses W_orig/T as anchor).
+    if temperature is not None:
+        if not distill:
+            raise ValueError("temperature is only meaningful in distill mode")
+        with torch.no_grad():
+            model.linear.weight.div_(temperature)
+            model.linear.bias.div_(temperature)
+        logger.info(f"k={k}: scaled linear layer by 1/T={1/temperature:.4f}")
+
     # Extract features
     logger.info(f"Extracting features (dim={8*k})...")
     phi_train, train_labels = extract_features(model, train_loader, device)
@@ -88,6 +102,8 @@ def process_k(
 
     # L2 fine-tune
     loss_mode = "distill" if distill else "label-CE"
+    if temperature is not None:
+        loss_mode += f"_ts(T={temperature:.4f})"
     logger.info(
         f"Fine-tuning final layer with L-BFGS "
         f"(dtype={'float64' if use_float64 else 'float32'}, loss={loss_mode})..."
@@ -115,6 +131,8 @@ def process_k(
     val_record["lambda_l2"] = lambda_l2
     val_record["use_float64"] = use_float64
     val_record["loss_mode"] = loss_mode
+    if temperature is not None:
+        val_record["temperature"] = temperature
     # Rotation / scale diagnostics
     cos_per_class = torch.nn.functional.cosine_similarity(
         W_orig, W_ft, dim=1,
@@ -218,7 +236,26 @@ def main():
              "original trained linear; influence decomposition residual is "
              "computed accordingly.",
     )
+    parser.add_argument(
+        "--ts-distill", action="store_true",
+        help="Apply per-k temperature (from <model-dir>/evaluation.jsonl) "
+             "to the distill target AND the L-BFGS init: scales W_orig and "
+             "b_orig by 1/T before fine-tuning, so KL starts at 0 and the "
+             "distill target is the temperature-scaled prediction. Requires "
+             "--distill.",
+    )
+    parser.add_argument(
+        "--k", type=int, default=None,
+        help="If set, only process this single k value (smoke test mode).",
+    )
+    parser.add_argument(
+        "--ks", type=int, nargs="+", default=None,
+        help="If set, only process these k values (overrides --k).",
+    )
     args = parser.parse_args()
+
+    if args.ts_distill and not args.distill:
+        parser.error("--ts-distill requires --distill")
 
     logging.basicConfig(
         level=logging.INFO,
@@ -240,7 +277,13 @@ def main():
 
     # Discover models
     models = discover_models(str(model_dir))
-    logger.info(f"Found {len(models)} models: k={list(models.keys())}")
+    if args.ks is not None:
+        models = {k: p for k, p in models.items() if k in args.ks}
+    elif args.k is not None:
+        models = {k: p for k, p in models.items() if k == args.k}
+    if not models:
+        raise FileNotFoundError(f"No matching model_k*.pt in {model_dir}")
+    logger.info(f"Selected {len(models)} models: k={sorted(models.keys())}")
 
     # Load data with test-time transforms (no augmentation)
     normalize = transforms.Normalize(
@@ -289,16 +332,44 @@ def main():
     if args.file_suffix is not None:
         file_suffix = args.file_suffix
     else:
-        # Auto: _lam1e-05_fp64[_distill] etc.  Only suffix when lambda differs
-        # from the (old) default, fp64 is on, or distill is used.
+        # Auto: _lam1e-05_fp64[_distill][_ts] etc.  Only suffix when lambda
+        # differs from the (old) default, fp64 is on, distill is used, or
+        # ts-distill is on.
         if args.lambda_l2 != 1e-4 or args.use_float64 or args.distill:
             file_suffix = f"_lam{args.lambda_l2:g}_fp{64 if args.use_float64 else 32}"
             if args.distill:
                 file_suffix += "_distill"
+            if args.ts_distill:
+                file_suffix += "_ts"
         else:
             file_suffix = ""
     if file_suffix:
         logger.info(f"Output file suffix: '{file_suffix}'")
+
+    # Load per-k temperatures if --ts-distill is on
+    k_to_temperature = {}
+    if args.ts_distill:
+        eval_path = model_dir / "evaluation.jsonl"
+        if not eval_path.exists():
+            raise FileNotFoundError(
+                f"--ts-distill requires {eval_path} with per-k 'temperature' "
+                f"fields (produced by the training pipeline)."
+            )
+        with open(eval_path) as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                rec = json.loads(line)
+                if "temperature" not in rec:
+                    raise KeyError(
+                        f"--ts-distill: evaluation.jsonl entry for k={rec.get('k')} "
+                        f"missing 'temperature' field"
+                    )
+                k_to_temperature[rec["k"]] = float(rec["temperature"])
+        logger.info(
+            f"Loaded temperatures for k={sorted(k_to_temperature.keys())} "
+            f"from {eval_path}"
+        )
 
     for k, model_path in sorted(models.items()):
         result = process_k(
@@ -316,6 +387,7 @@ def main():
             use_float64=args.use_float64,
             file_suffix=file_suffix,
             distill=args.distill,
+            temperature=k_to_temperature.get(k) if args.ts_distill else None,
         )
         finetuned_metrics[k] = result.pop("metrics")
         summary_records.append({"k": k, **result})
