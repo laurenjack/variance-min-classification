@@ -63,6 +63,7 @@ def l2_finetune(
     use_float64: bool = False,
     distill_W_orig: torch.Tensor = None,
     distill_b_orig: torch.Tensor = None,
+    lr: float = 1.0,
 ) -> float:
     """Fine-tune model.linear via L-BFGS on pre-extracted features.
 
@@ -92,6 +93,7 @@ def l2_finetune(
 
     optimizer = torch.optim.LBFGS(
         [W, b],
+        lr=lr,
         max_iter=max_iter,
         tolerance_grad=tolerance_grad,
         tolerance_change=0,
@@ -119,7 +121,8 @@ def l2_finetune(
     grad_norm = torch.cat([W.grad.flatten(), b.grad.flatten()]).norm().item()
     logger.info(
         f"L-BFGS converged in {step_count[0]} closure evals "
-        f"(dtype={work_dtype}, lambda={lambda_l2}, "
+        f"(dtype={work_dtype}, lambda={lambda_l2}, lr={lr}, "
+        f"tol_grad={tolerance_grad:g}, "
         f"loss={'distill' if distill else 'label-CE'}): "
         f"loss={final_loss.item():.6f}, grad_norm={grad_norm:.2e}"
     )

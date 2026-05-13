@@ -65,6 +65,9 @@ def process_k(
     file_suffix: str = "",
     distill: bool = False,
     temperature: float = None,
+    lr: float = 1.0,
+    tolerance_grad: float = 1e-7,
+    max_iter: int = 200,
 ) -> dict:
     """Run the full influence pipeline for one k value.
 
@@ -117,6 +120,9 @@ def process_k(
         use_float64=use_float64,
         distill_W_orig=W_orig if distill else None,
         distill_b_orig=b_orig if distill else None,
+        lr=lr,
+        tolerance_grad=tolerance_grad,
+        max_iter=max_iter,
     )
     W_ft = model.linear.weight.detach().float()
     b_ft = model.linear.bias.detach().float()
@@ -279,6 +285,21 @@ def main():
         "--ks", type=int, nargs="+", default=None,
         help="If set, only process these k values (overrides --k).",
     )
+    parser.add_argument(
+        "--lr", type=float, default=1.0,
+        help="L-BFGS step-size multiplier (`lr` of torch.optim.LBFGS). "
+             "Default 1.0; try 0.1 for stability at very small lambda.",
+    )
+    parser.add_argument(
+        "--tolerance-grad", type=float, default=1e-7,
+        help="L-BFGS gradient-norm convergence tolerance. Default 1e-7. "
+             "Needs to be << lambda*||W|| for the analytic decomposition "
+             "(which has a 1/lambda amplification) to remain valid.",
+    )
+    parser.add_argument(
+        "--max-iter", type=int, default=200,
+        help="L-BFGS max_iter. Default 200.",
+    )
     args = parser.parse_args()
 
     if args.ts_distill and not args.distill:
@@ -359,9 +380,7 @@ def main():
     if args.file_suffix is not None:
         file_suffix = args.file_suffix
     else:
-        # Auto: _lam1e-05_fp64[_distill][_ts] etc.  Only suffix when lambda
-        # differs from the (old) default, fp64 is on, distill is used, or
-        # ts-distill is on.
+        # Auto: _lam1e-05_fp64[_distill][_ts][_lr0.1][_tg1e-10] etc.
         if args.lambda_l2 != 1e-4 or args.use_float64 or args.distill:
             file_suffix = f"_lam{args.lambda_l2:g}_fp{64 if args.use_float64 else 32}"
             if args.distill:
@@ -370,6 +389,10 @@ def main():
                 file_suffix += "_ts"
         else:
             file_suffix = ""
+        if args.lr != 1.0:
+            file_suffix += f"_lr{args.lr:g}"
+        if args.tolerance_grad != 1e-7:
+            file_suffix += f"_tg{args.tolerance_grad:g}"
     if file_suffix:
         logger.info(f"Output file suffix: '{file_suffix}'")
 
@@ -415,6 +438,9 @@ def main():
             file_suffix=file_suffix,
             distill=args.distill,
             temperature=k_to_temperature.get(k) if args.ts_distill else None,
+            lr=args.lr,
+            tolerance_grad=args.tolerance_grad,
+            max_iter=args.max_iter,
         )
         finetuned_metrics[k] = result.pop("metrics")
         summary_records.append({"k": k, **result})
