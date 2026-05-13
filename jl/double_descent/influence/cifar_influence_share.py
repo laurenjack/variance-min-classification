@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Influence-share analysis: for each k, what fraction of each test point's
+"""DEPRECATED — superseded by influence_main.py (which now saves
+share_per_test_k*.npy directly) + plot_influence_share.py. Will be removed
+on the next refactor pass.
+
+Influence-share analysis: for each k, what fraction of each test point's
 total contribution magnitude comes from the mislabeled training points?
 
 For each (training i, test t) pair, define:

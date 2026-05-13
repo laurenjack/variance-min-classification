@@ -210,8 +210,39 @@ def process_k(
     ft_path = output_dir / f"finetune_k{k}{file_suffix}.pt"
     torch.save(model.linear.state_dict(), ft_path)
 
-    # Summary stats
+    # Canonical metric: share_M(t) = sum_{i in M} c_{i,t} / sum_i c_{i,t},
+    # where c_{i,t} = ||r_i||_2 * |phi_i . phi_t|, mean over test points.
+    # Save the per-test array; plotting reads from there.
+    logger.info("Computing share_M per test point...")
+    mis_mask_t = torch.from_numpy(mislabel_mask.astype(bool)).to(phi_train.device)
+    with torch.no_grad():
+        grad_norms = residuals.norm(dim=1)  # [N_train]
+        n_test = phi_test.size(0)
+        total_contrib = torch.zeros(n_test, device=phi_train.device, dtype=torch.float64)
+        mis_contrib = torch.zeros(n_test, device=phi_train.device, dtype=torch.float64)
+        test_chunk = 1024
+        for ts in range(0, n_test, test_chunk):
+            te = min(ts + test_chunk, n_test)
+            dots = phi_train @ phi_test[ts:te].t()
+            abs_dots = dots.abs()
+            contrib = grad_norms.unsqueeze(1) * abs_dots  # [N_train, chunk]
+            total_contrib[ts:te] = contrib.sum(dim=0).double()
+            mis_contrib[ts:te] = contrib[mis_mask_t].sum(dim=0).double()
+        share_per_test = (
+            mis_contrib / total_contrib.clamp_min(1e-30)
+        ).cpu().numpy()
+    share_path = output_dir / f"share_per_test_k{k}{file_suffix}.npy"
+    np.save(share_path, share_per_test)
+    mean_share = float(share_per_test.mean())
+    logger.info(
+        f"share_M mean over test = {mean_share:.4f} "
+        f"(baseline mislabel rate = {float(mislabel_mask.mean()):.4f})"
+    )
+
+    # Summary stats (legacy: keeps mis/clean ratio for back-compat)
     stats = compute_summary_stats(influence, mislabel_mask)
+    stats["mean_share_M"] = mean_share
+    stats["mislabel_rate"] = float(mislabel_mask.mean())
     logger.info(
         f"Influence ratio (mislabeled/clean): {stats['influence_ratio']:.3f}"
     )
@@ -300,10 +331,20 @@ def main():
         "--max-iter", type=int, default=200,
         help="L-BFGS max_iter. Default 200.",
     )
+    parser.add_argument(
+        "--ts-reg", action="store_true",
+        help="Scale the L2 regularizer by 1/T^2 per k (T read from "
+             "<model-dir>/evaluation.jsonl). Equivalent to penalizing "
+             "||W/T||^2: weakens regularization for overconfident "
+             "(high-T) models. Loss otherwise unchanged. Not combined "
+             "with --ts-distill.",
+    )
     args = parser.parse_args()
 
     if args.ts_distill and not args.distill:
         parser.error("--ts-distill requires --distill")
+    if args.ts_reg and args.ts_distill:
+        parser.error("--ts-reg and --ts-distill are mutually exclusive")
 
     logging.basicConfig(
         level=logging.INFO,
@@ -380,13 +421,15 @@ def main():
     if args.file_suffix is not None:
         file_suffix = args.file_suffix
     else:
-        # Auto: _lam1e-05_fp64[_distill][_ts][_lr0.1][_tg1e-10] etc.
-        if args.lambda_l2 != 1e-4 or args.use_float64 or args.distill:
+        # Auto: _lam1e-05_fp64[_distill][_ts|_tsreg][_lr0.1][_tg1e-10] etc.
+        if args.lambda_l2 != 1e-4 or args.use_float64 or args.distill or args.ts_reg:
             file_suffix = f"_lam{args.lambda_l2:g}_fp{64 if args.use_float64 else 32}"
             if args.distill:
                 file_suffix += "_distill"
             if args.ts_distill:
                 file_suffix += "_ts"
+            if args.ts_reg:
+                file_suffix += "_tsreg"
         else:
             file_suffix = ""
         if args.lr != 1.0:
@@ -396,14 +439,14 @@ def main():
     if file_suffix:
         logger.info(f"Output file suffix: '{file_suffix}'")
 
-    # Load per-k temperatures if --ts-distill is on
+    # Load per-k temperatures if --ts-distill or --ts-reg is on
     k_to_temperature = {}
-    if args.ts_distill:
+    if args.ts_distill or args.ts_reg:
         eval_path = model_dir / "evaluation.jsonl"
         if not eval_path.exists():
             raise FileNotFoundError(
-                f"--ts-distill requires {eval_path} with per-k 'temperature' "
-                f"fields (produced by the training pipeline)."
+                f"--ts-distill/--ts-reg requires {eval_path} with per-k "
+                f"'temperature' fields (produced by the training pipeline)."
             )
         with open(eval_path) as f:
             for line in f:
@@ -412,7 +455,7 @@ def main():
                 rec = json.loads(line)
                 if "temperature" not in rec:
                     raise KeyError(
-                        f"--ts-distill: evaluation.jsonl entry for k={rec.get('k')} "
+                        f"--ts-*: evaluation.jsonl entry for k={rec.get('k')} "
                         f"missing 'temperature' field"
                     )
                 k_to_temperature[rec["k"]] = float(rec["temperature"])
@@ -422,6 +465,17 @@ def main():
         )
 
     for k, model_path in sorted(models.items()):
+        # Per-k effective lambda (only different when --ts-reg is on)
+        if args.ts_reg:
+            T_k = k_to_temperature[k]
+            effective_lambda = args.lambda_l2 / (T_k * T_k)
+            logger.info(
+                f"k={k}: --ts-reg active, T={T_k:.4f}, "
+                f"effective lambda = {args.lambda_l2:g} / T^2 = {effective_lambda:g}"
+            )
+        else:
+            effective_lambda = args.lambda_l2
+
         result = process_k(
             k=k,
             model_path=model_path,
@@ -431,7 +485,7 @@ def main():
             train_indices=train_indices,
             noisy_labels=noisy_train_full.labels,
             original_labels=noisy_train_full.cifar.targets,
-            lambda_l2=args.lambda_l2,
+            lambda_l2=effective_lambda,
             output_dir=output_dir,
             device=device,
             use_float64=args.use_float64,

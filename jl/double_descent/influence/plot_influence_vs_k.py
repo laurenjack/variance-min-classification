@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Plot influence-ratio + top-1%/top-5% fraction-mislabeled vs k.
+"""DEPRECATED — superseded by plot_influence_share.py (which uses share_M,
+the canonical metric). Will be removed on the next refactor pass.
+
+Plot influence-ratio + top-1%/top-5% fraction-mislabeled vs k.
 
 Reads:
   - summary.jsonl: per-k influence_ratio (mislabeled / clean)
