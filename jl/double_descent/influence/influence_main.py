@@ -239,18 +239,19 @@ def process_k(
         f"(baseline mislabel rate = {float(mislabel_mask.mean()):.4f})"
     )
 
-    # Projection-based contributions: alpha_{i,t} = <contribution_{i,t}, u_t>
-    # where contribution_{i,t} = -1/(2*lambda*n) * r_i * (phi_i . phi_t),
-    # and u_t = logits_t / ||logits_t|| is the FT logits direction
-    # (bias term skipped per design). The sum over i collapses to ||logits_t||
-    # by self-consistency. Save per-test signed and absolute sums for M and
-    # total; plotting computes share_signed = signed_M/signed_T,
-    # share_abs = abs_M/abs_T, and cancellation_index = signed_T/abs_T.
-    logger.info("Computing projection-based per-test contributions...")
+    # Projection-based contributions: alpha_{i,t} = <v_{i,t}, V_t>
+    # where v_{i,t} = -1/(2*lambda*n) * r_i * (phi_i . phi_t)  (no bias),
+    # and V_t = logits_t = W_FT * phi_t (the sum the v_i's reconstruct).
+    # No normalization: alpha_i has units of magnitude^2 and decomposes
+    # ||V_t||^2 = sum_i alpha_i (since r_i is row-centered, the projection
+    # is invariant to softmax-irrelevant constant shifts in W_FT).
+    # Save per-test signed and absolute sums for M and total; plotting
+    # computes share_signed = signed_M/signed_T (in [-x, 1]),
+    # share_abs = abs_M/abs_T (in [0, 1]),
+    # cancellation_index = signed_T/abs_T (in [0, 1]; 1 = no cancellation).
+    logger.info("Computing projection-based per-test contributions (unnormalized)...")
     with torch.no_grad():
         logits_test = phi_test @ model.linear.weight.t()  # [N_test, C]
-        norm_logits = logits_test.norm(dim=1, keepdim=True).clamp_min(1e-30)
-        u_test = logits_test / norm_logits  # [N_test, C]
         n_train_local = phi_train.size(0)
         scale = -1.0 / (2.0 * lambda_l2 * n_train_local)
 
@@ -260,10 +261,10 @@ def process_k(
         abs_T = torch.zeros(n_test, device=phi_train.device, dtype=torch.float64)
         for ts in range(0, n_test, test_chunk):
             te = min(ts + test_chunk, n_test)
-            u_chunk = u_test[ts:te]  # [chunk, C]
-            r_dot_u = residuals @ u_chunk.t()  # [N_train, chunk]
+            V_chunk = logits_test[ts:te]  # [chunk, C] -- the unnormalized target
+            r_dot_V = residuals @ V_chunk.t()  # [N_train, chunk]
             phi_dot_phi = phi_train @ phi_test[ts:te].t()  # [N_train, chunk]
-            alpha_chunk = scale * r_dot_u * phi_dot_phi  # [N_train, chunk]
+            alpha_chunk = scale * r_dot_V * phi_dot_phi  # [N_train, chunk]
 
             signed_T[ts:te] = alpha_chunk.sum(dim=0).double()
             signed_M[ts:te] = alpha_chunk[mis_mask_t].sum(dim=0).double()
