@@ -149,6 +149,33 @@ def process_k(
     val_record["norm_ratio_per_class"] = norm_ratio_per_class
     val_record["mean_norm_ratio"] = float(sum(norm_ratio_per_class) / len(norm_ratio_per_class))
 
+    # Pearson correlation between FT and original model's predictions over
+    # the training set (flattened over N*C). For TS-distill these are
+    # already in TS-scaled space; Pearson is scale-invariant.
+    with torch.no_grad():
+        Wo = W_orig.to(phi_train.device)
+        bo = b_orig.to(phi_train.device)
+        Wf = W_ft.to(phi_train.device)
+        bf = b_ft.to(phi_train.device)
+        logits_orig_flat = (phi_train @ Wo.t() + bo).flatten()
+        logits_ft_flat = (phi_train @ Wf.t() + bf).flatten()
+        probs_orig_flat = torch.nn.functional.softmax(
+            phi_train @ Wo.t() + bo, dim=1
+        ).flatten()
+        probs_ft_flat = torch.nn.functional.softmax(
+            phi_train @ Wf.t() + bf, dim=1
+        ).flatten()
+
+        def _pearson(x, y):
+            xm = x - x.mean()
+            ym = y - y.mean()
+            return (xm * ym).sum() / (xm.norm() * ym.norm() + 1e-30)
+
+        corr_logits = float(_pearson(logits_orig_flat, logits_ft_flat).item())
+        corr_probs = float(_pearson(probs_orig_flat, probs_ft_flat).item())
+    val_record["corr_logits"] = corr_logits
+    val_record["corr_probs"] = corr_probs
+
     # Save validation
     val_path = output_dir / f"validation_k{k}{file_suffix}.json"
     with open(val_path, "w") as f:
