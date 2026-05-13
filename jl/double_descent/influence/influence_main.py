@@ -239,6 +239,60 @@ def process_k(
         f"(baseline mislabel rate = {float(mislabel_mask.mean()):.4f})"
     )
 
+    # Projection-based contributions: alpha_{i,t} = <contribution_{i,t}, u_t>
+    # where contribution_{i,t} = -1/(2*lambda*n) * r_i * (phi_i . phi_t),
+    # and u_t = logits_t / ||logits_t|| is the FT logits direction
+    # (bias term skipped per design). The sum over i collapses to ||logits_t||
+    # by self-consistency. Save per-test signed and absolute sums for M and
+    # total; plotting computes share_signed = signed_M/signed_T,
+    # share_abs = abs_M/abs_T, and cancellation_index = signed_T/abs_T.
+    logger.info("Computing projection-based per-test contributions...")
+    with torch.no_grad():
+        logits_test = phi_test @ model.linear.weight.t()  # [N_test, C]
+        norm_logits = logits_test.norm(dim=1, keepdim=True).clamp_min(1e-30)
+        u_test = logits_test / norm_logits  # [N_test, C]
+        n_train_local = phi_train.size(0)
+        scale = -1.0 / (2.0 * lambda_l2 * n_train_local)
+
+        signed_M = torch.zeros(n_test, device=phi_train.device, dtype=torch.float64)
+        signed_T = torch.zeros(n_test, device=phi_train.device, dtype=torch.float64)
+        abs_M = torch.zeros(n_test, device=phi_train.device, dtype=torch.float64)
+        abs_T = torch.zeros(n_test, device=phi_train.device, dtype=torch.float64)
+        for ts in range(0, n_test, test_chunk):
+            te = min(ts + test_chunk, n_test)
+            u_chunk = u_test[ts:te]  # [chunk, C]
+            r_dot_u = residuals @ u_chunk.t()  # [N_train, chunk]
+            phi_dot_phi = phi_train @ phi_test[ts:te].t()  # [N_train, chunk]
+            alpha_chunk = scale * r_dot_u * phi_dot_phi  # [N_train, chunk]
+
+            signed_T[ts:te] = alpha_chunk.sum(dim=0).double()
+            signed_M[ts:te] = alpha_chunk[mis_mask_t].sum(dim=0).double()
+            abs_alpha = alpha_chunk.abs()
+            abs_T[ts:te] = abs_alpha.sum(dim=0).double()
+            abs_M[ts:te] = abs_alpha[mis_mask_t].sum(dim=0).double()
+    proj_path = output_dir / f"projection_per_test_k{k}{file_suffix}.npz"
+    np.savez(
+        proj_path,
+        signed_M=signed_M.cpu().numpy(),
+        signed_T=signed_T.cpu().numpy(),
+        abs_M=abs_M.cpu().numpy(),
+        abs_T=abs_T.cpu().numpy(),
+    )
+    mean_signed_share = float(
+        (signed_M / signed_T.clamp_min(1e-30)).mean().item()
+    )
+    mean_abs_share = float(
+        (abs_M / abs_T.clamp_min(1e-30)).mean().item()
+    )
+    mean_cancellation = float(
+        (signed_T / abs_T.clamp_min(1e-30)).mean().item()
+    )
+    logger.info(
+        f"projection: signed_share={mean_signed_share:.4f}  "
+        f"abs_share={mean_abs_share:.4f}  "
+        f"cancellation_index={mean_cancellation:.4f}"
+    )
+
     # Summary stats (legacy: keeps mis/clean ratio for back-compat)
     stats = compute_summary_stats(influence, mislabel_mask)
     stats["mean_share_M"] = mean_share
