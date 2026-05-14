@@ -21,6 +21,7 @@ from torch.utils.data import DataLoader
 from jl.double_descent.resnet18.resnet18_data import (
     load_cifar10_with_noise,
     load_cifar10_with_noise_val_split,
+    load_cifar10_with_noise_val_split_gpu,
 )
 
 
@@ -120,13 +121,17 @@ def train_single_model(
 
     print(f"[GPU {gpu_id}] Training {model_label} on {device}")
 
-    # Load data (each process loads independently)
-    val_loader: Optional[DataLoader] = None
+    # Load data (each process loads independently).  When val_split is on
+    # we use the GPU-resident pipeline: CIFAR-10 lives on this worker's GPU
+    # as a normalized FP32 tensor, and RandomCrop/HFlip are batched tensor
+    # ops on-device.  Removes the CPU augmentation bottleneck.
+    val_loader = None
     if getattr(config, "use_val_split", False):
         train_loader, val_loader, test_loader, mislabel_mask = (
-            load_cifar10_with_noise_val_split(
+            load_cifar10_with_noise_val_split_gpu(
                 noise_prob=config.label_noise,
                 batch_size=config.batch_size,
+                device=device,
                 data_augmentation=config.data_augmentation,
                 data_dir=data_path,
             )

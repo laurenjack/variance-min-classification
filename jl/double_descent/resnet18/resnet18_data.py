@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, Subset
 import torchvision
 import torchvision.transforms as transforms
@@ -406,4 +407,224 @@ def load_cifar10_with_noise_val_split(
         pin_memory=True,
     )
 
+    return train_loader, val_loader, test_loader, mislabel_mask
+
+
+# ---------------------------------------------------------------------------
+# GPU-resident data pipeline
+# ---------------------------------------------------------------------------
+#
+# The CPU DataLoader path above is fine for portability but is dominated by
+# PIL decoding + RandomCrop + RandomHorizontalFlip on the worker process's
+# main thread, which leaves the H100 at ~10% util. The classes/functions below
+# preload the whole (already-normalized) CIFAR-10 train/test as FP32 tensors
+# on the target GPU, then do RandomCrop(32, padding=4) + RandomHorizontalFlip
+# as batched tensor ops on-device every step. CIFAR fits trivially: train is
+# 50000 * 3 * 32 * 32 * 4 B = ~614 MB per GPU.
+
+CIFAR10_MEAN = (0.4914, 0.4822, 0.4465)
+CIFAR10_STD = (0.2023, 0.1994, 0.2010)
+
+
+def _build_gpu_cifar_tensors(
+    data_dir: str, device: torch.device
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Load CIFAR-10 once and return UNnormalized FP32 train/test tensors on device.
+
+    Values are in [0, 1] (uint8 / 255). Augmentation runs in this raw pixel
+    space — pad-with-zero is then byte-equivalent to torchvision's PIL
+    RandomCrop with the default constant fill=0. Normalization happens
+    after augmentation, inside the loader's per-batch _normalize.
+
+    Returns (train_images, train_orig_labels, test_images, test_labels).
+    """
+    train = torchvision.datasets.CIFAR10(root=data_dir, train=True, download=False)
+    test = torchvision.datasets.CIFAR10(root=data_dir, train=False, download=False)
+
+    def to_raw(ds: torchvision.datasets.CIFAR10) -> torch.Tensor:
+        # ds.data is a uint8 numpy array of shape [N, 32, 32, 3].
+        imgs = torch.from_numpy(ds.data).to(device=device, dtype=torch.float32)
+        return imgs.permute(0, 3, 1, 2).contiguous() / 255.0
+
+    train_images = to_raw(train)
+    test_images = to_raw(test)
+    train_orig_labels = torch.tensor(train.targets, dtype=torch.long, device=device)
+    test_labels = torch.tensor(test.targets, dtype=torch.long, device=device)
+    return train_images, train_orig_labels, test_images, test_labels
+
+
+def _apply_label_noise_tensor(
+    orig_labels: torch.Tensor,
+    noise_prob: float,
+    seed: int,
+    n_classes: int = 10,
+) -> Tuple[torch.Tensor, np.ndarray]:
+    """Apply label noise to a labels tensor. Returns (noisy_labels, mislabel_mask).
+
+    mislabel_mask is a numpy bool array of length N. Uses the same procedure
+    (numpy RandomState, per-sample wrong-label sampling) as NoisyCIFAR10 so
+    the label sequence is byte-identical to the CPU path under the same seed.
+    """
+    rng = np.random.RandomState(seed)
+    orig = orig_labels.detach().cpu().numpy().copy()
+    noisy = orig.copy()
+    n = len(noisy)
+    corrupt_mask = rng.rand(n) < noise_prob
+    for i in range(n):
+        if corrupt_mask[i]:
+            wrong = [l for l in range(n_classes) if l != orig[i]]
+            noisy[i] = rng.choice(wrong)
+    mislabel_mask = noisy != orig
+    noisy_t = torch.from_numpy(noisy).to(orig_labels.device).long()
+    return noisy_t, mislabel_mask
+
+
+def gpu_random_crop_flip(images: torch.Tensor, padding: int = 4) -> torch.Tensor:
+    """RandomCrop(32, padding=4) + RandomHorizontalFlip, vectorized on device.
+
+    Pads zero (the original PIL behavior with padding_mode='constant'), picks
+    one random crop offset and one flip decision per sample in the batch.
+    """
+    B, C, H, W = images.shape
+    flip = torch.rand(B, device=images.device) < 0.5
+    flipped = images.flip(-1)
+    images = torch.where(flip.view(B, 1, 1, 1), flipped, images)
+
+    padded = F.pad(images, (padding, padding, padding, padding), mode="constant", value=0.0)
+    max_offset = 2 * padding + 1
+    dy = torch.randint(0, max_offset, (B,), device=images.device)
+    dx = torch.randint(0, max_offset, (B,), device=images.device)
+    rows = dy.view(B, 1, 1, 1) + torch.arange(H, device=images.device).view(1, 1, H, 1)
+    cols = dx.view(B, 1, 1, 1) + torch.arange(W, device=images.device).view(1, 1, 1, W)
+    batch_idx = torch.arange(B, device=images.device).view(B, 1, 1, 1)
+    chan_idx = torch.arange(C, device=images.device).view(1, C, 1, 1)
+    return padded[batch_idx, chan_idx, rows, cols]
+
+
+class _SizedDataset:
+    """Stand-in for DataLoader.dataset that only needs to support len()."""
+
+    def __init__(self, n: int):
+        self._n = n
+
+    def __len__(self) -> int:
+        return self._n
+
+
+def _normalize_buffers(device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
+    mean = torch.tensor(CIFAR10_MEAN, device=device).view(1, 3, 1, 1)
+    std = torch.tensor(CIFAR10_STD, device=device).view(1, 3, 1, 1)
+    return mean, std
+
+
+class GPUTrainLoader:
+    """Iterator yielding (images, labels, idx_in_dataset) batches on device.
+
+    All three tensors are on `images.device`. Each step: shuffle indices,
+    gather the raw batch, apply on-GPU RandomCrop+HFlip (if augment=True),
+    normalize, emit.
+    """
+
+    def __init__(
+        self,
+        images: torch.Tensor,
+        labels: torch.Tensor,
+        batch_size: int,
+        augment: bool = True,
+        drop_last: bool = True,
+    ):
+        self.images = images
+        self.labels = labels
+        self.batch_size = batch_size
+        self.augment = augment
+        self.drop_last = drop_last
+        self.n = images.size(0)
+        self.dataset = _SizedDataset(self.n)
+        self._mean, self._std = _normalize_buffers(images.device)
+
+    def __len__(self) -> int:
+        if self.drop_last:
+            return self.n // self.batch_size
+        return (self.n + self.batch_size - 1) // self.batch_size
+
+    def __iter__(self):
+        perm = torch.randperm(self.n, device=self.images.device)
+        end = (self.n // self.batch_size) * self.batch_size if self.drop_last else self.n
+        for start in range(0, end, self.batch_size):
+            idx = perm[start:start + self.batch_size]
+            imgs = self.images[idx]
+            if self.augment:
+                imgs = gpu_random_crop_flip(imgs)
+            imgs = (imgs - self._mean) / self._std
+            yield imgs, self.labels[idx], idx
+
+
+class GPUEvalLoader:
+    """Sequential iterator yielding (images, labels) batches on device."""
+
+    def __init__(self, images: torch.Tensor, labels: torch.Tensor, batch_size: int):
+        self.images = images
+        self.labels = labels
+        self.batch_size = batch_size
+        self.n = images.size(0)
+        self.dataset = _SizedDataset(self.n)
+        self._mean, self._std = _normalize_buffers(images.device)
+
+    def __len__(self) -> int:
+        return (self.n + self.batch_size - 1) // self.batch_size
+
+    def __iter__(self):
+        for start in range(0, self.n, self.batch_size):
+            end = min(start + self.batch_size, self.n)
+            imgs = (self.images[start:end] - self._mean) / self._std
+            yield imgs, self.labels[start:end]
+
+
+def load_cifar10_with_noise_val_split_gpu(
+    noise_prob: float,
+    batch_size: int,
+    device: torch.device,
+    data_dir: str = "./data",
+    data_augmentation: bool = True,
+    noise_seed: int = DEFAULT_NOISE_SEED,
+    val_size: int = DEFAULT_VAL_SIZE,
+    val_split_seed: int = VAL_SPLIT_SEED,
+) -> Tuple[GPUTrainLoader, GPUEvalLoader, GPUEvalLoader, np.ndarray]:
+    """GPU-resident counterpart to load_cifar10_with_noise_val_split.
+
+    Returns (train_loader, val_loader, test_loader, mislabel_mask), where the
+    loaders emit tensors already on `device` and mislabel_mask is a length
+    (50000 - val_size) numpy bool array aligned with the training subset.
+
+    Label noise + split semantics exactly match the CPU path under the same
+    seeds (noise applied to all 50K first, THEN split via val_split_seed).
+    """
+    train_images, train_orig, test_images, test_labels = (
+        _build_gpu_cifar_tensors(data_dir, device)
+    )
+    train_noisy, mislabel_all = _apply_label_noise_tensor(
+        train_orig, noise_prob, noise_seed
+    )
+
+    train_indices, val_indices = compute_val_split_indices(
+        total_samples=train_images.size(0),
+        val_size=val_size,
+        seed=val_split_seed,
+    )
+    train_idx_t = torch.from_numpy(train_indices).to(device)
+    val_idx_t = torch.from_numpy(val_indices).to(device)
+
+    train_sub_imgs = train_images.index_select(0, train_idx_t).contiguous()
+    train_sub_labels = train_noisy.index_select(0, train_idx_t).contiguous()
+    val_sub_imgs = train_images.index_select(0, val_idx_t).contiguous()
+    val_sub_labels = train_noisy.index_select(0, val_idx_t).contiguous()
+
+    mislabel_mask = mislabel_all[train_indices]
+
+    train_loader = GPUTrainLoader(
+        train_sub_imgs, train_sub_labels, batch_size,
+        augment=data_augmentation, drop_last=True,
+    )
+    val_loader = GPUEvalLoader(val_sub_imgs, val_sub_labels, batch_size)
+    test_loader = GPUEvalLoader(test_images, test_labels, batch_size)
     return train_loader, val_loader, test_loader, mislabel_mask
