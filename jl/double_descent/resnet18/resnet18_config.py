@@ -32,5 +32,9 @@ class DDConfig:
     # When False, the full 50K noised training set is used (legacy path).
     use_val_split: bool = False
 
+    # Mixed precision: BF16 autocast on forward+backward, FP32 weights / grads
+    # / optimizer state. Disable with --no-bf16 if you need bitwise FP32.
+    use_bf16: bool = True
+
     # Logging
     log_interval: int = 1  # Every epoch

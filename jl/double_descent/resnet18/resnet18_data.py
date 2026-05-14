@@ -17,6 +17,25 @@ DEFAULT_VAL_SIZE = 5000
 DEFAULT_NOISE_SEED = 42
 
 
+class IndexedDataset(Dataset):
+    """Wrapper that yields (image, label, idx_in_dataset) for residual tracking.
+
+    The third element is the *position in this dataset* (0..len-1), so it
+    indexes directly into the per-point residual accumulator regardless of
+    whether the underlying dataset is a Subset.
+    """
+
+    def __init__(self, dataset: Dataset):
+        self.dataset = dataset
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    def __getitem__(self, idx: int):
+        item = self.dataset[idx]
+        return (*item, idx)
+
+
 def download_cifar10(data_dir: str = "./data") -> None:
     """Download CIFAR-10 dataset if not already present.
 
@@ -110,7 +129,7 @@ def load_cifar10_with_noise(
     data_augmentation: bool = True,
     data_dir: str = "./data",
     num_workers: int = 0,
-) -> Tuple[DataLoader, DataLoader]:
+) -> Tuple[DataLoader, DataLoader, np.ndarray]:
     """Load CIFAR-10 with label noise on training set.
 
     Args:
@@ -121,7 +140,9 @@ def load_cifar10_with_noise(
         num_workers: Number of data loading workers.
 
     Returns:
-        Tuple of (train_loader, test_loader).
+        Tuple of (train_loader, test_loader, mislabel_mask). The train_loader
+        yields (image, label, idx_in_train_set) batches; mislabel_mask is a
+        boolean array of length N_train aligned with idx_in_train_set.
     """
     # Normalization values for CIFAR-10
     normalize = transforms.Normalize(
@@ -164,9 +185,13 @@ def load_cifar10_with_noise(
         transform=test_transform,
     )
 
+    mislabel_mask = (
+        np.array(train_dataset.cifar.targets) != np.array(train_dataset.labels)
+    )
+
     # Create data loaders
     train_loader = DataLoader(
-        train_dataset,
+        IndexedDataset(train_dataset),
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
@@ -182,7 +207,7 @@ def load_cifar10_with_noise(
         pin_memory=True,
     )
 
-    return train_loader, test_loader
+    return train_loader, test_loader, mislabel_mask
 
 
 
@@ -282,7 +307,7 @@ def load_cifar10_with_noise_val_split(
     num_workers: int = 0,
     val_size: int = DEFAULT_VAL_SIZE,
     val_split_seed: int = VAL_SPLIT_SEED,
-) -> Tuple[DataLoader, DataLoader, DataLoader]:
+) -> Tuple[DataLoader, DataLoader, DataLoader, np.ndarray]:
     """Load CIFAR-10 with noise, split 45K train / 5K val / full test.
 
     Mirrors load_cifar10_with_noise except it holds out a deterministic 5K
@@ -295,8 +320,12 @@ def load_cifar10_with_noise_val_split(
     copies with different transforms — labels are byte-identical because
     they share the same (default) noise seed.
 
+    The train_loader yields (image, label, idx_in_train_subset) batches so
+    callers can accumulate per-point residuals; mislabel_mask is a boolean
+    array of length N_train (=45K) aligned with idx_in_train_subset.
+
     Returns:
-        (train_loader, val_loader, test_loader)
+        (train_loader, val_loader, test_loader, mislabel_mask)
     """
     normalize = transforms.Normalize(
         mean=[0.4914, 0.4822, 0.4465],
@@ -343,6 +372,10 @@ def load_cifar10_with_noise_val_split(
     train_subset = Subset(train_full, train_indices.tolist())
     val_subset = Subset(val_full, val_indices.tolist())
 
+    originals = np.array(train_full.cifar.targets)
+    noisy = np.array(train_full.labels)
+    mislabel_mask = (originals[train_indices] != noisy[train_indices])
+
     test_dataset = NoisyCIFAR10(
         root=data_dir,
         train=False,
@@ -351,7 +384,7 @@ def load_cifar10_with_noise_val_split(
     )
 
     train_loader = DataLoader(
-        train_subset,
+        IndexedDataset(train_subset),
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
@@ -373,4 +406,4 @@ def load_cifar10_with_noise_val_split(
         pin_memory=True,
     )
 
-    return train_loader, val_loader, test_loader
+    return train_loader, val_loader, test_loader, mislabel_mask

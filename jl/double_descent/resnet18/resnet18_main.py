@@ -118,6 +118,12 @@ def parse_args():
              "the output folder and logs per-epoch val metrics.",
     )
     parser.add_argument(
+        "--no-bf16",
+        action="store_true",
+        help="Disable BF16 mixed-precision autocast (default: enabled). "
+             "BF16 wraps fwd+bwd; weights/grads/optimizer state stay FP32.",
+    )
+    parser.add_argument(
         "--large-k",
         action="store_true",
         help="Train the 8 large-k models (72..128) instead of the default "
@@ -150,6 +156,7 @@ def run_training(k_values, num_gpus, args, config):
     )
     logger.info(f"Epochs: {config.epochs}, Batch size: {config.batch_size}")
     logger.info(f"Learning rate: {config.learning_rate}")
+    logger.info(f"BF16 autocast: {config.use_bf16}")
     if config.cosine_decay_epoch is not None:
         logger.info(f"Cosine decay from epoch {config.cosine_decay_epoch}")
     logger.info(f"Label noise: {config.label_noise}")
@@ -212,6 +219,8 @@ def main():
         config.cosine_decay_epoch = args.cosine_decay_epoch
     if args.val_split:
         config.use_val_split = True
+    if args.no_bf16:
+        config.use_bf16 = False
 
     # Determine k values and check GPUs
     if args.k_values is not None:

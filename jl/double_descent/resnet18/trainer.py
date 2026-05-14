@@ -10,9 +10,11 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.amp import autocast
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 
@@ -121,14 +123,16 @@ def train_single_model(
     # Load data (each process loads independently)
     val_loader: Optional[DataLoader] = None
     if getattr(config, "use_val_split", False):
-        train_loader, val_loader, test_loader = load_cifar10_with_noise_val_split(
-            noise_prob=config.label_noise,
-            batch_size=config.batch_size,
-            data_augmentation=config.data_augmentation,
-            data_dir=data_path,
+        train_loader, val_loader, test_loader, mislabel_mask = (
+            load_cifar10_with_noise_val_split(
+                noise_prob=config.label_noise,
+                batch_size=config.batch_size,
+                data_augmentation=config.data_augmentation,
+                data_dir=data_path,
+            )
         )
     else:
-        train_loader, test_loader = load_cifar10_with_noise(
+        train_loader, test_loader, mislabel_mask = load_cifar10_with_noise(
             noise_prob=config.label_noise,
             batch_size=config.batch_size,
             data_augmentation=config.data_augmentation,
@@ -168,6 +172,34 @@ def train_single_model(
     best_val_loss = float("inf")
     best_val_epoch = 0
 
+    # Per-point residual accumulators: r_i = 1 - p(assigned class).
+    #   residual_sum     : raw cumulative sum (per step the point participates).
+    #   residual_ema     : Adam-style EMA with beta1: every step we apply
+    #                      m <- beta1 * m, then add (1 - beta1) * r for points
+    #                      in the batch.  Mirrors first-moment update with
+    #                      sparse gradients.  Bias-corrected at save time by
+    #                      dividing by (1 - beta1**total_steps).
+    # Both vectors are snapshotted whenever val_loss improves so the ES
+    # checkpoint captures contributions accumulated *up to* the early-stop epoch.
+    n_train = len(train_loader.dataset)
+    residual_sum = torch.zeros(n_train, device=device, dtype=torch.float64)
+    residual_ema = torch.zeros(n_train, device=device, dtype=torch.float64)
+    total_steps = 0
+    residual_sum_es = torch.zeros_like(residual_sum)
+    residual_ema_es = torch.zeros_like(residual_ema)
+    total_steps_es = 0
+    if (
+        hasattr(optimizer, "param_groups")
+        and "betas" in optimizer.param_groups[0]
+    ):
+        beta1 = float(optimizer.param_groups[0]["betas"][0])
+    else:
+        beta1 = 0.9
+
+    use_bf16 = getattr(config, "use_bf16", True)
+    if use_bf16:
+        print(f"[GPU {gpu_id}] {model_label} BF16 autocast enabled")
+
     # Clear metrics file
     with open(metrics_path, 'w') as f:
         pass
@@ -182,20 +214,30 @@ def train_single_model(
         train_correct = 0
         train_samples = 0
 
-        for images, labels in train_loader:
-            images = images.to(device)
-            labels = labels.to(device)
+        for images, labels, indices in train_loader:
+            images = images.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
+            indices = indices.to(device, non_blocking=True)
             batch_size = images.shape[0]
 
             optimizer.zero_grad()
-            logits = model(images)
-            loss = F.cross_entropy(logits, labels)
+            with autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_bf16):
+                logits = model(images)
+                loss = F.cross_entropy(logits, labels)
             loss.backward()
             optimizer.step()
 
             # Accumulate metrics (no extra forward pass needed)
             with torch.no_grad():
                 train_loss_sum += loss.item() * batch_size
+                # Cast to FP32 before softmax for numerical safety in BF16.
+                probs = F.softmax(logits.float(), dim=1)
+                p_assigned = probs.gather(1, labels.unsqueeze(1)).squeeze(1)
+                residual = (1.0 - p_assigned).double()
+                residual_sum.index_add_(0, indices, residual)
+                residual_ema.mul_(beta1)
+                residual_ema.index_add_(0, indices, residual * (1.0 - beta1))
+                total_steps += 1
                 preds = logits.argmax(dim=1)
                 train_correct += (preds == labels).sum().item()
                 train_samples += batch_size
@@ -238,6 +280,9 @@ def train_single_model(
             best_val_loss = val_loss
             best_val_epoch = epoch + 1
             torch.save(model.state_dict(), es_model_path)
+            residual_sum_es.copy_(residual_sum)
+            residual_ema_es.copy_(residual_ema)
+            total_steps_es = total_steps
 
         # Print progress
         if (epoch + 1) % config.log_interval == 0 or epoch == 0:
@@ -257,6 +302,51 @@ def train_single_model(
     model_path = Path(output_path) / f"model_{model_label}.pt"
     torch.save(model.state_dict(), model_path)
     print(f"[GPU {gpu_id}] {model_label} training complete! Model saved to {model_path}")
+
+    # Save per-point average residuals (FINAL + ES), split by mislabel mask.
+    # average = sum(1 - p_assigned) / number_of_training_steps_at_snapshot.
+    residuals_dir = Path(output_path) / "residuals"
+    residuals_dir.mkdir(parents=True, exist_ok=True)
+    es_residuals_dir = es_dir / "residuals"
+    es_residuals_dir.mkdir(parents=True, exist_ok=True)
+
+    avg_final = (residual_sum / max(total_steps, 1)).cpu().numpy()
+    avg_es = (residual_sum_es / max(total_steps_es, 1)).cpu().numpy()
+    ema_bias_final = 1.0 - beta1 ** max(total_steps, 1)
+    ema_bias_es = 1.0 - beta1 ** max(total_steps_es, 1)
+    ema_final = (residual_ema / ema_bias_final).cpu().numpy()
+    ema_es = (residual_ema_es / ema_bias_es).cpu().numpy()
+    correct_mask = ~mislabel_mask
+
+    np.save(residuals_dir / f"{model_label}_mislabel.npy", avg_final[mislabel_mask])
+    np.save(residuals_dir / f"{model_label}_correct.npy", avg_final[correct_mask])
+    np.save(residuals_dir / f"{model_label}_mislabel_ema.npy", ema_final[mislabel_mask])
+    np.save(residuals_dir / f"{model_label}_correct_ema.npy", ema_final[correct_mask])
+    np.save(es_residuals_dir / f"{model_label}_mislabel.npy", avg_es[mislabel_mask])
+    np.save(es_residuals_dir / f"{model_label}_correct.npy", avg_es[correct_mask])
+    np.save(es_residuals_dir / f"{model_label}_mislabel_ema.npy", ema_es[mislabel_mask])
+    np.save(es_residuals_dir / f"{model_label}_correct_ema.npy", ema_es[correct_mask])
+
+    meta = {
+        **model_params,
+        "n_train": int(n_train),
+        "n_mislabel": int(mislabel_mask.sum()),
+        "n_correct": int(correct_mask.sum()),
+        "total_steps": int(total_steps),
+        "total_steps_es": int(total_steps_es),
+        "best_val_epoch": int(best_val_epoch),
+        "best_val_loss": float(best_val_loss),
+        "beta1": beta1,
+    }
+    with open(residuals_dir / f"{model_label}_meta.json", "w") as f:
+        json.dump(meta, f, indent=2)
+    print(
+        f"[GPU {gpu_id}] {model_label} residuals saved: "
+        f"FINAL avg mis={avg_final[mislabel_mask].mean():.4f} correct={avg_final[correct_mask].mean():.4f}; "
+        f"FINAL ema mis={ema_final[mislabel_mask].mean():.4f} correct={ema_final[correct_mask].mean():.4f}; "
+        f"ES avg mis={avg_es[mislabel_mask].mean():.4f} correct={avg_es[correct_mask].mean():.4f}; "
+        f"ES ema mis={ema_es[mislabel_mask].mean():.4f} correct={ema_es[correct_mask].mean():.4f}"
+    )
 
     # Compute and save final evaluation metrics
     from jl.double_descent.resnet18.evaluation import compute_final_metrics
