@@ -174,36 +174,81 @@ def train_single_model(
     es_dir = Path(output_path) / "early_stop"
     es_dir.mkdir(parents=True, exist_ok=True)
     es_model_path = es_dir / f"model_{model_label}.pt"
+    residuals_dir = Path(output_path) / "residuals"
+    residuals_dir.mkdir(parents=True, exist_ok=True)
+    es_residuals_dir = es_dir / "residuals"
+    es_residuals_dir.mkdir(parents=True, exist_ok=True)
+    correct_mask = ~mislabel_mask
     best_val_loss = float("inf")
     best_val_epoch = 0
 
     # Per-point residual accumulators: r_i = 1 - p(assigned class).
-    #   residual_sum     : raw cumulative sum (per step the point participates).
-    #   residual_ema     : Adam-style EMA with beta1: every step we apply
-    #                      m <- beta1 * m, then add (1 - beta1) * r for points
-    #                      in the batch.  Mirrors first-moment update with
-    #                      sparse gradients.  Bias-corrected at save time by
-    #                      dividing by (1 - beta1**total_steps).
-    # Both vectors are snapshotted whenever val_loss improves so the ES
-    # checkpoint captures contributions accumulated *up to* the early-stop epoch.
+    #   residual_sum : raw cumulative sum (per step the point participates).
+    #   residual_m   : EMA(r) with beta1 (sparse update, decay every step).
+    #   residual_v   : EMA(r^2) with beta2 (sparse update, decay every step).
+    # At save time we report m_hat / (sqrt(v_hat) + eps) per point — the
+    # Adam-style normalized contribution, treating r as a per-point gradient
+    # proxy.  This stays meaningful late in training when r itself shrinks.
+    # All three vectors are snapshotted at every val_loss improvement so the
+    # ES values reflect accumulations up to the early-stop epoch.
     n_train = len(train_loader.dataset)
     residual_sum = torch.zeros(n_train, device=device, dtype=torch.float64)
-    residual_ema = torch.zeros(n_train, device=device, dtype=torch.float64)
+    residual_m = torch.zeros(n_train, device=device, dtype=torch.float64)
+    residual_v = torch.zeros(n_train, device=device, dtype=torch.float64)
     total_steps = 0
     residual_sum_es = torch.zeros_like(residual_sum)
-    residual_ema_es = torch.zeros_like(residual_ema)
+    residual_m_es = torch.zeros_like(residual_m)
+    residual_v_es = torch.zeros_like(residual_v)
     total_steps_es = 0
-    if (
-        hasattr(optimizer, "param_groups")
-        and "betas" in optimizer.param_groups[0]
-    ):
-        beta1 = float(optimizer.param_groups[0]["betas"][0])
-    else:
-        beta1 = 0.9
+    pg = optimizer.param_groups[0]
+    betas = pg.get("betas", (0.9, 0.999))
+    beta1 = float(betas[0])
+    beta2 = float(betas[1])
+    adam_eps = float(pg.get("eps", 1e-8))
 
     use_bf16 = getattr(config, "use_bf16", True)
     if use_bf16:
         print(f"[GPU {gpu_id}] {model_label} BF16 autocast enabled")
+
+    def _adam_contribution(m: torch.Tensor, v: torch.Tensor, steps: int) -> torch.Tensor:
+        """Bias-corrected m_hat / (sqrt(v_hat) + eps), as Adam applies per-step."""
+        t = max(steps, 1)
+        m_hat = m / (1.0 - beta1 ** t)
+        v_hat = v / (1.0 - beta2 ** t)
+        return m_hat / (v_hat.sqrt() + adam_eps)
+
+    def _save_residual_snapshot(
+        out_dir: Path,
+        sum_t: torch.Tensor,
+        m_t: torch.Tensor,
+        v_t: torch.Tensor,
+        steps: int,
+        snapshot_kind: str,
+        snapshot_epoch: int,
+    ) -> None:
+        """Write 4 .npy files (avg + Adam-scaled, split by mislabel mask) + meta.json."""
+        avg = (sum_t / max(steps, 1)).cpu().numpy()
+        adam = _adam_contribution(m_t, v_t, steps).cpu().numpy()
+        np.save(out_dir / f"{model_label}_mislabel.npy", avg[mislabel_mask])
+        np.save(out_dir / f"{model_label}_correct.npy", avg[correct_mask])
+        np.save(out_dir / f"{model_label}_mislabel_adam.npy", adam[mislabel_mask])
+        np.save(out_dir / f"{model_label}_correct_adam.npy", adam[correct_mask])
+        meta = {
+            **model_params,
+            "n_train": int(n_train),
+            "n_mislabel": int(mislabel_mask.sum()),
+            "n_correct": int(correct_mask.sum()),
+            "total_steps": int(steps),
+            "snapshot_kind": snapshot_kind,
+            "snapshot_epoch": int(snapshot_epoch),
+            "best_val_epoch": int(best_val_epoch),
+            "best_val_loss": float(best_val_loss),
+            "beta1": beta1,
+            "beta2": beta2,
+            "adam_eps": adam_eps,
+        }
+        with open(out_dir / f"{model_label}_meta.json", "w") as f:
+            json.dump(meta, f, indent=2)
 
     # Clear metrics file
     with open(metrics_path, 'w') as f:
@@ -240,8 +285,10 @@ def train_single_model(
                 p_assigned = probs.gather(1, labels.unsqueeze(1)).squeeze(1)
                 residual = (1.0 - p_assigned).double()
                 residual_sum.index_add_(0, indices, residual)
-                residual_ema.mul_(beta1)
-                residual_ema.index_add_(0, indices, residual * (1.0 - beta1))
+                residual_m.mul_(beta1)
+                residual_m.index_add_(0, indices, residual * (1.0 - beta1))
+                residual_v.mul_(beta2)
+                residual_v.index_add_(0, indices, residual * residual * (1.0 - beta2))
                 total_steps += 1
                 preds = logits.argmax(dim=1)
                 train_correct += (preds == labels).sum().item()
@@ -280,14 +327,24 @@ def train_single_model(
         with open(metrics_path, 'a') as f:
             f.write(json.dumps(metrics) + "\n")
 
-        # Save early-stop checkpoint when val_loss improves
+        # Save early-stop checkpoint when val_loss improves.  Mirrors the
+        # residual accumulators to disk in the same step so we always have a
+        # consistent on-disk ES snapshot (model.pt + residuals) — useful if
+        # training is killed before completion.
         if val_loss is not None and val_loss < best_val_loss:
             best_val_loss = val_loss
             best_val_epoch = epoch + 1
             torch.save(model.state_dict(), es_model_path)
             residual_sum_es.copy_(residual_sum)
-            residual_ema_es.copy_(residual_ema)
+            residual_m_es.copy_(residual_m)
+            residual_v_es.copy_(residual_v)
             total_steps_es = total_steps
+            _save_residual_snapshot(
+                es_residuals_dir,
+                residual_sum_es, residual_m_es, residual_v_es,
+                total_steps_es, snapshot_kind="ES",
+                snapshot_epoch=best_val_epoch,
+            )
 
         # Print progress
         if (epoch + 1) % config.log_interval == 0 or epoch == 0:
@@ -308,49 +365,29 @@ def train_single_model(
     torch.save(model.state_dict(), model_path)
     print(f"[GPU {gpu_id}] {model_label} training complete! Model saved to {model_path}")
 
-    # Save per-point average residuals (FINAL + ES), split by mislabel mask.
-    # average = sum(1 - p_assigned) / number_of_training_steps_at_snapshot.
-    residuals_dir = Path(output_path) / "residuals"
-    residuals_dir.mkdir(parents=True, exist_ok=True)
-    es_residuals_dir = es_dir / "residuals"
-    es_residuals_dir.mkdir(parents=True, exist_ok=True)
-
+    # Save FINAL per-point residuals.  ES residuals are already on disk —
+    # we re-write them once more here so the meta.json reflects the final
+    # best_val_epoch/best_val_loss values.
+    _save_residual_snapshot(
+        residuals_dir,
+        residual_sum, residual_m, residual_v, total_steps,
+        snapshot_kind="FINAL", snapshot_epoch=config.epochs,
+    )
+    _save_residual_snapshot(
+        es_residuals_dir,
+        residual_sum_es, residual_m_es, residual_v_es, total_steps_es,
+        snapshot_kind="ES", snapshot_epoch=best_val_epoch,
+    )
     avg_final = (residual_sum / max(total_steps, 1)).cpu().numpy()
     avg_es = (residual_sum_es / max(total_steps_es, 1)).cpu().numpy()
-    ema_bias_final = 1.0 - beta1 ** max(total_steps, 1)
-    ema_bias_es = 1.0 - beta1 ** max(total_steps_es, 1)
-    ema_final = (residual_ema / ema_bias_final).cpu().numpy()
-    ema_es = (residual_ema_es / ema_bias_es).cpu().numpy()
-    correct_mask = ~mislabel_mask
-
-    np.save(residuals_dir / f"{model_label}_mislabel.npy", avg_final[mislabel_mask])
-    np.save(residuals_dir / f"{model_label}_correct.npy", avg_final[correct_mask])
-    np.save(residuals_dir / f"{model_label}_mislabel_ema.npy", ema_final[mislabel_mask])
-    np.save(residuals_dir / f"{model_label}_correct_ema.npy", ema_final[correct_mask])
-    np.save(es_residuals_dir / f"{model_label}_mislabel.npy", avg_es[mislabel_mask])
-    np.save(es_residuals_dir / f"{model_label}_correct.npy", avg_es[correct_mask])
-    np.save(es_residuals_dir / f"{model_label}_mislabel_ema.npy", ema_es[mislabel_mask])
-    np.save(es_residuals_dir / f"{model_label}_correct_ema.npy", ema_es[correct_mask])
-
-    meta = {
-        **model_params,
-        "n_train": int(n_train),
-        "n_mislabel": int(mislabel_mask.sum()),
-        "n_correct": int(correct_mask.sum()),
-        "total_steps": int(total_steps),
-        "total_steps_es": int(total_steps_es),
-        "best_val_epoch": int(best_val_epoch),
-        "best_val_loss": float(best_val_loss),
-        "beta1": beta1,
-    }
-    with open(residuals_dir / f"{model_label}_meta.json", "w") as f:
-        json.dump(meta, f, indent=2)
+    adam_final = _adam_contribution(residual_m, residual_v, total_steps).cpu().numpy()
+    adam_es = _adam_contribution(residual_m_es, residual_v_es, total_steps_es).cpu().numpy()
     print(
         f"[GPU {gpu_id}] {model_label} residuals saved: "
         f"FINAL avg mis={avg_final[mislabel_mask].mean():.4f} correct={avg_final[correct_mask].mean():.4f}; "
-        f"FINAL ema mis={ema_final[mislabel_mask].mean():.4f} correct={ema_final[correct_mask].mean():.4f}; "
+        f"FINAL adam mis={adam_final[mislabel_mask].mean():.4f} correct={adam_final[correct_mask].mean():.4f}; "
         f"ES avg mis={avg_es[mislabel_mask].mean():.4f} correct={avg_es[correct_mask].mean():.4f}; "
-        f"ES ema mis={ema_es[mislabel_mask].mean():.4f} correct={ema_es[correct_mask].mean():.4f}"
+        f"ES adam mis={adam_es[mislabel_mask].mean():.4f} correct={adam_es[correct_mask].mean():.4f}"
     )
 
     # Compute and save final evaluation metrics
