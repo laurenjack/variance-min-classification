@@ -182,23 +182,31 @@ def train_single_model(
     best_val_loss = float("inf")
     best_val_epoch = 0
 
-    # Per-point residual accumulators: r_i = 1 - p(assigned class).
-    #   residual_sum : raw cumulative sum (per step the point participates).
-    #   residual_m   : EMA(r) with beta1 (sparse update, decay every step).
-    #   residual_v   : EMA(r^2) with beta2 (sparse update, decay every step).
-    # At save time we report m_hat / (sqrt(v_hat) + eps) per point — the
-    # Adam-style normalized contribution, treating r as a per-point gradient
-    # proxy.  This stays meaningful late in training when r itself shrinks.
-    # All three vectors are snapshotted at every val_loss improvement so the
-    # ES values reflect accumulations up to the early-stop epoch.
+    # Per-point + scalar residual accumulators.
+    #   residual_sum : per-point raw cumulative sum (per step the point is in batch).
+    #   residual_m   : per-point EMA(r) with beta1 (sparse update, decay every step).
+    #   residual_v   : SCALAR EMA over time of mean_i(r_i^2) across the batch,
+    #                  decayed every step — v_t = beta2 * v_{t-1} +
+    #                  (1 - beta2) * mean(g^2).  Shared across points,
+    #                  mirroring Adam's batch-averaged second-moment signal.
+    #   tau_accum    : per-point cumulative sum of tau_it = m_hat_it /
+    #                  (sqrt(v_hat_t) + eps), accumulated only at steps where
+    #                  the point appears in the batch.  This is the
+    #                  Adam-style normalized contribution accumulated over
+    #                  training — different sampling times see different v_t,
+    #                  so v does NOT cancel in the share (unlike a snapshot
+    #                  m_T / sqrt(v_T)).
+    # All accumulators are snapshotted at every val_loss improvement.
     n_train = len(train_loader.dataset)
     residual_sum = torch.zeros(n_train, device=device, dtype=torch.float64)
     residual_m = torch.zeros(n_train, device=device, dtype=torch.float64)
-    residual_v = torch.zeros(n_train, device=device, dtype=torch.float64)
+    residual_v = torch.zeros((), device=device, dtype=torch.float64)
+    tau_accum = torch.zeros(n_train, device=device, dtype=torch.float64)
     total_steps = 0
     residual_sum_es = torch.zeros_like(residual_sum)
     residual_m_es = torch.zeros_like(residual_m)
     residual_v_es = torch.zeros_like(residual_v)
+    tau_accum_es = torch.zeros_like(tau_accum)
     total_steps_es = 0
     pg = optimizer.param_groups[0]
     betas = pg.get("betas", (0.9, 0.999))
@@ -210,29 +218,26 @@ def train_single_model(
     if use_bf16:
         print(f"[GPU {gpu_id}] {model_label} BF16 autocast enabled")
 
-    def _adam_contribution(m: torch.Tensor, v: torch.Tensor, steps: int) -> torch.Tensor:
-        """Bias-corrected m_hat / (sqrt(v_hat) + eps), as Adam applies per-step."""
-        t = max(steps, 1)
-        m_hat = m / (1.0 - beta1 ** t)
-        v_hat = v / (1.0 - beta2 ** t)
-        return m_hat / (v_hat.sqrt() + adam_eps)
-
     def _save_residual_snapshot(
         out_dir: Path,
         sum_t: torch.Tensor,
-        m_t: torch.Tensor,
-        v_t: torch.Tensor,
+        tau_t: torch.Tensor,
+        v_scalar_t: torch.Tensor,
         steps: int,
         snapshot_kind: str,
         snapshot_epoch: int,
     ) -> None:
-        """Write 4 .npy files (avg + Adam-scaled, split by mislabel mask) + meta.json."""
+        """Write 4 .npy files (raw avg + accumulated tau, split by mislabel mask) + meta.json."""
         avg = (sum_t / max(steps, 1)).cpu().numpy()
-        adam = _adam_contribution(m_t, v_t, steps).cpu().numpy()
+        # tau_t is already the cumulative sum of per-step tau_it across the
+        # point's batch visits.  Save as-is; share = sum(tau_mis) / sum(tau_total)
+        # is not invariant under the scalar v_t (varies across the visited steps).
+        tau = tau_t.cpu().numpy()
         np.save(out_dir / f"{model_label}_mislabel.npy", avg[mislabel_mask])
         np.save(out_dir / f"{model_label}_correct.npy", avg[correct_mask])
-        np.save(out_dir / f"{model_label}_mislabel_adam.npy", adam[mislabel_mask])
-        np.save(out_dir / f"{model_label}_correct_adam.npy", adam[correct_mask])
+        np.save(out_dir / f"{model_label}_mislabel_adam.npy", tau[mislabel_mask])
+        np.save(out_dir / f"{model_label}_correct_adam.npy", tau[correct_mask])
+        v_value = float(v_scalar_t.item())
         meta = {
             **model_params,
             "n_train": int(n_train),
@@ -246,6 +251,7 @@ def train_single_model(
             "beta1": beta1,
             "beta2": beta2,
             "adam_eps": adam_eps,
+            "v_scalar": v_value,
         }
         with open(out_dir / f"{model_label}_meta.json", "w") as f:
             json.dump(meta, f, indent=2)
@@ -287,9 +293,17 @@ def train_single_model(
                 residual_sum.index_add_(0, indices, residual)
                 residual_m.mul_(beta1)
                 residual_m.index_add_(0, indices, residual * (1.0 - beta1))
-                residual_v.mul_(beta2)
-                residual_v.index_add_(0, indices, residual * residual * (1.0 - beta2))
+                # Scalar v: EMA of mean(g^2) across the batch.
+                batch_mean_sq = (residual * residual).mean()
+                residual_v.mul_(beta2).add_(batch_mean_sq, alpha=1.0 - beta2)
                 total_steps += 1
+                # Accumulate per-batch-point Adam-style tau_it = m_hat / sqrt(v_hat).
+                bc_m = 1.0 - beta1 ** total_steps
+                bc_v = 1.0 - beta2 ** total_steps
+                m_hat_batch = residual_m.index_select(0, indices) / bc_m
+                v_hat = residual_v / bc_v
+                tau_step = m_hat_batch / (v_hat.sqrt() + adam_eps)
+                tau_accum.index_add_(0, indices, tau_step)
                 preds = logits.argmax(dim=1)
                 train_correct += (preds == labels).sum().item()
                 train_samples += batch_size
@@ -338,10 +352,11 @@ def train_single_model(
             residual_sum_es.copy_(residual_sum)
             residual_m_es.copy_(residual_m)
             residual_v_es.copy_(residual_v)
+            tau_accum_es.copy_(tau_accum)
             total_steps_es = total_steps
             _save_residual_snapshot(
                 es_residuals_dir,
-                residual_sum_es, residual_m_es, residual_v_es,
+                residual_sum_es, tau_accum_es, residual_v_es,
                 total_steps_es, snapshot_kind="ES",
                 snapshot_epoch=best_val_epoch,
             )
@@ -370,24 +385,24 @@ def train_single_model(
     # best_val_epoch/best_val_loss values.
     _save_residual_snapshot(
         residuals_dir,
-        residual_sum, residual_m, residual_v, total_steps,
+        residual_sum, tau_accum, residual_v, total_steps,
         snapshot_kind="FINAL", snapshot_epoch=config.epochs,
     )
     _save_residual_snapshot(
         es_residuals_dir,
-        residual_sum_es, residual_m_es, residual_v_es, total_steps_es,
+        residual_sum_es, tau_accum_es, residual_v_es, total_steps_es,
         snapshot_kind="ES", snapshot_epoch=best_val_epoch,
     )
     avg_final = (residual_sum / max(total_steps, 1)).cpu().numpy()
     avg_es = (residual_sum_es / max(total_steps_es, 1)).cpu().numpy()
-    adam_final = _adam_contribution(residual_m, residual_v, total_steps).cpu().numpy()
-    adam_es = _adam_contribution(residual_m_es, residual_v_es, total_steps_es).cpu().numpy()
+    tau_final_np = tau_accum.cpu().numpy()
+    tau_es_np = tau_accum_es.cpu().numpy()
     print(
         f"[GPU {gpu_id}] {model_label} residuals saved: "
         f"FINAL avg mis={avg_final[mislabel_mask].mean():.4f} correct={avg_final[correct_mask].mean():.4f}; "
-        f"FINAL adam mis={adam_final[mislabel_mask].mean():.4f} correct={adam_final[correct_mask].mean():.4f}; "
+        f"FINAL tau mis={tau_final_np[mislabel_mask].mean():.4f} correct={tau_final_np[correct_mask].mean():.4f}; "
         f"ES avg mis={avg_es[mislabel_mask].mean():.4f} correct={avg_es[correct_mask].mean():.4f}; "
-        f"ES adam mis={adam_es[mislabel_mask].mean():.4f} correct={adam_es[correct_mask].mean():.4f}"
+        f"ES tau mis={tau_es_np[mislabel_mask].mean():.4f} correct={tau_es_np[correct_mask].mean():.4f}"
     )
 
     # Compute and save final evaluation metrics
