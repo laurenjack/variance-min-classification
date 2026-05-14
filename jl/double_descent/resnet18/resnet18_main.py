@@ -137,19 +137,41 @@ def parse_args():
         help="Explicit list of k values to train, overriding K_VALUES / "
              "LARGE_K_VALUES.  Used to split a sweep across multiple pods.",
     )
+    parser.add_argument(
+        "--models-per-gpu",
+        type=int,
+        default=1,
+        help="Number of training processes to colocate per GPU. Use >1 with "
+             "NVIDIA MPS enabled (`nvidia-cuda-mps-control -d`) so kernels "
+             "from different models actually run concurrently. K values are "
+             "dispatched round-robin across GPUs so each GPU gets a mix.",
+    )
     return parser.parse_args()
 
 
 def run_training(k_values, num_gpus, args, config):
-    """Train models for the given k values using all available GPUs.
+    """Train all k values in parallel, round-robin'd across GPUs.
 
-    Batches k values into groups of num_gpus, running each batch in parallel.
+    Total concurrent processes = num_gpus * models_per_gpu. When
+    models_per_gpu > 1 you should have started the MPS daemon
+    (`nvidia-cuda-mps-control -d`); without it, processes on the same GPU
+    will time-slice instead of running concurrently.
     """
     total_start = time.time()
-    num_batches = math.ceil(len(k_values) / num_gpus)
+    models_per_gpu = max(1, args.models_per_gpu)
+    total_procs = num_gpus * models_per_gpu
+
+    # Round-robin assign k -> GPU so each GPU gets a mix of small/large.
+    gpu_to_ks = [[] for _ in range(num_gpus)]
+    for i, k in enumerate(k_values):
+        gpu_to_ks[i % num_gpus].append(k)
 
     logger.info(f"Width values: k={k_values}")
-    logger.info(f"GPUs: {num_gpus}, Batches: {num_batches}")
+    logger.info(
+        f"GPUs: {num_gpus}, models/GPU: {models_per_gpu}, total procs: {total_procs}"
+    )
+    for gpu_id, ks in enumerate(gpu_to_ks):
+        logger.info(f"  GPU {gpu_id} -> k={ks}")
     logger.info(
         f"Validation split: "
         f"{'enabled (45K train / 5K val, seed=73132)' if config.use_val_split else 'disabled (full 50K train)'}"
@@ -157,6 +179,10 @@ def run_training(k_values, num_gpus, args, config):
     logger.info(f"Epochs: {config.epochs}, Batch size: {config.batch_size}")
     logger.info(f"Learning rate: {config.learning_rate}")
     logger.info(f"BF16 autocast: {config.use_bf16}")
+    mps_pipe = os.environ.get("CUDA_MPS_PIPE_DIRECTORY")
+    logger.info(
+        f"CUDA_MPS_PIPE_DIRECTORY: {mps_pipe if mps_pipe else '(unset — MPS not detected)'}"
+    )
     if config.cosine_decay_epoch is not None:
         logger.info(f"Cosine decay from epoch {config.cosine_decay_epoch}")
     logger.info(f"Label noise: {config.label_noise}")
@@ -164,32 +190,30 @@ def run_training(k_values, num_gpus, args, config):
 
     mp.set_start_method('spawn', force=True)
 
-    for batch_idx in range(num_batches):
-        batch_k = k_values[batch_idx * num_gpus:(batch_idx + 1) * num_gpus]
-        batch_num = batch_idx + 1
+    if max(len(ks) for ks in gpu_to_ks) > models_per_gpu:
+        logger.warning(
+            f"Some GPUs have more k values than models_per_gpu={models_per_gpu}; "
+            f"those will queue serially within a process."
+        )
 
-        logger.info(f"\n{'='*60}")
-        logger.info(f"Batch {batch_num}/{num_batches}: k = {batch_k}")
-        logger.info(f"{'='*60}")
-
-        processes = []
-        for gpu_id, k in enumerate(batch_k):
+    processes = []
+    for gpu_id, ks in enumerate(gpu_to_ks):
+        for k in ks:
             model_factory = partial(make_resnet18k, k=k, num_classes=10)
             model_label = f"k{k}"
             model_params = {"k": k}
             p = mp.Process(
                 target=train_single_model,
-                args=(gpu_id, model_factory, model_label, model_params, config, args.output_path, args.data_path)
+                args=(gpu_id, model_factory, model_label, model_params,
+                      config, args.output_path, args.data_path),
             )
             p.start()
-            processes.append(p)
-            logger.info(f"Started process for k={k} on GPU {gpu_id}")
+            processes.append((gpu_id, k, p))
+            logger.info(f"Started process for k={k} on GPU {gpu_id} (pid={p.pid})")
 
-        for i, p in enumerate(processes):
-            p.join()
-            logger.info(f"Process for k={batch_k[i]} completed")
-
-        logger.info(f"Batch {batch_num}/{num_batches} complete")
+    for gpu_id, k, p in processes:
+        p.join()
+        logger.info(f"Process k={k} (GPU {gpu_id}) completed")
 
     total_time = time.time() - total_start
     logger.info("\n" + "=" * 60)
