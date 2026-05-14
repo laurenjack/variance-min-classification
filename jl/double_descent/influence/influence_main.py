@@ -210,42 +210,54 @@ def process_k(
     ft_path = output_dir / f"finetune_k{k}{file_suffix}.pt"
     torch.save(model.linear.state_dict(), ft_path)
 
-    # Canonical mislabeled-influence share, per test point t:
-    #   v(t)          = sum_i r_i * (phi_i . phi_t)         [in class space]
-    #   v_mislabel(t) = sum_{i in M} r_i * (phi_i . phi_t)
-    #   c_mislabel(t) = <v_mislabel(t), v(t)> / ||v(t)||^2   (standard projection scalar)
-    # Since v = v_mislabel + v_correct, we have c_mislabel + c_correct = 1
-    # by construction, so c_mislabel IS the share (no further normalization).
-    # The L2 scale factor cancels in the ratio so we omit it.
-    logger.info("Computing mislabeled influence share per test point...")
+    # Canonical mislabeled-influence projections, per test point t:
+    #   v(t)        = sum_i        r_i * (phi_i . phi_t)         [in class space]
+    #   v_mis(t)    = sum_{i in M} r_i * (phi_i . phi_t)
+    #   v_corr(t)   = sum_{i in C} r_i * (phi_i . phi_t)   (where C = correctly-labeled)
+    #   proj_M(t)   = <v_mis(t),  v(t)>     -- unnormalized projection scalar
+    #   proj_C(t)   = <v_corr(t), v(t)>
+    # By construction proj_M + proj_C = ||v||^2 (positive). Both are saved
+    # so downstream plotting can compute any share form -- signed, absolute,
+    # pooled, etc -- without an in-pipeline ||v||^2 normalization (which
+    # would amplify noise for test points with tiny ||v||^2).
+    logger.info("Computing mislabeled influence projections per test point...")
     mis_mask_t = torch.from_numpy(mislabel_mask.astype(bool)).to(phi_train.device)
     with torch.no_grad():
         n_test = phi_test.size(0)
         test_chunk = 1024
-        share_per_test = torch.zeros(
-            n_test, device=phi_train.device, dtype=torch.float64
-        )
+        proj_M = torch.zeros(n_test, device=phi_train.device, dtype=torch.float64)
+        proj_C = torch.zeros(n_test, device=phi_train.device, dtype=torch.float64)
         r_M = residuals[mis_mask_t]                                    # [N_mis, C]
         phi_M = phi_train[mis_mask_t]                                  # [N_mis, d]
+        not_mis = ~mis_mask_t
+        r_C = residuals[not_mis]                                       # [N_correct, C]
+        phi_C = phi_train[not_mis]                                     # [N_correct, d]
         for ts in range(0, n_test, test_chunk):
             te = min(ts + test_chunk, n_test)
             phi_t = phi_test[ts:te]                                    # [chunk, d]
-            # v(t)          [C, chunk]
+            # v(t)        [C, chunk]
             v = residuals.t() @ (phi_train @ phi_t.t())
-            # v_mislabel(t) [C, chunk]
+            # v_mis(t)    [C, chunk]
             v_mis = r_M.t() @ (phi_M @ phi_t.t())
-            # per-test projection scalar:  <v_mis, v> / ||v||^2
-            v_dot_v = (v * v).sum(dim=0)                               # [chunk]
-            v_mis_dot_v = (v_mis * v).sum(dim=0)                       # [chunk]
-            share_per_test[ts:te] = (
-                v_mis_dot_v / v_dot_v.clamp_min(1e-30)
-            ).double()
-    share_per_test_np = share_per_test.cpu().numpy()
-    share_path = output_dir / f"share_per_test_k{k}{file_suffix}.npy"
-    np.save(share_path, share_per_test_np)
-    mean_share = float(share_per_test_np.mean())
+            # v_corr(t)   [C, chunk]
+            v_corr = r_C.t() @ (phi_C @ phi_t.t())
+            proj_M[ts:te] = (v_mis * v).sum(dim=0).double()
+            proj_C[ts:te] = (v_corr * v).sum(dim=0).double()
+    proj_M_np = proj_M.cpu().numpy()
+    proj_C_np = proj_C.cpu().numpy()
+    proj_path = output_dir / f"projections_k{k}{file_suffix}.npz"
+    np.savez(proj_path, proj_M=proj_M_np, proj_C=proj_C_np)
+    # Summary for the log: signed share averaged over test points (using
+    # the same |v|^2-cancelling derivation, but reported here as
+    # mean of proj_M / (proj_M + proj_C)).
+    denom = proj_M_np + proj_C_np
+    safe_denom = np.where(np.abs(denom) > 1e-30, denom, 1e-30)
+    mean_signed_share = float((proj_M_np / safe_denom).mean())
+    abs_denom = np.abs(proj_M_np) + np.abs(proj_C_np)
+    mean_abs_share = float((np.abs(proj_M_np) / np.maximum(abs_denom, 1e-30)).mean())
     logger.info(
-        f"mislabeled influence share (mean over test) = {mean_share:.4f} "
+        f"projections saved.  mean signed share = {mean_signed_share:.4f},  "
+        f"mean abs share = {mean_abs_share:.4f}  "
         f"(baseline mislabel rate = {float(mislabel_mask.mean()):.4f})"
     )
 
