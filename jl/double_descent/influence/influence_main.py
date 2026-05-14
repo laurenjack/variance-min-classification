@@ -210,93 +210,48 @@ def process_k(
     ft_path = output_dir / f"finetune_k{k}{file_suffix}.pt"
     torch.save(model.linear.state_dict(), ft_path)
 
-    # Canonical metric: share_M(t) = sum_{i in M} c_{i,t} / sum_i c_{i,t},
-    # where c_{i,t} = ||r_i||_2 * |phi_i . phi_t|, mean over test points.
-    # Save the per-test array; plotting reads from there.
-    logger.info("Computing share_M per test point...")
+    # Canonical mislabeled-influence share, per test point t:
+    #   v(t)          = sum_i r_i * (phi_i . phi_t)         [in class space]
+    #   v_mislabel(t) = sum_{i in M} r_i * (phi_i . phi_t)
+    #   c_mislabel(t) = <v_mislabel(t), v(t)> / ||v(t)||^2   (standard projection scalar)
+    # Since v = v_mislabel + v_correct, we have c_mislabel + c_correct = 1
+    # by construction, so c_mislabel IS the share (no further normalization).
+    # The L2 scale factor cancels in the ratio so we omit it.
+    logger.info("Computing mislabeled influence share per test point...")
     mis_mask_t = torch.from_numpy(mislabel_mask.astype(bool)).to(phi_train.device)
     with torch.no_grad():
-        grad_norms = residuals.norm(dim=1)  # [N_train]
         n_test = phi_test.size(0)
-        total_contrib = torch.zeros(n_test, device=phi_train.device, dtype=torch.float64)
-        mis_contrib = torch.zeros(n_test, device=phi_train.device, dtype=torch.float64)
         test_chunk = 1024
+        share_per_test = torch.zeros(
+            n_test, device=phi_train.device, dtype=torch.float64
+        )
+        r_M = residuals[mis_mask_t]                                    # [N_mis, C]
+        phi_M = phi_train[mis_mask_t]                                  # [N_mis, d]
         for ts in range(0, n_test, test_chunk):
             te = min(ts + test_chunk, n_test)
-            dots = phi_train @ phi_test[ts:te].t()
-            abs_dots = dots.abs()
-            contrib = grad_norms.unsqueeze(1) * abs_dots  # [N_train, chunk]
-            total_contrib[ts:te] = contrib.sum(dim=0).double()
-            mis_contrib[ts:te] = contrib[mis_mask_t].sum(dim=0).double()
-        share_per_test = (
-            mis_contrib / total_contrib.clamp_min(1e-30)
-        ).cpu().numpy()
+            phi_t = phi_test[ts:te]                                    # [chunk, d]
+            # v(t)          [C, chunk]
+            v = residuals.t() @ (phi_train @ phi_t.t())
+            # v_mislabel(t) [C, chunk]
+            v_mis = r_M.t() @ (phi_M @ phi_t.t())
+            # per-test projection scalar:  <v_mis, v> / ||v||^2
+            v_dot_v = (v * v).sum(dim=0)                               # [chunk]
+            v_mis_dot_v = (v_mis * v).sum(dim=0)                       # [chunk]
+            share_per_test[ts:te] = (
+                v_mis_dot_v / v_dot_v.clamp_min(1e-30)
+            ).double()
+    share_per_test_np = share_per_test.cpu().numpy()
     share_path = output_dir / f"share_per_test_k{k}{file_suffix}.npy"
-    np.save(share_path, share_per_test)
-    mean_share = float(share_per_test.mean())
+    np.save(share_path, share_per_test_np)
+    mean_share = float(share_per_test_np.mean())
     logger.info(
-        f"share_M mean over test = {mean_share:.4f} "
+        f"mislabeled influence share (mean over test) = {mean_share:.4f} "
         f"(baseline mislabel rate = {float(mislabel_mask.mean()):.4f})"
-    )
-
-    # Projection-based contributions: alpha_{i,t} = <v_{i,t}, V_t>
-    # where v_{i,t} = -1/(2*lambda*n) * r_i * (phi_i . phi_t)  (no bias),
-    # and V_t = logits_t = W_FT * phi_t (the sum the v_i's reconstruct).
-    # No normalization: alpha_i has units of magnitude^2 and decomposes
-    # ||V_t||^2 = sum_i alpha_i (since r_i is row-centered, the projection
-    # is invariant to softmax-irrelevant constant shifts in W_FT).
-    # Save per-test signed and absolute sums for M and total; plotting
-    # computes share_signed = signed_M/signed_T (in [-x, 1]),
-    # share_abs = abs_M/abs_T (in [0, 1]),
-    # cancellation_index = signed_T/abs_T (in [0, 1]; 1 = no cancellation).
-    logger.info("Computing projection-based per-test contributions (unnormalized)...")
-    with torch.no_grad():
-        logits_test = phi_test @ model.linear.weight.t()  # [N_test, C]
-        n_train_local = phi_train.size(0)
-        scale = -1.0 / (2.0 * lambda_l2 * n_train_local)
-
-        signed_M = torch.zeros(n_test, device=phi_train.device, dtype=torch.float64)
-        signed_T = torch.zeros(n_test, device=phi_train.device, dtype=torch.float64)
-        abs_M = torch.zeros(n_test, device=phi_train.device, dtype=torch.float64)
-        abs_T = torch.zeros(n_test, device=phi_train.device, dtype=torch.float64)
-        for ts in range(0, n_test, test_chunk):
-            te = min(ts + test_chunk, n_test)
-            V_chunk = logits_test[ts:te]  # [chunk, C] -- the unnormalized target
-            r_dot_V = residuals @ V_chunk.t()  # [N_train, chunk]
-            phi_dot_phi = phi_train @ phi_test[ts:te].t()  # [N_train, chunk]
-            alpha_chunk = scale * r_dot_V * phi_dot_phi  # [N_train, chunk]
-
-            signed_T[ts:te] = alpha_chunk.sum(dim=0).double()
-            signed_M[ts:te] = alpha_chunk[mis_mask_t].sum(dim=0).double()
-            abs_alpha = alpha_chunk.abs()
-            abs_T[ts:te] = abs_alpha.sum(dim=0).double()
-            abs_M[ts:te] = abs_alpha[mis_mask_t].sum(dim=0).double()
-    proj_path = output_dir / f"projection_per_test_k{k}{file_suffix}.npz"
-    np.savez(
-        proj_path,
-        signed_M=signed_M.cpu().numpy(),
-        signed_T=signed_T.cpu().numpy(),
-        abs_M=abs_M.cpu().numpy(),
-        abs_T=abs_T.cpu().numpy(),
-    )
-    mean_signed_share = float(
-        (signed_M / signed_T.clamp_min(1e-30)).mean().item()
-    )
-    mean_abs_share = float(
-        (abs_M / abs_T.clamp_min(1e-30)).mean().item()
-    )
-    mean_cancellation = float(
-        (signed_T / abs_T.clamp_min(1e-30)).mean().item()
-    )
-    logger.info(
-        f"projection: signed_share={mean_signed_share:.4f}  "
-        f"abs_share={mean_abs_share:.4f}  "
-        f"cancellation_index={mean_cancellation:.4f}"
     )
 
     # Summary stats (legacy: keeps mis/clean ratio for back-compat)
     stats = compute_summary_stats(influence, mislabel_mask)
-    stats["mean_share_M"] = mean_share
+    stats["mean_mislabel_share"] = mean_share
     stats["mislabel_rate"] = float(mislabel_mask.mean())
     logger.info(
         f"Influence ratio (mislabeled/clean): {stats['influence_ratio']:.3f}"

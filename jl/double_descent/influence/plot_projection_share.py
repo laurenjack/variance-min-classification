@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Plot signed and absolute projection-based influence shares vs k.
+"""DEPRECATED -- superseded by plot_influence_share.py (which now uses the
+canonical projection-based mislabeled influence share). The
+projection_per_test_k*.npz input is no longer produced; this script will
+fail at runtime. Will be removed in the next refactor pass.
+
+Plot signed and absolute projection-based influence shares vs k.
 
 For each training point i and test point t, define the projection scalar
     alpha_{i,t} = <contribution_{i,t}, u_t>
