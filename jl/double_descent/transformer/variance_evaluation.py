@@ -531,7 +531,14 @@ def evaluate_d_model_distributional(
     holdout_samples: Optional[int] = None,
     apply_temperature_scaling: bool = False,
 ):
-    """Distributional decomposition for one d_model using M2M100 reference."""
+    """Distributional decomposition for one d_model using M2M100 reference.
+
+    Each split's log_q is spooled to disk (fp16 .bin) right after the
+    forward pass, so peak RAM stays bounded regardless of model count.
+    The chunked decomposition then memory-maps each .bin and only loads
+    a chunk of positions at a time.
+    """
+    import numpy as np
     num_models = len(model_paths)
     logger.info(
         f"d_model={d_model}: distributional eval with {num_models} models "
@@ -539,28 +546,44 @@ def evaluate_d_model_distributional(
     )
 
     # Keep ref log_probs in fp16 to avoid a 2x memory copy; the decomposition
-    # upcasts per-chunk. ref_entropy is small (one float per position).
+    # upcasts per-chunk.
     ref_log_probs = ref_data['log_probs']  # fp16
     ref_entropy = ref_data['entropy'].float()
+    vocab_size = ref_log_probs.shape[1]
 
-    all_log_q = []
     ts_diags = []
-    for split_idx, model_path in enumerate(model_paths):
-        gpu_id = split_idx % num_gpus
-        logger.info(f"  Evaluating split {split_idx} on GPU {gpu_id}...")
-        log_q, ts_diag = _eval_single_model(
-            gpu_id, str(model_path), d_model, data_path,
-            num_splits, samples_per_split, subsample_seed, holdout_samples,
-            apply_temperature_scaling,
-        )
-        # _eval_single_model already returns fp16; keep it that way.
-        all_log_q.append(log_q)
-        if ts_diag is not None:
-            ts_diags.append({"split_id": split_idx, **ts_diag})
+    with tempfile.TemporaryDirectory() as spool_dir:
+        spool_paths = []
+        for split_idx, model_path in enumerate(model_paths):
+            gpu_id = split_idx % num_gpus
+            logger.info(f"  Evaluating split {split_idx} on GPU {gpu_id}...")
+            log_q, ts_diag = _eval_single_model(
+                gpu_id, str(model_path), d_model, data_path,
+                num_splits, samples_per_split, subsample_seed, holdout_samples,
+                apply_temperature_scaling,
+            )
+            # Spool fp16 log_q to disk and free the in-memory copy so we
+            # never hold > 1 split's distribution in RAM at a time.
+            n_pos = log_q.shape[0]
+            spool_path = os.path.join(spool_dir, f"split{split_idx}.bin")
+            log_q.numpy().tofile(spool_path)
+            spool_paths.append((spool_path, n_pos))
+            del log_q
+            if ts_diag is not None:
+                ts_diags.append({"split_id": split_idx, **ts_diag})
 
-    decomp = compute_distributional_decomposition(
-        all_log_q, ref_log_probs, ref_entropy, num_models,
-    )
+        # Memory-map each spooled split as a numpy array; the chunked decomp
+        # loads per-chunk slices into RAM only.
+        all_log_q = [
+            torch.from_numpy(
+                np.memmap(path, dtype=np.float16, mode='r', shape=(n_pos, vocab_size))
+            )
+            for path, n_pos in spool_paths
+        ]
+
+        decomp = compute_distributional_decomposition(
+            all_log_q, ref_log_probs, ref_entropy, num_models,
+        )
 
     logger.info(
         f"d_model={d_model}: test_loss={decomp['mean_test_loss']:.4f}, "
