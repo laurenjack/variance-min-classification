@@ -453,9 +453,11 @@ def _eval_single_model(
             if apply_temperature_scaling:
                 logits = logits / temperature
             log_q = F.log_softmax(logits, dim=-1)
-            all_log_q.append(log_q[mask].cpu())
+            # Cast to fp16 per-batch to halve the CPU accumulator memory.
+            # The final torch.cat is then bounded by fp16 storage cost.
+            all_log_q.append(log_q[mask].cpu().half())
 
-    return torch.cat(all_log_q, dim=0).half(), ts_diag
+    return torch.cat(all_log_q, dim=0), ts_diag
 
 
 def compute_distributional_decomposition(
