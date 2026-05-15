@@ -31,6 +31,13 @@ class TDDConfig:
     # Data
     subsample_seed: int = 674931  # Fixed seed for reproducibility
 
+    # Variance mode: train num_splits independent models per d_model on
+    # disjoint subsets of IWSLT train, with chunk num_splits reserved as
+    # an in-distribution held-out test set. See TRANSFORMER_PLAN.md.
+    variance: bool = False
+    num_splits: int = 4
+    samples_per_split: int = 32000  # 4 train + 1 held-out test = 160K (fits IWSLT-14)
+
     # Logging
     log_interval: int = 100  # Log train metrics every N steps
     eval_interval: int = 100  # Evaluate on valid set every N steps

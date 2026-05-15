@@ -14,6 +14,11 @@ Reproduce the ResNet18 double-descent curve from Nakkiran et al. (2019) Figure 1
 Trains 8 models per batch with k values incrementing by 4:
 - Default k-start=4: trains k=4, 8, 12, 16, 20, 24, 28, 32
 
+### Variance Mode (Bias-Variance Decomposition)
+Trains `num_splits` independently-initialised models per width k, each on a
+disjoint chunk of CIFAR-10 train, to decompose test cross-entropy into bias
+and variance terms vs k. See [Variance Mode](#variance-mode) below.
+
 ---
 
 ## Phase 1: Package Structure
@@ -204,6 +209,81 @@ Temperature scaling is integrated into `evaluation.py`. When `--val-split` is us
 - `ts_error`: test error after temperature scaling
 
 The shared utility lives in `jl/double_descent/temperature_scaling.py`.
+
+---
+
+## Variance Mode
+
+Trains `num_splits` ResNet18 models per width k on disjoint subsets of CIFAR-10
+train. Used to decompose test cross-entropy into a bias term and a variance
+term (Jensen Gap) across model width.
+
+### Setup
+- 50K CIFAR-10 train shuffled with a fixed seed, then split into `num_splits`
+  disjoint chunks (e.g. 4 × 12.5K).
+- 15% label noise applied independently within each chunk (different seed per
+  split, so corruption is not shared across models).
+- Test set: standard CIFAR-10 test (10K, clean), shared across splits — same
+  distribution as the splits since CIFAR's test set is i.i.d. with train.
+- Each (k, split_id) pair trains one model through the modern trainer (BF16
+  autocast, GPU-resident data pipeline, ES checkpointing on val loss).
+
+### Decomposition
+
+For a single test sample with true label y and `N = num_splits` model
+distributions `q_j` over classes:
+
+```
+loss_j         = -log q_j(y)                          (per-model NLL)
+q_bar(y)       = (1/N) · Σ_j q_j(y)                   (ensemble probability)
+bias           = -log q_bar(y)
+jensen_gap     = log q_bar(y) − (1/N) · Σ_j log q_j(y)   (≥ 0, the variance term)
+
+mean_test_loss = bias + jensen_gap
+```
+
+### Running
+
+```bash
+python -m jl.double_descent.resnet18.resnet18_main \
+    --variance --num-splits 4 \
+    --output-path ./output/resnet18_variance/$(date +%m-%d-%H%M) \
+    --data-path ./data
+```
+
+With `--num-splits 4` and 8 GPUs, each batch trains 2 k-values × 4 splits = 8
+models. The default k sweep is reused — same `K_VALUES` list as default mode.
+
+### Output Structure
+
+```
+output/resnet18_variance/MM-DD-HHmm/
+├── metrics_k{K}_split{S}.jsonl
+├── model_k{K}_split{S}.pt
+├── evaluation.jsonl                  # FINAL bias/variance per k
+└── early_stop/
+    ├── model_k{K}_split{S}.pt        # Best-val checkpoint per (k, split)
+    └── evaluation.jsonl              # ES bias/variance per k
+```
+
+### Evaluation + Plotting
+
+```bash
+# Compute mean_test_loss + Jensen Gap from saved checkpoints
+python -m jl.double_descent.resnet18.variance_evaluation \
+    --model-path ./data/resnet18_variance/MM-DD-HHmm \
+    --data-path ./data
+
+# Plot bias-variance decomposition
+python -m jl.double_descent.resnet18.plot_variance_evaluation \
+    ./data/resnet18_variance/MM-DD-HHmm/evaluation.jsonl \
+    --output-dir ./data/resnet18_variance/MM-DD-HHmm
+```
+
+`variance_evaluation.py` runs on the FINAL checkpoints by default. Pass
+`--early-stop` to evaluate the `early_stop/` checkpoints instead; output is
+written to `early_stop/evaluation.jsonl`. Run the plot script twice (once per
+evaluation.jsonl) to compare FINAL vs ES bias-variance.
 
 ---
 

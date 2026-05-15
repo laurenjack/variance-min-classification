@@ -425,43 +425,152 @@ def load_m2m100_iwslt14(
     return train_dataset, valid_dataset, test_dataset, vocab
 
 
+def _compute_variance_chunks(
+    n_total: int,
+    num_splits: int,
+    samples_per_split: int,
+    subsample_seed: int,
+    holdout_samples: Optional[int] = None,
+) -> List[List[int]]:
+    """Shuffle range(n_total) and return num_splits + 1 disjoint chunks.
+
+    Chunks 0..num_splits-1 each contain `samples_per_split` indices — the
+    training splits. Chunk `num_splits` is the held-out in-distribution
+    test chunk:
+      - If `holdout_samples` is given, the held-out chunk has that many
+        indices (must fit in n_total alongside the training splits).
+      - If None, the held-out chunk is everything left over after the
+        training splits, i.e. `n_total - num_splits * samples_per_split`
+        indices. Use this when you trained with the legacy (no-held-out)
+        loader and want every never-seen index as the test set.
+    """
+    train_required = num_splits * samples_per_split
+    if n_total < train_required:
+        raise ValueError(
+            f"Not enough data for {num_splits} training splits of "
+            f"{samples_per_split} samples each. Need {train_required}, "
+            f"have {n_total}."
+        )
+    if holdout_samples is None:
+        held_count = n_total - train_required
+        if held_count <= 0:
+            raise ValueError(
+                f"holdout_samples=None requires n_total > num_splits * "
+                f"samples_per_split. Got n_total={n_total}, "
+                f"train_required={train_required}."
+            )
+    else:
+        held_count = holdout_samples
+        if n_total < train_required + held_count:
+            raise ValueError(
+                f"Not enough data for {num_splits} training splits + "
+                f"{held_count}-sample held-out test chunk. Need "
+                f"{train_required + held_count}, have {n_total}."
+            )
+
+    rng = random.Random(subsample_seed)
+    indices = list(range(n_total))
+    rng.shuffle(indices)
+    chunks = [
+        indices[i * samples_per_split:(i + 1) * samples_per_split]
+        for i in range(num_splits)
+    ]
+    chunks.append(indices[train_required:train_required + held_count])
+    return chunks
+
+
+def load_iwslt14_variance_split(
+    data_dir: str,
+    split_id: int,
+    num_splits: int = 4,
+    samples_per_split: int = 32000,
+    subsample_seed: int = 42,
+    holdout_samples: Optional[int] = None,
+) -> Tuple[TranslationDataset, TranslationDataset, TranslationDataset, Vocab]:
+    """Load BPE-tokenized IWSLT'14 with a specific disjoint training split
+    and a held-out chunk of the same training distribution as the test set.
+
+    Pipeline:
+      1. Shuffle the full IWSLT train (~160K) with subsample_seed.
+      2. Partition into num_splits + 1 disjoint chunks.
+      3. Chunks 0..num_splits-1 are the training splits (one per model)
+         of `samples_per_split` sentences each. Chunk num_splits is the
+         held-out in-distribution test set:
+           - holdout_samples=None → all leftover after the training
+             splits (n_total - num_splits * samples_per_split).
+           - otherwise           → exactly holdout_samples sentences.
+      4. The IWSLT `valid` split is still used as the val set for ES.
+
+    Returns:
+        train_dataset: this split's training chunk.
+        valid_dataset: full IWSLT valid (shared across all models).
+        test_dataset: the held-out in-distribution chunk (shared).
+        vocab: shared vocabulary.
+    """
+    if split_id < 0 or split_id >= num_splits:
+        raise ValueError(f"split_id must be in [0, {num_splits-1}], got {split_id}")
+
+    vocab = build_vocab(data_dir)
+    train_src_all, train_tgt_all = load_split(data_dir, "train")
+    valid_src, valid_tgt = load_split(data_dir, "valid")
+
+    chunks = _compute_variance_chunks(
+        n_total=len(train_src_all),
+        num_splits=num_splits,
+        samples_per_split=samples_per_split,
+        subsample_seed=subsample_seed,
+        holdout_samples=holdout_samples,
+    )
+    train_indices = chunks[split_id]
+    test_indices = chunks[num_splits]  # held-out chunk
+
+    train_src = [train_src_all[i] for i in train_indices]
+    train_tgt = [train_tgt_all[i] for i in train_indices]
+    test_src = [train_src_all[i] for i in test_indices]
+    test_tgt = [train_tgt_all[i] for i in test_indices]
+
+    train_dataset = TranslationDataset(train_src, train_tgt, vocab)
+    valid_dataset = TranslationDataset(valid_src, valid_tgt, vocab)
+    test_dataset = TranslationDataset(test_src, test_tgt, vocab)
+
+    return train_dataset, valid_dataset, test_dataset, vocab
+
+
 def load_m2m100_iwslt14_variance_split(
     data_dir: str,
     split_id: int,
     num_splits: int = 4,
-    samples_per_split: int = 36000,
+    samples_per_split: int = 32000,
     subsample_seed: int = 42,
+    holdout_samples: Optional[int] = None,
 ) -> Tuple[M2M100TranslationDataset, M2M100TranslationDataset, M2M100TranslationDataset, M2M100Vocab]:
-    """Load M2M100-tokenized IWSLT'14 with a specific disjoint split.
+    """M2M100-tokenized counterpart to load_iwslt14_variance_split.
 
-    Same logic as load_iwslt14_variance_split but for M2M100 pre-tokenized data.
+    Same held-out-train-chunk-as-test design — see load_iwslt14_variance_split
+    docstring for details.
     """
     if split_id < 0 or split_id >= num_splits:
         raise ValueError(f"split_id must be in [0, {num_splits-1}], got {split_id}")
 
     vocab = M2M100Vocab(str(Path(data_dir) / "vocab_mapping.json"))
 
-    train_src, train_tgt = load_m2m100_split_ids(data_dir, "train")
+    train_src_all, train_tgt_all = load_m2m100_split_ids(data_dir, "train")
     valid_src, valid_tgt = load_m2m100_split_ids(data_dir, "valid")
-    test_src, test_tgt = load_m2m100_split_ids(data_dir, "test")
 
-    required_samples = num_splits * samples_per_split
-    if len(train_src) < required_samples:
-        raise ValueError(
-            f"Not enough training data for {num_splits} disjoint splits of {samples_per_split} samples. "
-            f"Need {required_samples}, have {len(train_src)}."
-        )
+    chunks = _compute_variance_chunks(
+        n_total=len(train_src_all),
+        num_splits=num_splits,
+        samples_per_split=samples_per_split,
+        subsample_seed=subsample_seed,
+        holdout_samples=holdout_samples,
+    )
+    train_indices = chunks[split_id]
+    test_indices = chunks[num_splits]  # held-out chunk
 
-    rng = random.Random(subsample_seed)
-    indices = list(range(len(train_src)))
-    rng.shuffle(indices)
-
-    start_idx = split_id * samples_per_split
-    end_idx = start_idx + samples_per_split
-    split_indices = indices[start_idx:end_idx]
-
-    train_src = [train_src[i] for i in split_indices]
-    train_tgt = [train_tgt[i] for i in split_indices]
+    train_src = [train_src_all[i] for i in train_indices]
+    train_tgt = [train_tgt_all[i] for i in train_indices]
+    test_src = [train_src_all[i] for i in test_indices]
+    test_tgt = [train_tgt_all[i] for i in test_indices]
 
     train_dataset = M2M100TranslationDataset(train_src, train_tgt, vocab)
     valid_dataset = M2M100TranslationDataset(valid_src, valid_tgt, vocab)

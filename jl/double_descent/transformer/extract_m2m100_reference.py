@@ -5,10 +5,15 @@ of the actual target token y_i under M2M100-12B, renormalized over the compact
 (~18K) IWSLT vocabulary subset that the small transformer was trained on.
 
 Used to measure how surprising each token is under the oracle, for correlating
-against per-token influence scores.
+against per-token influence scores AND for the variance-mode distributional
+bias-variance decomposition on the held-out in-distribution test chunk.
 
-For train splits, selects the same disjoint 36K subset that the small transformer
-was trained on (matching `load_m2m100_iwslt14_variance_split`).
+Index conventions for `--split train` with `--variance-split-id`:
+  - split_id in 0..num_splits-1 → training chunk (matches
+    `load_m2m100_iwslt14_variance_split`).
+  - split_id == num_splits      → the held-out in-distribution test chunk
+    used by transformer variance mode (matches the test_dataset returned by
+    `load_m2m100_iwslt14_variance_split`).
 
 Output (.pt):
   - log_probs:        1D fp16, log p_oracle(y_i | context_i), one per non-pad token
@@ -25,7 +30,13 @@ Usage:
         --output-path ./data/iwslt14.m2m100.de-en/train_split0_log_probs.pt \\
         --split train --variance-split-id 0
 
-    # Test set (re-extraction for code consistency)
+    # Held-out in-distribution test chunk (variance mode)
+    python -m jl.double_descent.transformer.extract_m2m100_reference \\
+        --data-path ./data/iwslt14.m2m100.de-en \\
+        --output-path ./data/iwslt14.m2m100.de-en/holdout_log_probs.pt \\
+        --split train --variance-split-id 4 --num-splits 4
+
+    # Standalone test set (no variance carve)
     python -m jl.double_descent.transformer.extract_m2m100_reference \\
         --data-path ./data/iwslt14.m2m100.de-en \\
         --output-path ./data/iwslt14.m2m100.de-en/test_log_probs.pt \\
@@ -55,13 +66,25 @@ def get_variance_split_indices(
 
     Shuffle [0..n_total) with random.Random(seed), then take the contiguous
     [split_id * samples_per_split, (split_id+1) * samples_per_split) chunk.
+
+    split_id in [0, num_splits-1] → training chunk.
+    split_id == num_splits        → held-out in-distribution test chunk
+                                    (matches load_m2m100_iwslt14_variance_split's
+                                     test_dataset).
     """
-    if split_id < 0 or split_id >= num_splits:
-        raise ValueError(f"split_id must be in [0, {num_splits-1}], got {split_id}")
-    required = num_splits * samples_per_split
+    if split_id < 0 or split_id > num_splits:
+        raise ValueError(
+            f"split_id must be in [0, {num_splits}] (held-out chunk = "
+            f"{num_splits}), got {split_id}"
+        )
+    # When extracting the held-out chunk we need (num_splits + 1) *
+    # samples_per_split available; otherwise num_splits * samples_per_split
+    # is enough.
+    chunks_required = num_splits + 1 if split_id == num_splits else num_splits
+    required = chunks_required * samples_per_split
     if n_total < required:
         raise ValueError(
-            f"Not enough data for {num_splits} disjoint splits of "
+            f"Not enough data for {chunks_required} chunks of "
             f"{samples_per_split} samples. Need {required}, have {n_total}."
         )
     rng = random.Random(seed)
@@ -89,7 +112,9 @@ def main():
     )
     parser.add_argument(
         "--variance-split-id", type=int, default=None,
-        help="Train only: disjoint subset index (0..num_splits-1).",
+        help="Train only: disjoint subset index. 0..num_splits-1 selects a "
+             "training chunk; num_splits selects the held-out in-distribution "
+             "test chunk used by variance mode.",
     )
     parser.add_argument("--num-splits", type=int, default=4)
     parser.add_argument("--samples-per-split", type=int, default=36000)

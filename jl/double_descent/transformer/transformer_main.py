@@ -70,46 +70,93 @@ def parse_args():
         help="Subset of d_model values to train (default: full sweep 8..384). "
              "Number of available GPUs (CUDA_VISIBLE_DEVICES-aware) sets the per-batch parallelism."
     )
+    parser.add_argument(
+        "--variance",
+        action="store_true",
+        help="Variance mode: train --num-splits independent models per "
+             "d_model on disjoint chunks of IWSLT train, with one extra "
+             "chunk held out as the in-distribution test set. See "
+             "TRANSFORMER_PLAN.md for the held-out-test motivation.",
+    )
+    parser.add_argument(
+        "--num-splits",
+        type=int,
+        default=4,
+        help="Number of disjoint training splits per d_model for --variance "
+             "mode (default 4).",
+    )
+    parser.add_argument(
+        "--samples-per-split",
+        type=int,
+        default=32000,
+        help="Samples per split for --variance mode. (num_splits + 1) * "
+             "samples_per_split must be <= |IWSLT train| (~160K). Default "
+             "32000 → 5 chunks × 32K = 160K, fits exactly.",
+    )
     return parser.parse_args()
 
 
 def run_double_descent(args, config, d_models, num_gpus):
     """Run the double-descent experiment.
 
+    Default mode: one job per d_model (one model per d_model).
+    Variance mode: one job per (d_model, split_id) for split_id in
+        0..num_splits-1.
+
     d_models: list of d_model values to train.
-    num_gpus: per-batch parallelism = available GPUs (after CUDA_VISIBLE_DEVICES filtering).
+    num_gpus: per-batch parallelism = available GPUs (after
+        CUDA_VISIBLE_DEVICES filtering).
     """
     total_start = time.time()
 
     train_samples = TRAIN_SAMPLES[0]
     samples_k = train_samples // 1000
-    num_batches = (len(d_models) + num_gpus - 1) // num_gpus
+
+    if config.variance:
+        jobs = [
+            (d_model, split_id)
+            for d_model in d_models
+            for split_id in range(config.num_splits)
+        ]
+    else:
+        jobs = [(d_model, None) for d_model in d_models]
+
+    num_batches = (len(jobs) + num_gpus - 1) // num_gpus
 
     logger.info("Transformer Double Descent")
+    logger.info(f"Mode: {'variance' if config.variance else 'default'}")
     logger.info(f"d_model values: {d_models}")
-    logger.info(f"Train samples: {train_samples}")
-    logger.info(f"Total models: {len(d_models)}")
+    if config.variance:
+        logger.info(
+            f"Variance: {config.num_splits} splits/d_model x "
+            f"{config.samples_per_split} samples per split + 1 held-out "
+            f"test chunk = {(config.num_splits + 1) * config.samples_per_split} sentences"
+        )
+    else:
+        logger.info(f"Train samples: {train_samples}")
+    logger.info(f"Total jobs: {len(jobs)}")
     logger.info(f"GPUs available: {num_gpus}, batches: {num_batches}")
     logger.info(f"Max steps: {config.max_steps}, Max tokens/batch: {config.max_tokens}")
 
     logger.info(f"\n{'='*60}")
-    logger.info(f"Starting {samples_k}K sample runs")
+    logger.info("Starting runs")
     logger.info(f"{'='*60}")
 
-    for batch_idx in range(0, len(d_models), num_gpus):
-        batch_d_models = d_models[batch_idx:batch_idx + num_gpus]
+    for batch_idx in range(0, len(jobs), num_gpus):
+        batch_jobs = jobs[batch_idx:batch_idx + num_gpus]
         batch_num = batch_idx // num_gpus + 1
 
-        logger.info(f"\n[{samples_k}K] Batch {batch_num}/{num_batches}: d_model = {batch_d_models}")
+        logger.info(f"\nBatch {batch_num}/{num_batches}: {batch_jobs}")
 
         mp.set_start_method('spawn', force=True)
 
         processes = []
-        for gpu_id, d_model in enumerate(batch_d_models):
+        for gpu_id, (d_model, split_id) in enumerate(batch_jobs):
             p = mp.Process(
                 target=train_single_model,
                 args=(gpu_id, d_model, train_samples, config,
-                      args.output_path, args.data_path, args.m2m100)
+                      args.output_path, args.data_path, args.m2m100,
+                      split_id),
             )
             p.start()
             processes.append(p)
@@ -117,18 +164,25 @@ def run_double_descent(args, config, d_models, num_gpus):
         for p in processes:
             p.join()
 
-        logger.info(f"[{samples_k}K] Batch {batch_num}/{num_batches} complete")
+        logger.info(f"Batch {batch_num}/{num_batches} complete")
 
     total_time = time.time() - total_start
     logger.info("\n" + "=" * 60)
     logger.info("Full experiment complete!")
     logger.info(f"Total time: {total_time:.2f}s ({total_time/3600:.2f}h)")
-    logger.info(f"Metrics files: {args.output_path}/metrics_d*_{samples_k}k.jsonl")
+    if config.variance:
+        logger.info(f"Metrics files: {args.output_path}/metrics_d*_split*.jsonl")
+    else:
+        logger.info(f"Metrics files: {args.output_path}/metrics_d*_{samples_k}k.jsonl")
 
 
 def main():
     args = parse_args()
     config = TDDConfig()
+    if args.variance:
+        config.variance = True
+        config.num_splits = args.num_splits
+        config.samples_per_split = args.samples_per_split
 
     # Use whatever GPUs are visible (CUDA_VISIBLE_DEVICES filters this).
     num_gpus = torch.cuda.device_count()

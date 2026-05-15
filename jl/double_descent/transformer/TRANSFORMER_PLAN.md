@@ -21,6 +21,11 @@ Trains 24 models to reproduce the double descent curve:
 
 No command-line arguments for d_model or train_samples - these are hardcoded.
 
+### Variance Mode (Bias-Variance Decomposition)
+Trains `num_splits` models per d_model on disjoint subsets of IWSLT train, with
+a separate disjoint chunk of IWSLT train reserved as the test set (to avoid
+the IWSLT-test distribution shift, see [Variance Mode](#variance-mode) below).
+
 ---
 
 ## Phase 1: Data Preprocessing (Automatic)
@@ -373,6 +378,118 @@ Temperature scaling is integrated into `evaluation.py`. The evaluation automatic
 BLEU is unchanged by temperature scaling (argmax is invariant to positive scaling).
 
 The shared utility lives in `jl/double_descent/temperature_scaling.py`.
+
+---
+
+## Variance Mode
+
+Trains `num_splits` independently-initialised Transformers per d_model on
+disjoint chunks of the IWSLT training distribution. Used to decompose test
+cross-entropy into a bias term and a variance term (Jensen Gap) across model
+width.
+
+### Why a held-out *train* chunk is used as the test set
+
+The IWSLT '14 test split has a measurable distribution shift relative to
+train: the M2M100 oracle reports +4.35 nat/token mean surprise on test vs
+train (see `oracle_diagnostic.py`). For a clean bias-variance estimate we
+want bias and Jensen Gap measured on data drawn from the same distribution
+the models were trained on.
+
+Variance mode therefore reserves one disjoint chunk of the IWSLT *train*
+data as the in-distribution test set. The IWSLT `valid` split is still used
+as the val set for early-stopping checkpoints. The IWSLT `test` split is
+unused in this mode.
+
+### Setup
+
+- 160K raw IWSLT-14 train sentences are shuffled with `subsample_seed=42`,
+  then partitioned into `num_splits + 1` disjoint chunks of `samples_per_split`
+  sentences each.
+- Chunks `0 .. num_splits-1` are the training splits (one per model).
+- Chunk `num_splits` is the **held-out in-distribution test set**, shared
+  across all (d_model, split) models.
+- Constraint: `(num_splits + 1) × samples_per_split ≤ 160000`. Default
+  `num_splits=4`, `samples_per_split=32000` (160K, fits exactly).
+- Per-split label noise is not added — the variance comes from disjoint
+  training subsets + independent initialisation.
+
+### Decomposition
+
+For target token `y_t` at position `t` in the held-out test chunk, averaged
+over content positions:
+
+```
+loss_j          = -log q_j(y_t)                       (model j NLL per token)
+q_bar(y_t)      = (1/N) · Σ_j q_j(y_t)
+bias_label      = -log q_bar(y_t)
+jensen_gap      = log q_bar(y_t) − (1/N) · Σ_j log q_j(y_t)   (≥ 0)
+
+mean_test_loss  = bias_label + jensen_gap
+```
+
+If an M2M100 reference distribution `p(·|context)` is available from
+`extract_m2m100_reference.py` (already in-tree, with bug fixes from commits
+`dd8678e` + `82188f8` already baked in), the bias term can be split further:
+
+```
+oracle_entropy  = H(p)                  (irreducible)
+excess_bias     = KL(p || q_bar)        (model-vs-oracle gap)
+
+bias_label      = oracle_entropy + excess_bias   (in expectation over y ~ p)
+```
+
+### Running
+
+```bash
+python -m jl.double_descent.transformer.transformer_main \
+    --variance --num-splits 4 --samples-per-split 32000 \
+    --output-path ./output/transformer_variance/$(date +%m-%d-%H%M) \
+    --data-path ./data/iwslt14.tokenized.de-en
+```
+
+The hardcoded d_model sweep from default mode is reused. With 8 GPUs and
+`--num-splits 4`, each batch trains 2 d_model × 4 splits = 8 models.
+
+### Output Structure
+
+```
+output/transformer_variance/MM-DD-HHmm/
+├── metrics_d{D}_split{S}.jsonl
+├── model_d{D}_split{S}.pt
+├── evaluation.jsonl                # FINAL bias/variance per d_model
+├── early_stop/
+│   ├── model_d{D}_split{S}.pt      # Best valid_loss checkpoint
+│   └── evaluation.jsonl            # ES bias/variance per d_model
+└── reference/                      # Optional M2M100 oracle on held-out chunk
+    ├── log_probs.bin
+    ├── target_ids.bin
+    └── evaluation.jsonl
+```
+
+### Evaluation + Plotting
+
+```bash
+# (Optional) extract M2M100 oracle distributions on the held-out test chunk
+python -m jl.double_descent.transformer.extract_m2m100_reference \
+    --data-path ./data/iwslt14.tokenized.de-en \
+    --output-path ./output/transformer_variance/MM-DD-HHmm/reference \
+    --variance-split held_out
+
+# Compute bias/variance from saved checkpoints
+python -m jl.double_descent.transformer.variance_evaluation \
+    --model-path ./data/transformer_variance/MM-DD-HHmm \
+    --data-path ./data/iwslt14.tokenized.de-en \
+    [--m2m100-reference ./data/transformer_variance/MM-DD-HHmm/reference]
+
+# Plot bias-variance decomposition vs d_model
+python -m jl.double_descent.transformer.plot_variance_evaluation \
+    ./data/transformer_variance/MM-DD-HHmm/evaluation.jsonl \
+    --output-dir ./data/transformer_variance/MM-DD-HHmm
+```
+
+Pass `--early-stop` to `variance_evaluation.py` to evaluate the `early_stop/`
+checkpoints; output goes to `early_stop/evaluation.jsonl`.
 
 ---
 

@@ -17,24 +17,10 @@ VAL_SPLIT_SEED = 73132
 DEFAULT_VAL_SIZE = 5000
 DEFAULT_NOISE_SEED = 42
 
-
-class IndexedDataset(Dataset):
-    """Wrapper that yields (image, label, idx_in_dataset) for residual tracking.
-
-    The third element is the *position in this dataset* (0..len-1), so it
-    indexes directly into the per-point residual accumulator regardless of
-    whether the underlying dataset is a Subset.
-    """
-
-    def __init__(self, dataset: Dataset):
-        self.dataset = dataset
-
-    def __len__(self) -> int:
-        return len(self.dataset)
-
-    def __getitem__(self, idx: int):
-        item = self.dataset[idx]
-        return (*item, idx)
+# Deterministic seed for the disjoint-train partition used by variance mode.
+# Different from VAL_SPLIT_SEED so the val carve and the variance carve are
+# independent shuffles.
+VARIANCE_SPLIT_SEED = 31337
 
 
 def download_cifar10(data_dir: str = "./data") -> None:
@@ -130,7 +116,7 @@ def load_cifar10_with_noise(
     data_augmentation: bool = True,
     data_dir: str = "./data",
     num_workers: int = 0,
-) -> Tuple[DataLoader, DataLoader, np.ndarray]:
+) -> Tuple[DataLoader, DataLoader]:
     """Load CIFAR-10 with label noise on training set.
 
     Args:
@@ -141,9 +127,7 @@ def load_cifar10_with_noise(
         num_workers: Number of data loading workers.
 
     Returns:
-        Tuple of (train_loader, test_loader, mislabel_mask). The train_loader
-        yields (image, label, idx_in_train_set) batches; mislabel_mask is a
-        boolean array of length N_train aligned with idx_in_train_set.
+        Tuple of (train_loader, test_loader).
     """
     # Normalization values for CIFAR-10
     normalize = transforms.Normalize(
@@ -186,13 +170,9 @@ def load_cifar10_with_noise(
         transform=test_transform,
     )
 
-    mislabel_mask = (
-        np.array(train_dataset.cifar.targets) != np.array(train_dataset.labels)
-    )
-
     # Create data loaders
     train_loader = DataLoader(
-        IndexedDataset(train_dataset),
+        train_dataset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
@@ -208,7 +188,7 @@ def load_cifar10_with_noise(
         pin_memory=True,
     )
 
-    return train_loader, test_loader, mislabel_mask
+    return train_loader, test_loader
 
 
 
@@ -308,7 +288,7 @@ def load_cifar10_with_noise_val_split(
     num_workers: int = 0,
     val_size: int = DEFAULT_VAL_SIZE,
     val_split_seed: int = VAL_SPLIT_SEED,
-) -> Tuple[DataLoader, DataLoader, DataLoader, np.ndarray]:
+) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """Load CIFAR-10 with noise, split 45K train / 5K val / full test.
 
     Mirrors load_cifar10_with_noise except it holds out a deterministic 5K
@@ -321,12 +301,8 @@ def load_cifar10_with_noise_val_split(
     copies with different transforms — labels are byte-identical because
     they share the same (default) noise seed.
 
-    The train_loader yields (image, label, idx_in_train_subset) batches so
-    callers can accumulate per-point residuals; mislabel_mask is a boolean
-    array of length N_train (=45K) aligned with idx_in_train_subset.
-
     Returns:
-        (train_loader, val_loader, test_loader, mislabel_mask)
+        (train_loader, val_loader, test_loader).
     """
     normalize = transforms.Normalize(
         mean=[0.4914, 0.4822, 0.4465],
@@ -373,10 +349,6 @@ def load_cifar10_with_noise_val_split(
     train_subset = Subset(train_full, train_indices.tolist())
     val_subset = Subset(val_full, val_indices.tolist())
 
-    originals = np.array(train_full.cifar.targets)
-    noisy = np.array(train_full.labels)
-    mislabel_mask = (originals[train_indices] != noisy[train_indices])
-
     test_dataset = NoisyCIFAR10(
         root=data_dir,
         train=False,
@@ -385,7 +357,7 @@ def load_cifar10_with_noise_val_split(
     )
 
     train_loader = DataLoader(
-        IndexedDataset(train_subset),
+        train_subset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
@@ -407,7 +379,7 @@ def load_cifar10_with_noise_val_split(
         pin_memory=True,
     )
 
-    return train_loader, val_loader, test_loader, mislabel_mask
+    return train_loader, val_loader, test_loader
 
 
 # ---------------------------------------------------------------------------
@@ -458,12 +430,12 @@ def _apply_label_noise_tensor(
     noise_prob: float,
     seed: int,
     n_classes: int = 10,
-) -> Tuple[torch.Tensor, np.ndarray]:
-    """Apply label noise to a labels tensor. Returns (noisy_labels, mislabel_mask).
+) -> torch.Tensor:
+    """Apply label noise to a labels tensor. Returns the noisy labels tensor.
 
-    mislabel_mask is a numpy bool array of length N. Uses the same procedure
-    (numpy RandomState, per-sample wrong-label sampling) as NoisyCIFAR10 so
-    the label sequence is byte-identical to the CPU path under the same seed.
+    Uses the same procedure (numpy RandomState, per-sample wrong-label
+    sampling) as NoisyCIFAR10 so the label sequence is byte-identical to
+    the CPU path under the same seed.
     """
     rng = np.random.RandomState(seed)
     orig = orig_labels.detach().cpu().numpy().copy()
@@ -474,9 +446,7 @@ def _apply_label_noise_tensor(
         if corrupt_mask[i]:
             wrong = [l for l in range(n_classes) if l != orig[i]]
             noisy[i] = rng.choice(wrong)
-    mislabel_mask = noisy != orig
-    noisy_t = torch.from_numpy(noisy).to(orig_labels.device).long()
-    return noisy_t, mislabel_mask
+    return torch.from_numpy(noisy).to(orig_labels.device).long()
 
 
 def gpu_random_crop_flip(images: torch.Tensor, padding: int = 4) -> torch.Tensor:
@@ -518,10 +488,10 @@ def _normalize_buffers(device: torch.device) -> Tuple[torch.Tensor, torch.Tensor
 
 
 class GPUTrainLoader:
-    """Iterator yielding (images, labels, idx_in_dataset) batches on device.
+    """Iterator yielding (images, labels) batches on device.
 
-    All three tensors are on `images.device`. Each step: shuffle indices,
-    gather the raw batch, apply on-GPU RandomCrop+HFlip (if augment=True),
+    Both tensors are on `images.device`. Each step: shuffle indices, gather
+    the raw batch, apply on-GPU RandomCrop+HFlip (if augment=True),
     normalize, emit.
     """
 
@@ -556,7 +526,7 @@ class GPUTrainLoader:
             if self.augment:
                 imgs = gpu_random_crop_flip(imgs)
             imgs = (imgs - self._mean) / self._std
-            yield imgs, self.labels[idx], idx
+            yield imgs, self.labels[idx]
 
 
 class GPUEvalLoader:
@@ -589,20 +559,18 @@ def load_cifar10_with_noise_val_split_gpu(
     noise_seed: int = DEFAULT_NOISE_SEED,
     val_size: int = DEFAULT_VAL_SIZE,
     val_split_seed: int = VAL_SPLIT_SEED,
-) -> Tuple[GPUTrainLoader, GPUEvalLoader, GPUEvalLoader, np.ndarray]:
+) -> Tuple[GPUTrainLoader, GPUEvalLoader, GPUEvalLoader]:
     """GPU-resident counterpart to load_cifar10_with_noise_val_split.
 
-    Returns (train_loader, val_loader, test_loader, mislabel_mask), where the
-    loaders emit tensors already on `device` and mislabel_mask is a length
-    (50000 - val_size) numpy bool array aligned with the training subset.
-
-    Label noise + split semantics exactly match the CPU path under the same
-    seeds (noise applied to all 50K first, THEN split via val_split_seed).
+    Returns (train_loader, val_loader, test_loader); loaders emit tensors
+    already on `device`. Label noise + split semantics exactly match the CPU
+    path under the same seeds (noise applied to all 50K first, THEN split
+    via val_split_seed).
     """
     train_images, train_orig, test_images, test_labels = (
         _build_gpu_cifar_tensors(data_dir, device)
     )
-    train_noisy, mislabel_all = _apply_label_noise_tensor(
+    train_noisy = _apply_label_noise_tensor(
         train_orig, noise_prob, noise_seed
     )
 
@@ -619,7 +587,95 @@ def load_cifar10_with_noise_val_split_gpu(
     val_sub_imgs = train_images.index_select(0, val_idx_t).contiguous()
     val_sub_labels = train_noisy.index_select(0, val_idx_t).contiguous()
 
-    mislabel_mask = mislabel_all[train_indices]
+    train_loader = GPUTrainLoader(
+        train_sub_imgs, train_sub_labels, batch_size,
+        augment=data_augmentation, drop_last=True,
+    )
+    val_loader = GPUEvalLoader(val_sub_imgs, val_sub_labels, batch_size)
+    test_loader = GPUEvalLoader(test_images, test_labels, batch_size)
+    return train_loader, val_loader, test_loader
+
+
+# ---------------------------------------------------------------------------
+# Variance mode: disjoint training splits
+# ---------------------------------------------------------------------------
+
+
+def compute_disjoint_split_indices(
+    pool_indices: np.ndarray,
+    num_splits: int,
+    seed: int = VARIANCE_SPLIT_SEED,
+) -> list:
+    """Shuffle pool_indices and partition into num_splits disjoint chunks.
+
+    pool_indices is the array of CIFAR-10 indices eligible for training
+    (e.g. the 45K train indices left after the val carve). Returns a list
+    of length num_splits, each entry a numpy int array of size
+    len(pool_indices) // num_splits.
+    """
+    rng = np.random.RandomState(seed)
+    shuffled = rng.permutation(pool_indices)
+    chunk = len(shuffled) // num_splits
+    return [shuffled[i * chunk:(i + 1) * chunk] for i in range(num_splits)]
+
+
+def load_cifar10_variance_split_gpu(
+    noise_prob: float,
+    batch_size: int,
+    device: torch.device,
+    split_id: int,
+    num_splits: int,
+    data_dir: str = "./data",
+    data_augmentation: bool = True,
+    noise_seed: int = DEFAULT_NOISE_SEED,
+    val_size: int = DEFAULT_VAL_SIZE,
+    val_split_seed: int = VAL_SPLIT_SEED,
+    split_seed: int = VARIANCE_SPLIT_SEED,
+) -> Tuple[GPUTrainLoader, GPUEvalLoader, GPUEvalLoader]:
+    """GPU-resident CIFAR-10 with disjoint training splits for variance mode.
+
+    Pipeline:
+      1. Load all 50K train + 10K test as FP32 tensors on device.
+      2. Apply label noise to all 50K (single noise_seed) so noise is shared
+         across splits — each image, if it appears in any split, sees the
+         same noisy label as it would in any other split that contained it.
+      3. Carve a deterministic 5K val from the noised 50K (val_split_seed).
+      4. Partition the remaining 45K into num_splits disjoint chunks
+         (split_seed). Train on chunk `split_id`.
+
+    val + test are shared across all (k, split) models; train is the
+    disjoint chunk for this split_id.
+    """
+    if split_id < 0 or split_id >= num_splits:
+        raise ValueError(f"split_id must be in [0, {num_splits - 1}], got {split_id}")
+
+    train_images, train_orig, test_images, test_labels = (
+        _build_gpu_cifar_tensors(data_dir, device)
+    )
+    train_noisy = _apply_label_noise_tensor(
+        train_orig, noise_prob, noise_seed
+    )
+
+    train_pool, val_indices = compute_val_split_indices(
+        total_samples=train_images.size(0),
+        val_size=val_size,
+        seed=val_split_seed,
+    )
+
+    chunks = compute_disjoint_split_indices(
+        pool_indices=train_pool,
+        num_splits=num_splits,
+        seed=split_seed,
+    )
+    chunk_indices = chunks[split_id]
+
+    train_idx_t = torch.from_numpy(chunk_indices.copy()).to(device)
+    val_idx_t = torch.from_numpy(val_indices).to(device)
+
+    train_sub_imgs = train_images.index_select(0, train_idx_t).contiguous()
+    train_sub_labels = train_noisy.index_select(0, train_idx_t).contiguous()
+    val_sub_imgs = train_images.index_select(0, val_idx_t).contiguous()
+    val_sub_labels = train_noisy.index_select(0, val_idx_t).contiguous()
 
     train_loader = GPUTrainLoader(
         train_sub_imgs, train_sub_labels, batch_size,
@@ -627,4 +683,4 @@ def load_cifar10_with_noise_val_split_gpu(
     )
     val_loader = GPUEvalLoader(val_sub_imgs, val_sub_labels, batch_size)
     test_loader = GPUEvalLoader(test_images, test_labels, batch_size)
-    return train_loader, val_loader, test_loader, mislabel_mask
+    return train_loader, val_loader, test_loader

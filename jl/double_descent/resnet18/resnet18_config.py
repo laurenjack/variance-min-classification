@@ -36,5 +36,11 @@ class DDConfig:
     # / optimizer state. Disable with --no-bf16 if you need bitwise FP32.
     use_bf16: bool = True
 
+    # Variance mode: train num_splits independent models per width k on
+    # disjoint subsets of CIFAR-10 train, to decompose test cross-entropy
+    # into bias + Jensen Gap. Implies use_val_split=True (ES needs val).
+    variance: bool = False
+    num_splits: int = 4
+
     # Logging
     log_interval: int = 1  # Every epoch

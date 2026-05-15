@@ -7,7 +7,7 @@ import os
 import time
 from functools import partial
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -21,7 +21,9 @@ from jl.double_descent.transformer.transformer_data import (
     Vocab,
     collate_fn,
     load_iwslt14,
+    load_iwslt14_variance_split,
     load_m2m100_iwslt14,
+    load_m2m100_iwslt14_variance_split,
 )
 from jl.double_descent.transformer.transformer_model import TransformerModel, count_parameters
 
@@ -121,37 +123,65 @@ def train_single_model(
     output_path: str,
     data_path: str,
     m2m100: bool = False,
+    split_id: Optional[int] = None,
 ) -> None:
     """Train a single Transformer with embedding dimension d_model.
 
     Args:
         gpu_id: GPU device ID (0-7).
         d_model: Embedding dimension.
-        train_samples: Number of training samples.
+        train_samples: Number of training samples (default mode only).
         config: Training configuration.
         output_path: Directory to save metrics.
         data_path: Directory containing preprocessed IWSLT data.
-        m2m100: If True, load M2M100-tokenized data via load_m2m100_iwslt14.
+        m2m100: If True, load M2M100-tokenized data.
+        split_id: When not None, run in variance mode and use the disjoint
+            training chunk `split_id`. The held-out chunk (index num_splits)
+            is used as the in-distribution test set.
     """
     device = torch.device(f"cuda:{gpu_id}")
 
-    samples_k = train_samples // 1000
-    output_suffix = f"{samples_k}k"
-    log_name = f"trainer_d{d_model}_{samples_k}k"
+    is_variance = split_id is not None
+    if is_variance:
+        output_suffix = f"split{split_id}"
+        log_name = f"trainer_d{d_model}_split{split_id}"
+    else:
+        samples_k = train_samples // 1000
+        output_suffix = f"{samples_k}k"
+        log_name = f"trainer_d{d_model}_{samples_k}k"
 
     # Setup logging for this process
     process_logger = logging.getLogger(log_name)
     process_logger.setLevel(logging.INFO)
 
-    process_logger.info(f"Starting training for d_model={d_model}, {samples_k}K samples on GPU {gpu_id}")
-    if m2m100:
-        train_dataset, valid_dataset, test_dataset, vocab = load_m2m100_iwslt14(
-            data_path, train_samples, config.subsample_seed
+    if is_variance:
+        process_logger.info(
+            f"Starting variance training for d_model={d_model}, split={split_id} "
+            f"on GPU {gpu_id} (num_splits={config.num_splits}, "
+            f"samples_per_split={config.samples_per_split})"
+        )
+        loader_fn = (
+            load_m2m100_iwslt14_variance_split if m2m100
+            else load_iwslt14_variance_split
+        )
+        train_dataset, valid_dataset, test_dataset, vocab = loader_fn(
+            data_dir=data_path,
+            split_id=split_id,
+            num_splits=config.num_splits,
+            samples_per_split=config.samples_per_split,
+            subsample_seed=config.subsample_seed,
         )
     else:
-        train_dataset, valid_dataset, test_dataset, vocab = load_iwslt14(
-            data_path, train_samples, config.subsample_seed
-        )
+        samples_k = train_samples // 1000
+        process_logger.info(f"Starting training for d_model={d_model}, {samples_k}K samples on GPU {gpu_id}")
+        if m2m100:
+            train_dataset, valid_dataset, test_dataset, vocab = load_m2m100_iwslt14(
+                data_path, train_samples, config.subsample_seed
+            )
+        else:
+            train_dataset, valid_dataset, test_dataset, vocab = load_iwslt14(
+                data_path, train_samples, config.subsample_seed
+            )
 
     process_logger.info(f"Loaded data: {len(train_dataset)} train, {len(valid_dataset)} valid, {len(test_dataset)} test")
     process_logger.info(f"Vocabulary size: {len(vocab)}")

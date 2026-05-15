@@ -146,11 +146,29 @@ def parse_args():
              "from different models actually run concurrently. K values are "
              "dispatched round-robin across GPUs so each GPU gets a mix.",
     )
+    parser.add_argument(
+        "--variance",
+        action="store_true",
+        help="Variance mode: train --num-splits independent models per k on "
+             "disjoint subsets of CIFAR-10 train. Implies --val-split (ES "
+             "needs val). Outputs model_k{K}_split{S}.pt.",
+    )
+    parser.add_argument(
+        "--num-splits",
+        type=int,
+        default=4,
+        help="Number of disjoint training splits per k for --variance mode "
+             "(default 4 → 4 × ~11.25K disjoint chunks of the 45K train pool).",
+    )
     return parser.parse_args()
 
 
 def run_training(k_values, num_gpus, args, config):
-    """Train all k values in parallel, round-robin'd across GPUs.
+    """Train all (k, split) pairs in parallel, round-robin'd across GPUs.
+
+    For default mode jobs = [(k, None) for k in k_values].
+    For variance mode jobs = [(k, s) for k in k_values for s in 0..num_splits-1].
+    Each job becomes one mp.Process.
 
     Total concurrent processes = num_gpus * models_per_gpu. When
     models_per_gpu > 1 you should have started the MPS daemon
@@ -161,17 +179,24 @@ def run_training(k_values, num_gpus, args, config):
     models_per_gpu = max(1, args.models_per_gpu)
     total_procs = num_gpus * models_per_gpu
 
-    # Round-robin assign k -> GPU so each GPU gets a mix of small/large.
-    gpu_to_ks = [[] for _ in range(num_gpus)]
-    for i, k in enumerate(k_values):
-        gpu_to_ks[i % num_gpus].append(k)
+    if config.variance:
+        jobs = [(k, s) for k in k_values for s in range(config.num_splits)]
+    else:
+        jobs = [(k, None) for k in k_values]
+
+    # Round-robin assign jobs -> GPU.
+    gpu_to_jobs = [[] for _ in range(num_gpus)]
+    for i, job in enumerate(jobs):
+        gpu_to_jobs[i % num_gpus].append(job)
 
     logger.info(f"Width values: k={k_values}")
+    logger.info(f"Mode: {'variance (' + str(config.num_splits) + ' splits/k)' if config.variance else 'default'}")
+    logger.info(f"Total jobs: {len(jobs)}")
     logger.info(
         f"GPUs: {num_gpus}, models/GPU: {models_per_gpu}, total procs: {total_procs}"
     )
-    for gpu_id, ks in enumerate(gpu_to_ks):
-        logger.info(f"  GPU {gpu_id} -> k={ks}")
+    for gpu_id, jjs in enumerate(gpu_to_jobs):
+        logger.info(f"  GPU {gpu_id} -> {jjs}")
     logger.info(
         f"Validation split: "
         f"{'enabled (45K train / 5K val, seed=73132)' if config.use_val_split else 'disabled (full 50K train)'}"
@@ -190,35 +215,39 @@ def run_training(k_values, num_gpus, args, config):
 
     mp.set_start_method('spawn', force=True)
 
-    if max(len(ks) for ks in gpu_to_ks) > models_per_gpu:
+    if max(len(jjs) for jjs in gpu_to_jobs) > models_per_gpu:
         logger.warning(
-            f"Some GPUs have more k values than models_per_gpu={models_per_gpu}; "
+            f"Some GPUs have more jobs than models_per_gpu={models_per_gpu}; "
             f"those will queue serially within a process."
         )
 
     processes = []
-    for gpu_id, ks in enumerate(gpu_to_ks):
-        for k in ks:
+    for gpu_id, jjs in enumerate(gpu_to_jobs):
+        for k, split_id in jjs:
             model_factory = partial(make_resnet18k, k=k, num_classes=10)
-            model_label = f"k{k}"
-            model_params = {"k": k}
+            if split_id is None:
+                model_label = f"k{k}"
+                model_params = {"k": k}
+            else:
+                model_label = f"k{k}_split{split_id}"
+                model_params = {"k": k, "split_id": split_id}
             p = mp.Process(
                 target=train_single_model,
                 args=(gpu_id, model_factory, model_label, model_params,
                       config, args.output_path, args.data_path),
             )
             p.start()
-            processes.append((gpu_id, k, p))
-            logger.info(f"Started process for k={k} on GPU {gpu_id} (pid={p.pid})")
+            processes.append((gpu_id, model_label, p))
+            logger.info(f"Started process for {model_label} on GPU {gpu_id} (pid={p.pid})")
 
-    for gpu_id, k, p in processes:
+    for gpu_id, label, p in processes:
         p.join()
-        logger.info(f"Process k={k} (GPU {gpu_id}) completed")
+        logger.info(f"Process {label} (GPU {gpu_id}) completed")
 
     total_time = time.time() - total_start
     logger.info("\n" + "=" * 60)
     logger.info(f"All training completed! Total time: {total_time:.2f}s ({total_time/3600:.2f}h)")
-    logger.info(f"Metrics saved to {args.output_path}/metrics_k*.jsonl")
+    logger.info(f"Metrics saved to {args.output_path}/metrics_*.jsonl")
 
 
 def main():
@@ -245,6 +274,13 @@ def main():
         config.use_val_split = True
     if args.no_bf16:
         config.use_bf16 = False
+    if args.variance:
+        config.variance = True
+        # Variance mode runs through its own data loader, which carves a val
+        # set internally. We force use_val_split so the trainer's ES branch
+        # is active (val_loader != None).
+        config.use_val_split = True
+        config.num_splits = args.num_splits
 
     # Determine k values and check GPUs
     if args.k_values is not None:
