@@ -231,6 +231,14 @@ def _eval_worker(
             val_logits, val_labels, chunk_size=8192, return_diagnostics=True,
         )
         del val_logits, val_labels
+        # Hard abort if the fit didn't converge — user opted for fail-fast.
+        if not ts_diag["converged"]:
+            raise RuntimeError(
+                f"L-BFGS did not converge fitting T on val for "
+                f"{model_path_str}: T={ts_diag['T']:.4f}, "
+                f"|dCE/dT|={abs(ts_diag['final_grad']):.2e} "
+                f"(tolerance 1e-4). Aborting."
+            )
 
     criterion = nn.CrossEntropyLoss(
         ignore_index=vocab.pad_idx,
@@ -318,6 +326,20 @@ def evaluate_d_model_parallel(
                 processes.append(p)
             for p in processes:
                 p.join()
+            # Surface worker failures (e.g. TS non-convergence) instead of
+            # silently dropping the model from the average.
+            failed = [
+                (i, p.exitcode)
+                for i, p in enumerate(processes)
+                if p.exitcode != 0
+            ]
+            if failed:
+                raise RuntimeError(
+                    f"d_model={d_model}: worker(s) failed (split offset, "
+                    f"exitcode): {failed}. Check the parent stderr for the "
+                    f"worker traceback (TS non-convergence is the most "
+                    f"common cause)."
+                )
             logger.info(
                 f"  d_model={d_model}: batch splits "
                 f"{batch_start}..{batch_end - 1} complete"
