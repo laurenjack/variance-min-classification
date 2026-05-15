@@ -459,28 +459,60 @@ def _eval_single_model(
 
 
 def compute_distributional_decomposition(
-    all_log_q, ref_log_probs, ref_entropy, num_models,
+    all_log_q, ref_log_probs, ref_entropy, num_models, chunk_size: int = 8192,
 ):
     """Exact bias-variance decomposition with reference distribution p:
         CE(p, q_bar) = H(p) + KL(p || q_bar) + Jensen Gap
+
+    Streams over chunks of positions so peak memory stays bounded even
+    when the [N, V] log-prob tensors are tens of GB.
+
+    Args:
+        all_log_q: list of M fp16 [N, V] tensors (typically on CPU).
+        ref_log_probs: fp16 [N, V] reference log-probabilities.
+        ref_entropy: fp32 [N] per-position entropy.
+        num_models: M.
+        chunk_size: number of positions processed at a time. With
+            V=18144 and M=4, a chunk of 8192 needs ~2.5 GB in fp32.
     """
-    log_q_j = torch.stack(all_log_q)
-    log_q_bar = torch.logsumexp(log_q_j, dim=0) - math.log(num_models)
+    N = ref_log_probs.shape[0]
 
-    log_p = ref_log_probs
-    p = log_p.exp()
+    mean_entropy = float(ref_entropy.float().mean().item())
 
-    mean_entropy = ref_entropy.mean().item()
-
-    bias_per_position = (p * (log_p - log_q_bar)).sum(dim=-1)
-    mean_bias = bias_per_position.mean().item()
-
+    total_bias = 0.0
     total_variance = 0.0
-    for j in range(num_models):
-        variance_j = (p * (log_q_bar - log_q_j[j])).sum(dim=-1)
-        total_variance += variance_j.mean().item()
-    mean_variance = total_variance / num_models
+    n_seen = 0
 
+    log_M = math.log(num_models)
+
+    for s in range(0, N, chunk_size):
+        e = min(s + chunk_size, N)
+        log_p_chunk = ref_log_probs[s:e].float()  # [c, V]
+        p_chunk = log_p_chunk.exp()
+
+        # Stack all M models' log_q on this chunk (upcast to fp32 per-chunk).
+        log_q_chunks = torch.stack(
+            [all_log_q[j][s:e].float() for j in range(num_models)],
+            dim=0,
+        )  # [M, c, V]
+
+        log_q_bar = torch.logsumexp(log_q_chunks, dim=0) - log_M  # [c, V]
+
+        # KL(p || q_bar) summed over positions in this chunk.
+        bias_sum = (p_chunk * (log_p_chunk - log_q_bar)).sum().item()
+        total_bias += bias_sum
+
+        # Jensen Gap: mean_j sum_x p(x) (log q_bar(x) - log q_j(x))
+        # summed over positions in this chunk.
+        var_sum = 0.0
+        for j in range(num_models):
+            var_sum += (p_chunk * (log_q_bar - log_q_chunks[j])).sum().item()
+        total_variance += var_sum
+
+        n_seen += (e - s)
+
+    mean_bias = total_bias / n_seen
+    mean_variance = total_variance / (num_models * n_seen)
     mean_test_loss = mean_entropy + mean_bias + mean_variance
 
     return {
@@ -504,7 +536,9 @@ def evaluate_d_model_distributional(
         f"on {num_gpus} GPUs{' (TS)' if apply_temperature_scaling else ''}"
     )
 
-    ref_log_probs = ref_data['log_probs'].float()
+    # Keep ref log_probs in fp16 to avoid a 2x memory copy; the decomposition
+    # upcasts per-chunk. ref_entropy is small (one float per position).
+    ref_log_probs = ref_data['log_probs']  # fp16
     ref_entropy = ref_data['entropy'].float()
 
     all_log_q = []
@@ -517,7 +551,8 @@ def evaluate_d_model_distributional(
             num_splits, samples_per_split, subsample_seed, holdout_samples,
             apply_temperature_scaling,
         )
-        all_log_q.append(log_q.float())
+        # _eval_single_model already returns fp16; keep it that way.
+        all_log_q.append(log_q)
         if ts_diag is not None:
             ts_diags.append({"split_id": split_idx, **ts_diag})
 
