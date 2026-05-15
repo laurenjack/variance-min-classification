@@ -56,6 +56,7 @@ from jl.double_descent.transformer.transformer_data import (
     collate_fn,
     load_iwslt14_variance_split,
     load_m2m100_iwslt14_variance_split,
+    load_m2m100_split_ids,
 )
 from jl.double_descent.transformer.transformer_model import TransformerModel
 
@@ -395,9 +396,15 @@ def evaluate_d_model_parallel(
 def _eval_single_model(
     gpu_id, model_path_str, d_model, data_path,
     num_splits, samples_per_split, subsample_seed, holdout_samples,
+    apply_temperature_scaling: bool = False,
 ):
-    """Evaluate one M2M100-vocab model on the held-out chunk; return full log q
-    in fp16 [N_positions, vocab_size]."""
+    """Evaluate one M2M100-vocab model on the held-out chunk; return
+    (full_log_q_fp16 [N, V], ts_diag_or_None).
+
+    If apply_temperature_scaling, fits T on the IWSLT-m2m100 valid split
+    (Guo et al. protocol) and divides test logits by T before log-softmax.
+    Aborts (RuntimeError) if the L-BFGS fit doesn't converge.
+    """
     device = torch.device(f"cuda:{gpu_id}")
     config = TDDConfig()
 
@@ -409,6 +416,33 @@ def _eval_single_model(
         vocab.pad_idx, config, device,
     )
 
+    ts_diag = None
+    temperature = 1.0
+    if apply_temperature_scaling:
+        # Collect val logits on the M2M100-vocab valid split.
+        valid_dataset = M2M100TranslationDataset(
+            *load_m2m100_split_ids(data_path, "valid"), vocab,
+        )
+        val_loader = DataLoader(
+            valid_dataset, batch_size=EVAL_BATCH_SIZE, shuffle=False,
+            collate_fn=partial(collate_fn, pad_idx=vocab.pad_idx),
+        )
+        val_logits, val_labels = _collect_logits(
+            model, val_loader, vocab.pad_idx, device,
+        )
+        val_logits = val_logits.to(device)
+        val_labels = val_labels.to(device)
+        temperature, ts_diag = fit_temperature(
+            val_logits, val_labels, chunk_size=8192, return_diagnostics=True,
+        )
+        del val_logits, val_labels
+        if not ts_diag["converged"]:
+            raise RuntimeError(
+                f"L-BFGS did not converge fitting T for {model_path_str}: "
+                f"T={ts_diag['T']:.4f}, |dCE/dT|={abs(ts_diag['final_grad']):.2e}. "
+                f"Aborting."
+            )
+
     all_log_q = []
     with torch.no_grad():
         for src, tgt in loader:
@@ -416,10 +450,12 @@ def _eval_single_model(
             tgt_input, target, mask, num_tokens = _prepare_batch(tgt, vocab.pad_idx)
 
             logits = model(src, tgt_input)
+            if apply_temperature_scaling:
+                logits = logits / temperature
             log_q = F.log_softmax(logits, dim=-1)
             all_log_q.append(log_q[mask].cpu())
 
-    return torch.cat(all_log_q, dim=0).half()
+    return torch.cat(all_log_q, dim=0).half(), ts_diag
 
 
 def compute_distributional_decomposition(
@@ -459,23 +495,31 @@ def evaluate_d_model_distributional(
     model_paths, d_model, data_path, config, num_gpus, ref_data,
     num_splits, samples_per_split, subsample_seed,
     holdout_samples: Optional[int] = None,
+    apply_temperature_scaling: bool = False,
 ):
     """Distributional decomposition for one d_model using M2M100 reference."""
     num_models = len(model_paths)
-    logger.info(f"d_model={d_model}: distributional eval with {num_models} models on {num_gpus} GPUs")
+    logger.info(
+        f"d_model={d_model}: distributional eval with {num_models} models "
+        f"on {num_gpus} GPUs{' (TS)' if apply_temperature_scaling else ''}"
+    )
 
     ref_log_probs = ref_data['log_probs'].float()
     ref_entropy = ref_data['entropy'].float()
 
     all_log_q = []
+    ts_diags = []
     for split_idx, model_path in enumerate(model_paths):
         gpu_id = split_idx % num_gpus
         logger.info(f"  Evaluating split {split_idx} on GPU {gpu_id}...")
-        log_q = _eval_single_model(
+        log_q, ts_diag = _eval_single_model(
             gpu_id, str(model_path), d_model, data_path,
             num_splits, samples_per_split, subsample_seed, holdout_samples,
+            apply_temperature_scaling,
         )
         all_log_q.append(log_q.float())
+        if ts_diag is not None:
+            ts_diags.append({"split_id": split_idx, **ts_diag})
 
     decomp = compute_distributional_decomposition(
         all_log_q, ref_log_probs, ref_entropy, num_models,
@@ -487,7 +531,7 @@ def evaluate_d_model_distributional(
         f"variance={decomp['variance']:.6f}"
     )
 
-    return {
+    result = {
         "d_model": d_model,
         "mean_test_loss": round(decomp["mean_test_loss"], 6),
         "entropy": round(decomp["entropy"], 6),
@@ -495,6 +539,11 @@ def evaluate_d_model_distributional(
         "variance": round(decomp["variance"], 6),
         "num_models": num_models,
     }
+    if ts_diags:
+        result["ts_temperatures"] = [round(d["T"], 6) for d in ts_diags]
+        result["ts_all_converged"] = all(d["converged"] for d in ts_diags)
+        result["ts_max_abs_grad"] = max(abs(d["final_grad"]) for d in ts_diags)
+    return result
 
 
 def main():
@@ -616,7 +665,8 @@ def main():
 
         ref_output = model_dir / "reference"
         ref_output.mkdir(parents=True, exist_ok=True)
-        eval_file = ref_output / "evaluation.jsonl"
+        eval_name = "evaluation_ts.jsonl" if args.temperature_scaling else "evaluation.jsonl"
+        eval_file = ref_output / eval_name
         if eval_file.exists():
             eval_file.unlink()
 
@@ -624,7 +674,7 @@ def main():
             result = evaluate_d_model_distributional(
                 model_paths, d_model, args.data_path, config, num_gpus, ref_data,
                 args.num_splits, args.samples_per_split, args.subsample_seed,
-                args.holdout_samples,
+                args.holdout_samples, args.temperature_scaling,
             )
             with open(eval_file, "a") as fh:
                 fh.write(json.dumps(result) + "\n")
