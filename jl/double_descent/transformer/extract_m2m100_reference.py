@@ -120,6 +120,14 @@ def main():
     parser.add_argument("--samples-per-split", type=int, default=36000)
     parser.add_argument("--subsample-seed", type=int, default=42)
     parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument(
+        "--full-distributions", action="store_true",
+        help="Save the full [N_positions, vocab_size] log p(.|context) "
+             "distribution plus per-position entropy H(p). Output is much "
+             "larger (~14 GB for the held-out variance chunk) but is "
+             "required for the oracle bias-variance decomposition "
+             "(KL(p || q_bar) and the distributional Jensen Gap).",
+    )
     args = parser.parse_args()
 
     data_path = Path(args.data_path)
@@ -175,6 +183,8 @@ def main():
 
     all_log_probs = []
     all_target_ids = []
+    all_full_log_probs = []  # only populated when --full-distributions
+    all_entropy = []         # only populated when --full-distributions
     sentence_offsets = [0]
 
     num_batches = (len(src_texts) + args.batch_size - 1) // args.batch_size
@@ -231,9 +241,6 @@ def main():
 
             # Map M2M100 native target IDs to compact IDs (vectorized).
             # target_native -> compact via lookup; OOV -> unk_idx.
-            # Build a flat dense lookup once on device for speed.
-            # (Lazy: per-batch dict lookup, ~100s of tokens — fine.)
-            # Use gather to extract log p at the target compact ID.
             target_native_flat = target_native_ids.cpu().tolist()
             target_compact = torch.tensor(
                 [
@@ -245,7 +252,11 @@ def main():
 
             # log p(y_i) at every position: [batch, tgt_len-1]
             log_p_target = log_probs.gather(-1, target_compact.unsqueeze(-1)).squeeze(-1)
-            del log_probs
+
+            # Per-position entropy (only used if --full-distributions).
+            if args.full_distributions:
+                # H(p) = -sum p log p = -sum exp(log p) * log p
+                entropy_batch = -(log_probs.exp() * log_probs).sum(dim=-1)  # [B, T]
 
             for i in range(len(batch_de)):
                 # Position 0 predicts __en__ (language tag); skip it.
@@ -256,8 +267,17 @@ def main():
                 if n_positions > 0:
                     all_log_probs.append(log_p_target[i][content_mask].cpu())
                     all_target_ids.append(target_compact[i][content_mask].cpu().short())
+                    if args.full_distributions:
+                        all_full_log_probs.append(
+                            log_probs[i][content_mask].cpu().half()
+                        )
+                        all_entropy.append(entropy_batch[i][content_mask].cpu().float())
 
                 sentence_offsets.append(sentence_offsets[-1] + n_positions)
+
+            del log_probs
+            if args.full_distributions:
+                del entropy_batch
 
             if (batch_idx + 1) % 10 == 0 or batch_idx == num_batches - 1:
                 total_positions = sentence_offsets[-1]
@@ -275,17 +295,38 @@ def main():
     logger.info(f"Mean log p(y_i): {all_log_probs.mean().item():.4f}")
     logger.info(f"NLL (per token): {-all_log_probs.mean().item():.4f}")
 
-    output = {
-        "log_probs": all_log_probs.half(),
-        "sentence_offsets": sentence_offsets,
-        "target_ids": all_target_ids.short(),
-        "split": args.split,
-        "split_id": args.variance_split_id,
-        "num_splits": args.num_splits,
-        "samples_per_split": args.samples_per_split,
-        "subsample_seed": args.subsample_seed,
-        "vocab_size": vocab_size,
-    }
+    if args.full_distributions:
+        full_log_probs = torch.cat(all_full_log_probs, dim=0)  # [N, V] fp16
+        entropy = torch.cat(all_entropy, dim=0)                # [N] fp32
+        logger.info(
+            f"Full distributions: {full_log_probs.shape} "
+            f"({full_log_probs.element_size() * full_log_probs.nelement() / 1e9:.2f} GB)"
+        )
+        logger.info(f"Mean entropy H(p): {entropy.mean().item():.4f}")
+        output = {
+            "log_probs": full_log_probs,
+            "entropy": entropy,
+            "sentence_offsets": sentence_offsets,
+            "target_ids": all_target_ids.short(),
+            "split": args.split,
+            "split_id": args.variance_split_id,
+            "num_splits": args.num_splits,
+            "samples_per_split": args.samples_per_split,
+            "subsample_seed": args.subsample_seed,
+            "vocab_size": vocab_size,
+        }
+    else:
+        output = {
+            "log_probs": all_log_probs.half(),
+            "sentence_offsets": sentence_offsets,
+            "target_ids": all_target_ids.short(),
+            "split": args.split,
+            "split_id": args.variance_split_id,
+            "num_splits": args.num_splits,
+            "samples_per_split": args.samples_per_split,
+            "subsample_seed": args.subsample_seed,
+            "vocab_size": vocab_size,
+        }
 
     output_path = Path(args.output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
