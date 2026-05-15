@@ -45,6 +45,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
+from jl.double_descent.temperature_scaling import fit_temperature
 from jl.double_descent.transformer.transformer_config import TDDConfig
 from jl.double_descent.transformer.transformer_data import (
     M2M100TranslationDataset,
@@ -90,6 +91,34 @@ def _load_holdout_test_data(
         collate_fn=partial(collate_fn, pad_idx=vocab.pad_idx),
     )
     return test_dataset, loader, vocab
+
+
+def _load_valid_data(data_path):
+    """Build vocab + DataLoader for the IWSLT valid split (used for TS fitting)."""
+    from jl.double_descent.transformer.transformer_data import build_vocab, load_split
+    vocab = build_vocab(data_path)
+    valid_src, valid_tgt = load_split(data_path, "valid")
+    valid_dataset = TranslationDataset(valid_src, valid_tgt, vocab)
+    loader = DataLoader(
+        valid_dataset, batch_size=EVAL_BATCH_SIZE, shuffle=False,
+        collate_fn=partial(collate_fn, pad_idx=vocab.pad_idx),
+    )
+    return valid_dataset, loader, vocab
+
+
+def _collect_logits(model, loader, pad_idx, device):
+    """Forward the entire loader, returning flat (logits, labels) tensors for
+    non-pad target positions only. Used to feed `fit_temperature`."""
+    all_logits = []
+    all_labels = []
+    with torch.no_grad():
+        for src, tgt in loader:
+            src, tgt = src.to(device), tgt.to(device)
+            tgt_input, target, mask, _ = _prepare_batch(tgt, pad_idx)
+            logits = model(src, tgt_input)  # [B, T, V]
+            all_logits.append(logits[mask].cpu().float())
+            all_labels.append(target[mask].cpu())
+    return torch.cat(all_logits, dim=0), torch.cat(all_labels, dim=0)
 
 
 def _load_holdout_m2m100_test_data(
@@ -166,9 +195,16 @@ def load_model(
 def _eval_worker(
     gpu_id, model_path_str, d_model, data_path, label_smoothing,
     num_splits, samples_per_split, subsample_seed, holdout_samples, output_file,
+    apply_temperature_scaling: bool = False,
 ):
     """Worker process: evaluate one transformer model on one GPU on the
-    held-out variance chunk. Saves log_q_j_y, total loss, total tokens."""
+    held-out variance chunk. Saves log_q_j_y, total loss, total tokens.
+
+    If apply_temperature_scaling is True, fits a scalar T on the IWSLT valid
+    split first (Guo et al. protocol) and divides test logits by T before
+    computing log-softmax. Per-model T + convergence diagnostics are written
+    into the same output_file under key 'ts_diag'.
+    """
     device = torch.device(f"cuda:{gpu_id}")
     config = TDDConfig()
 
@@ -179,6 +215,22 @@ def _eval_worker(
         Path(model_path_str), d_model, len(vocab),
         vocab.pad_idx, config, device,
     )
+
+    ts_diag = None
+    temperature = 1.0
+    if apply_temperature_scaling:
+        # Collect val logits, fit T, log convergence.
+        _, val_loader, _ = _load_valid_data(data_path)
+        val_logits, val_labels = _collect_logits(
+            model, val_loader, vocab.pad_idx, device,
+        )
+        # Move to device for L-BFGS speed; chunk to avoid OOM on big vocab.
+        val_logits = val_logits.to(device)
+        val_labels = val_labels.to(device)
+        temperature, ts_diag = fit_temperature(
+            val_logits, val_labels, chunk_size=8192, return_diagnostics=True,
+        )
+        del val_logits, val_labels
 
     criterion = nn.CrossEntropyLoss(
         ignore_index=vocab.pad_idx,
@@ -196,6 +248,8 @@ def _eval_worker(
             tgt_input, target, mask, num_tokens = _prepare_batch(tgt, vocab.pad_idx)
 
             logits = model(src, tgt_input)
+            if apply_temperature_scaling:
+                logits = logits / temperature
 
             loss = criterion(
                 logits.view(-1, logits.size(-1)),
@@ -216,6 +270,7 @@ def _eval_worker(
         'total_loss': torch.tensor(total_loss),
         'total_tokens': torch.tensor(total_tokens),
         'min_log_q': torch.tensor(min_log_q),
+        'ts_diag': ts_diag,
     }, output_file)
 
 
@@ -229,6 +284,7 @@ def evaluate_d_model_parallel(
     samples_per_split: int,
     subsample_seed: int,
     holdout_samples: Optional[int] = None,
+    apply_temperature_scaling: bool = False,
 ) -> Dict:
     """Mean test loss + Jensen Gap for one d_model, parallelised across GPUs.
 
@@ -239,6 +295,7 @@ def evaluate_d_model_parallel(
     logger.info(
         f"d_model={d_model}: evaluating {num_models} models on {num_gpus} GPUs "
         f"({(num_models + num_gpus - 1) // num_gpus} sequential batches)"
+        f"{' (TS)' if apply_temperature_scaling else ''}"
     )
 
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -255,7 +312,7 @@ def evaluate_d_model_parallel(
                     args=(gpu_id, str(model_paths[split_idx]), d_model,
                           data_path, config.label_smoothing,
                           num_splits, samples_per_split, subsample_seed,
-                          holdout_samples, out_f),
+                          holdout_samples, out_f, apply_temperature_scaling),
                 )
                 p.start()
                 processes.append(p)
@@ -270,16 +327,19 @@ def evaluate_d_model_parallel(
         total_loss_sum = 0.0
         total_tokens = 0
         min_log_qs = []
+        ts_diags = []
 
         for split_idx in range(num_models):
             data = torch.load(
                 os.path.join(tmp_dir, f"d{d_model}_s{split_idx}.pt"),
-                weights_only=True,
+                weights_only=False,
             )
             all_log_q_j_y.append(data['log_q_j_y'])
             total_loss_sum += data['total_loss'].item()
             total_tokens = data['total_tokens'].item()
             min_log_qs.append(data['min_log_q'].item())
+            if data.get('ts_diag') is not None:
+                ts_diags.append({"split_id": split_idx, **data['ts_diag']})
 
         mean_test_loss, mean_jensen_gap = compute_decomposition(
             all_log_q_j_y, total_loss_sum, num_models, total_tokens,
@@ -296,13 +356,18 @@ def evaluate_d_model_parallel(
         f"mean_jensen_gap={mean_jensen_gap:.6f}"
     )
 
-    return {
+    result = {
         "d_model": d_model,
         "mean_test_loss": round(mean_test_loss, 6),
         "mean_jensen_gap": round(mean_jensen_gap, 6),
         "num_models": num_models,
         "total_tokens": total_tokens,
     }
+    if ts_diags:
+        result["ts_temperatures"] = [round(d["T"], 6) for d in ts_diags]
+        result["ts_all_converged"] = all(d["converged"] for d in ts_diags)
+        result["ts_max_abs_grad"] = max(abs(d["final_grad"]) for d in ts_diags)
+    return result
 
 
 def _eval_single_model(
@@ -473,6 +538,16 @@ def main():
         help="Evaluate the early_stop/model_d*_split*.pt checkpoints instead. "
              "Output goes to early_stop/evaluation.jsonl.",
     )
+    parser.add_argument(
+        "--temperature-scaling",
+        action="store_true",
+        help="Fit a scalar temperature T per (d_model, split) on IWSLT valid "
+             "(Guo et al. protocol) and apply it to test logits before the "
+             "variance decomposition. Convergence diagnostics are logged per "
+             "model and the per-d_model evaluation row gets ts_temperatures + "
+             "ts_all_converged + ts_max_abs_grad. Output goes to "
+             "evaluation_ts.jsonl alongside the non-TS one.",
+    )
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -545,7 +620,8 @@ def main():
     mp.set_start_method('spawn', force=True)
     num_gpus = torch.cuda.device_count()
 
-    output_path = model_dir / "evaluation.jsonl"
+    out_name = "evaluation_ts.jsonl" if args.temperature_scaling else "evaluation.jsonl"
+    output_path = model_dir / out_name
     if output_path.exists():
         output_path.unlink()
 
@@ -553,7 +629,7 @@ def main():
         result = evaluate_d_model_parallel(
             model_paths, d_model, args.data_path, config, num_gpus,
             args.num_splits, args.samples_per_split, args.subsample_seed,
-            args.holdout_samples,
+            args.holdout_samples, args.temperature_scaling,
         )
         with open(output_path, "a") as fh:
             fh.write(json.dumps(result) + "\n")

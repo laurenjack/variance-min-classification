@@ -19,7 +19,9 @@ def fit_temperature(
     logits: torch.Tensor,
     labels: torch.Tensor,
     chunk_size: int = 0,
-) -> float:
+    return_diagnostics: bool = False,
+    grad_tol: float = 1e-4,
+):
     """Fit scalar temperature T via L-BFGS on validation logits.
 
     Uses lr=1.0, max_iter=200. The lr=0.01 default fails when the
@@ -30,9 +32,13 @@ def fit_temperature(
         labels: (N,) long tensor of class labels.
         chunk_size: If > 0, compute cross-entropy in chunks to avoid
             OOM on large vocab (e.g. transformer with V~10K).
+        return_diagnostics: If True, return (T, diag) where diag is a dict
+            of convergence info.
+        grad_tol: |dCE/dT| below this counts as converged.
 
     Returns:
-        Fitted temperature as a float.
+        Fitted temperature as a float, or (T, diag_dict) if
+        return_diagnostics=True.
     """
     temperature = nn.Parameter(torch.ones(1, device=logits.device))
     optimizer = torch.optim.LBFGS([temperature], lr=1.0, max_iter=200)
@@ -59,9 +65,47 @@ def fit_temperature(
             loss.backward()
             return loss
 
+    # Snapshot pre-fit loss (T=1) for the convergence diagnostic.
+    with torch.no_grad():
+        if chunk_size > 0:
+            initial_loss = 0.0
+            for i in range(0, n, chunk_size):
+                initial_loss += float(
+                    F.cross_entropy(
+                        logits[i:i + chunk_size], labels[i:i + chunk_size],
+                        reduction="sum",
+                    ).item()
+                ) / n
+        else:
+            initial_loss = float(F.cross_entropy(logits, labels).item())
+
     optimizer.step(closure)
     t = temperature.item()
-    logger.info(f"Fitted temperature: {t:.6f}")
+
+    # Re-evaluate at the fitted T to capture final loss + grad.
+    temperature.grad = None
+    final_loss_t = closure()
+    final_loss = float(final_loss_t.item())
+    final_grad = float(temperature.grad.item()) if temperature.grad is not None else float("nan")
+    loss_delta = initial_loss - final_loss
+    converged = abs(final_grad) < grad_tol
+
+    logger.info(
+        f"Fitted T={t:.6f} | initial_loss={initial_loss:.6f} -> "
+        f"final_loss={final_loss:.6f} (Δ={loss_delta:+.6f}) | "
+        f"|dCE/dT|={abs(final_grad):.2e} | "
+        f"{'CONVERGED' if converged else 'NOT CONVERGED'}"
+    )
+
+    if return_diagnostics:
+        return t, {
+            "T": t,
+            "initial_loss": initial_loss,
+            "final_loss": final_loss,
+            "loss_delta": loss_delta,
+            "final_grad": final_grad,
+            "converged": converged,
+        }
     return t
 
 
