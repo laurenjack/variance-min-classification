@@ -68,30 +68,35 @@ def get_variance_split_indices(
     [split_id * samples_per_split, (split_id+1) * samples_per_split) chunk.
 
     split_id in [0, num_splits-1] → training chunk.
-    split_id == num_splits        → held-out in-distribution test chunk
-                                    (matches load_m2m100_iwslt14_variance_split's
-                                     test_dataset).
+    split_id == num_splits        → held-out in-distribution test chunk.
+                                    Returns either the next
+                                    samples_per_split indices if n_total is
+                                    large enough, otherwise *all leftover*
+                                    indices after the training chunks
+                                    (matches the holdout_samples=None mode
+                                    of _compute_variance_chunks).
     """
     if split_id < 0 or split_id > num_splits:
         raise ValueError(
             f"split_id must be in [0, {num_splits}] (held-out chunk = "
             f"{num_splits}), got {split_id}"
         )
-    # When extracting the held-out chunk we need (num_splits + 1) *
-    # samples_per_split available; otherwise num_splits * samples_per_split
-    # is enough.
-    chunks_required = num_splits + 1 if split_id == num_splits else num_splits
-    required = chunks_required * samples_per_split
-    if n_total < required:
+    train_required = num_splits * samples_per_split
+    if n_total < train_required:
         raise ValueError(
-            f"Not enough data for {chunks_required} chunks of "
-            f"{samples_per_split} samples. Need {required}, have {n_total}."
+            f"Not enough data for {num_splits} training chunks of "
+            f"{samples_per_split} samples. Need {train_required}, have {n_total}."
         )
     rng = random.Random(seed)
     indices = list(range(n_total))
     rng.shuffle(indices)
+    if split_id == num_splits:
+        # Held-out chunk: prefer samples_per_split, otherwise take everything
+        # left over after the training chunks (leftover mode).
+        end = min(n_total, train_required + samples_per_split)
+        return indices[train_required:end]
     start = split_id * samples_per_split
-    return indices[start : start + samples_per_split]
+    return indices[start:start + samples_per_split]
 
 
 def main():
