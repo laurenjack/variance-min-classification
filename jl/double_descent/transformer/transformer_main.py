@@ -132,10 +132,15 @@ def run_double_descent(args, config, d_models, num_gpus):
     samples_k = train_samples // 1000
 
     if config.variance:
+        # Outer loop = split_id, inner loop = d_model, so consecutive jobs
+        # span the d_model range. With round-robin to GPUs and waves of
+        # max_concurrent_per_gpu, this gives every wave a mix of small/large
+        # d_models instead of clustering all the small ones into wave 1 and
+        # all the slow large-d_model jobs into the final wave.
         jobs = [
             (d_model, split_id)
-            for d_model in d_models
             for split_id in range(config.num_splits)
+            for d_model in d_models
         ]
     else:
         jobs = [(d_model, None) for d_model in d_models]
