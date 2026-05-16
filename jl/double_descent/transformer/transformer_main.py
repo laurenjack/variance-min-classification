@@ -35,7 +35,12 @@ logger = logging.getLogger(__name__)
 
 # Default experiment parameters (overridable via CLI)
 TRAIN_SAMPLES = [36000]  # 36K samples
-D_MODEL_VALUES = list(range(8, 392, 8))  # [8, 16, 24, ..., 384] - 48 values
+D_MODEL_VALUES = list(range(8, 392, 8))  # [8, 16, 24, ..., 384] - 48 values (default mode)
+
+# For --variance runs we cap at d=192 (Nakkiran et al. Figure 3 range) so the
+# sweep matches the existing 03-24-0859 BPE variance run shape and can be
+# compared against it.
+VARIANCE_D_MODEL_VALUES = list(range(8, 200, 8))  # [8, 16, ..., 192] - 24 values
 
 
 
@@ -201,7 +206,15 @@ def main():
     if num_gpus < 1:
         raise RuntimeError("No CUDA GPUs visible to this process.")
 
-    d_models = args.d_models if args.d_models else D_MODEL_VALUES
+    if args.d_models:
+        d_models = args.d_models
+    elif config.variance:
+        # Variance sweep caps at d=192 to match the existing 03-24-0859
+        # BPE variance run, and so the held-out chunk's bias term can be
+        # compared at every d_model in that range.
+        d_models = VARIANCE_D_MODEL_VALUES
+    else:
+        d_models = D_MODEL_VALUES
 
     # Create output directory
     os.makedirs(args.output_path, exist_ok=True)
