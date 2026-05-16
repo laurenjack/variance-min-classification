@@ -45,7 +45,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from jl.double_descent.temperature_scaling import fit_temperature
 from jl.double_descent.transformer.transformer_config import TDDConfig
 from jl.double_descent.transformer.transformer_data import (
     M2M100TranslationDataset,
@@ -56,7 +55,6 @@ from jl.double_descent.transformer.transformer_data import (
     collate_fn,
     load_iwslt14_variance_split,
     load_m2m100_iwslt14_variance_split,
-    load_m2m100_split_ids,
 )
 from jl.double_descent.transformer.transformer_model import TransformerModel
 
@@ -92,34 +90,6 @@ def _load_holdout_test_data(
         collate_fn=partial(collate_fn, pad_idx=vocab.pad_idx),
     )
     return test_dataset, loader, vocab
-
-
-def _load_valid_data(data_path):
-    """Build vocab + DataLoader for the IWSLT valid split (used for TS fitting)."""
-    from jl.double_descent.transformer.transformer_data import build_vocab, load_split
-    vocab = build_vocab(data_path)
-    valid_src, valid_tgt = load_split(data_path, "valid")
-    valid_dataset = TranslationDataset(valid_src, valid_tgt, vocab)
-    loader = DataLoader(
-        valid_dataset, batch_size=EVAL_BATCH_SIZE, shuffle=False,
-        collate_fn=partial(collate_fn, pad_idx=vocab.pad_idx),
-    )
-    return valid_dataset, loader, vocab
-
-
-def _collect_logits(model, loader, pad_idx, device):
-    """Forward the entire loader, returning flat (logits, labels) tensors for
-    non-pad target positions only. Used to feed `fit_temperature`."""
-    all_logits = []
-    all_labels = []
-    with torch.no_grad():
-        for src, tgt in loader:
-            src, tgt = src.to(device), tgt.to(device)
-            tgt_input, target, mask, _ = _prepare_batch(tgt, pad_idx)
-            logits = model(src, tgt_input)  # [B, T, V]
-            all_logits.append(logits[mask].cpu().float())
-            all_labels.append(target[mask].cpu())
-    return torch.cat(all_logits, dim=0), torch.cat(all_labels, dim=0)
 
 
 def _load_holdout_m2m100_test_data(
@@ -196,16 +166,9 @@ def load_model(
 def _eval_worker(
     gpu_id, model_path_str, d_model, data_path, label_smoothing,
     num_splits, samples_per_split, subsample_seed, holdout_samples, output_file,
-    apply_temperature_scaling: bool = False,
 ):
     """Worker process: evaluate one transformer model on one GPU on the
-    held-out variance chunk. Saves log_q_j_y, total loss, total tokens.
-
-    If apply_temperature_scaling is True, fits a scalar T on the IWSLT valid
-    split first (Guo et al. protocol) and divides test logits by T before
-    computing log-softmax. Per-model T + convergence diagnostics are written
-    into the same output_file under key 'ts_diag'.
-    """
+    held-out variance chunk. Saves log_q_j_y, total loss, total tokens."""
     device = torch.device(f"cuda:{gpu_id}")
     config = TDDConfig()
 
@@ -216,30 +179,6 @@ def _eval_worker(
         Path(model_path_str), d_model, len(vocab),
         vocab.pad_idx, config, device,
     )
-
-    ts_diag = None
-    temperature = 1.0
-    if apply_temperature_scaling:
-        # Collect val logits, fit T, log convergence.
-        _, val_loader, _ = _load_valid_data(data_path)
-        val_logits, val_labels = _collect_logits(
-            model, val_loader, vocab.pad_idx, device,
-        )
-        # Move to device for L-BFGS speed; chunk to avoid OOM on big vocab.
-        val_logits = val_logits.to(device)
-        val_labels = val_labels.to(device)
-        temperature, ts_diag = fit_temperature(
-            val_logits, val_labels, chunk_size=8192, return_diagnostics=True,
-        )
-        del val_logits, val_labels
-        # Hard abort if the fit didn't converge — user opted for fail-fast.
-        if not ts_diag["converged"]:
-            raise RuntimeError(
-                f"L-BFGS did not converge fitting T on val for "
-                f"{model_path_str}: T={ts_diag['T']:.4f}, "
-                f"|dCE/dT|={abs(ts_diag['final_grad']):.2e} "
-                f"(tolerance 1e-4). Aborting."
-            )
 
     criterion = nn.CrossEntropyLoss(
         ignore_index=vocab.pad_idx,
@@ -257,8 +196,6 @@ def _eval_worker(
             tgt_input, target, mask, num_tokens = _prepare_batch(tgt, vocab.pad_idx)
 
             logits = model(src, tgt_input)
-            if apply_temperature_scaling:
-                logits = logits / temperature
 
             loss = criterion(
                 logits.view(-1, logits.size(-1)),
@@ -279,7 +216,6 @@ def _eval_worker(
         'total_loss': torch.tensor(total_loss),
         'total_tokens': torch.tensor(total_tokens),
         'min_log_q': torch.tensor(min_log_q),
-        'ts_diag': ts_diag,
     }, output_file)
 
 
@@ -293,7 +229,6 @@ def evaluate_d_model_parallel(
     samples_per_split: int,
     subsample_seed: int,
     holdout_samples: Optional[int] = None,
-    apply_temperature_scaling: bool = False,
 ) -> Dict:
     """Mean test loss + Jensen Gap for one d_model, parallelised across GPUs.
 
@@ -304,12 +239,9 @@ def evaluate_d_model_parallel(
     logger.info(
         f"d_model={d_model}: evaluating {num_models} models on {num_gpus} GPUs "
         f"({(num_models + num_gpus - 1) // num_gpus} sequential batches)"
-        f"{' (TS)' if apply_temperature_scaling else ''}"
     )
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        # Process splits in batches of size num_gpus so we never have more
-        # than num_gpus processes alive simultaneously.
         for batch_start in range(0, num_models, num_gpus):
             batch_end = min(batch_start + num_gpus, num_models)
             processes = []
@@ -321,14 +253,12 @@ def evaluate_d_model_parallel(
                     args=(gpu_id, str(model_paths[split_idx]), d_model,
                           data_path, config.label_smoothing,
                           num_splits, samples_per_split, subsample_seed,
-                          holdout_samples, out_f, apply_temperature_scaling),
+                          holdout_samples, out_f),
                 )
                 p.start()
                 processes.append(p)
             for p in processes:
                 p.join()
-            # Surface worker failures (e.g. TS non-convergence) instead of
-            # silently dropping the model from the average.
             failed = [
                 (i, p.exitcode)
                 for i, p in enumerate(processes)
@@ -338,8 +268,7 @@ def evaluate_d_model_parallel(
                 raise RuntimeError(
                     f"d_model={d_model}: worker(s) failed (split offset, "
                     f"exitcode): {failed}. Check the parent stderr for the "
-                    f"worker traceback (TS non-convergence is the most "
-                    f"common cause)."
+                    f"worker traceback."
                 )
             logger.info(
                 f"  d_model={d_model}: batch splits "
@@ -350,7 +279,6 @@ def evaluate_d_model_parallel(
         total_loss_sum = 0.0
         total_tokens = 0
         min_log_qs = []
-        ts_diags = []
 
         for split_idx in range(num_models):
             data = torch.load(
@@ -361,8 +289,6 @@ def evaluate_d_model_parallel(
             total_loss_sum += data['total_loss'].item()
             total_tokens = data['total_tokens'].item()
             min_log_qs.append(data['min_log_q'].item())
-            if data.get('ts_diag') is not None:
-                ts_diags.append({"split_id": split_idx, **data['ts_diag']})
 
         mean_test_loss, mean_jensen_gap = compute_decomposition(
             all_log_q_j_y, total_loss_sum, num_models, total_tokens,
@@ -379,32 +305,21 @@ def evaluate_d_model_parallel(
         f"mean_jensen_gap={mean_jensen_gap:.6f}"
     )
 
-    result = {
+    return {
         "d_model": d_model,
         "mean_test_loss": round(mean_test_loss, 6),
         "mean_jensen_gap": round(mean_jensen_gap, 6),
         "num_models": num_models,
         "total_tokens": total_tokens,
     }
-    if ts_diags:
-        result["ts_temperatures"] = [round(d["T"], 6) for d in ts_diags]
-        result["ts_all_converged"] = all(d["converged"] for d in ts_diags)
-        result["ts_max_abs_grad"] = max(abs(d["final_grad"]) for d in ts_diags)
-    return result
 
 
 def _eval_single_model(
     gpu_id, model_path_str, d_model, data_path,
     num_splits, samples_per_split, subsample_seed, holdout_samples,
-    apply_temperature_scaling: bool = False,
 ):
-    """Evaluate one M2M100-vocab model on the held-out chunk; return
-    (full_log_q_fp16 [N, V], ts_diag_or_None).
-
-    If apply_temperature_scaling, fits T on the IWSLT-m2m100 valid split
-    (Guo et al. protocol) and divides test logits by T before log-softmax.
-    Aborts (RuntimeError) if the L-BFGS fit doesn't converge.
-    """
+    """Evaluate one M2M100-vocab model on the held-out chunk; return the
+    full log q distribution as a fp16 [N, V] tensor on CPU."""
     device = torch.device(f"cuda:{gpu_id}")
     config = TDDConfig()
 
@@ -416,33 +331,6 @@ def _eval_single_model(
         vocab.pad_idx, config, device,
     )
 
-    ts_diag = None
-    temperature = 1.0
-    if apply_temperature_scaling:
-        # Collect val logits on the M2M100-vocab valid split.
-        valid_dataset = M2M100TranslationDataset(
-            *load_m2m100_split_ids(data_path, "valid"), vocab,
-        )
-        val_loader = DataLoader(
-            valid_dataset, batch_size=EVAL_BATCH_SIZE, shuffle=False,
-            collate_fn=partial(collate_fn, pad_idx=vocab.pad_idx),
-        )
-        val_logits, val_labels = _collect_logits(
-            model, val_loader, vocab.pad_idx, device,
-        )
-        val_logits = val_logits.to(device)
-        val_labels = val_labels.to(device)
-        temperature, ts_diag = fit_temperature(
-            val_logits, val_labels, chunk_size=8192, return_diagnostics=True,
-        )
-        del val_logits, val_labels
-        if not ts_diag["converged"]:
-            raise RuntimeError(
-                f"L-BFGS did not converge fitting T for {model_path_str}: "
-                f"T={ts_diag['T']:.4f}, |dCE/dT|={abs(ts_diag['final_grad']):.2e}. "
-                f"Aborting."
-            )
-
     all_log_q = []
     with torch.no_grad():
         for src, tgt in loader:
@@ -450,14 +338,11 @@ def _eval_single_model(
             tgt_input, target, mask, num_tokens = _prepare_batch(tgt, vocab.pad_idx)
 
             logits = model(src, tgt_input)
-            if apply_temperature_scaling:
-                logits = logits / temperature
             log_q = F.log_softmax(logits, dim=-1)
             # Cast to fp16 per-batch to halve the CPU accumulator memory.
-            # The final torch.cat is then bounded by fp16 storage cost.
             all_log_q.append(log_q[mask].cpu().half())
 
-    return torch.cat(all_log_q, dim=0), ts_diag
+    return torch.cat(all_log_q, dim=0)
 
 
 def compute_distributional_decomposition(
@@ -492,7 +377,6 @@ def compute_distributional_decomposition(
         log_p_chunk = ref_log_probs[s:e].float()  # [c, V]
         p_chunk = log_p_chunk.exp()
 
-        # Stack all M models' log_q on this chunk (upcast to fp32 per-chunk).
         log_q_chunks = torch.stack(
             [all_log_q[j][s:e].float() for j in range(num_models)],
             dim=0,
@@ -500,12 +384,9 @@ def compute_distributional_decomposition(
 
         log_q_bar = torch.logsumexp(log_q_chunks, dim=0) - log_M  # [c, V]
 
-        # KL(p || q_bar) summed over positions in this chunk.
         bias_sum = (p_chunk * (log_p_chunk - log_q_bar)).sum().item()
         total_bias += bias_sum
 
-        # Jensen Gap: mean_j sum_x p(x) (log q_bar(x) - log q_j(x))
-        # summed over positions in this chunk.
         var_sum = 0.0
         for j in range(num_models):
             var_sum += (p_chunk * (log_q_bar - log_q_chunks[j])).sum().item()
@@ -529,7 +410,6 @@ def evaluate_d_model_distributional(
     model_paths, d_model, data_path, config, num_gpus, ref_data,
     num_splits, samples_per_split, subsample_seed,
     holdout_samples: Optional[int] = None,
-    apply_temperature_scaling: bool = False,
 ):
     """Distributional decomposition for one d_model using M2M100 reference.
 
@@ -542,25 +422,21 @@ def evaluate_d_model_distributional(
     num_models = len(model_paths)
     logger.info(
         f"d_model={d_model}: distributional eval with {num_models} models "
-        f"on {num_gpus} GPUs{' (TS)' if apply_temperature_scaling else ''}"
+        f"on {num_gpus} GPUs"
     )
 
-    # Keep ref log_probs in fp16 to avoid a 2x memory copy; the decomposition
-    # upcasts per-chunk.
     ref_log_probs = ref_data['log_probs']  # fp16
     ref_entropy = ref_data['entropy'].float()
     vocab_size = ref_log_probs.shape[1]
 
-    ts_diags = []
     with tempfile.TemporaryDirectory() as spool_dir:
         spool_paths = []
         for split_idx, model_path in enumerate(model_paths):
             gpu_id = split_idx % num_gpus
             logger.info(f"  Evaluating split {split_idx} on GPU {gpu_id}...")
-            log_q, ts_diag = _eval_single_model(
+            log_q = _eval_single_model(
                 gpu_id, str(model_path), d_model, data_path,
                 num_splits, samples_per_split, subsample_seed, holdout_samples,
-                apply_temperature_scaling,
             )
             # Spool fp16 log_q to disk and free the in-memory copy so we
             # never hold > 1 split's distribution in RAM at a time.
@@ -569,11 +445,7 @@ def evaluate_d_model_distributional(
             log_q.numpy().tofile(spool_path)
             spool_paths.append((spool_path, n_pos))
             del log_q
-            if ts_diag is not None:
-                ts_diags.append({"split_id": split_idx, **ts_diag})
 
-        # Memory-map each spooled split as a numpy array; the chunked decomp
-        # loads per-chunk slices into RAM only.
         all_log_q = [
             torch.from_numpy(
                 np.memmap(path, dtype=np.float16, mode='r', shape=(n_pos, vocab_size))
@@ -591,7 +463,7 @@ def evaluate_d_model_distributional(
         f"variance={decomp['variance']:.6f}"
     )
 
-    result = {
+    return {
         "d_model": d_model,
         "mean_test_loss": round(decomp["mean_test_loss"], 6),
         "entropy": round(decomp["entropy"], 6),
@@ -599,11 +471,6 @@ def evaluate_d_model_distributional(
         "variance": round(decomp["variance"], 6),
         "num_models": num_models,
     }
-    if ts_diags:
-        result["ts_temperatures"] = [round(d["T"], 6) for d in ts_diags]
-        result["ts_all_converged"] = all(d["converged"] for d in ts_diags)
-        result["ts_max_abs_grad"] = max(abs(d["final_grad"]) for d in ts_diags)
-    return result
 
 
 def main():
@@ -669,16 +536,6 @@ def main():
         help="Evaluate the early_stop/model_d*_split*.pt checkpoints instead. "
              "Output goes to early_stop/evaluation.jsonl.",
     )
-    parser.add_argument(
-        "--temperature-scaling",
-        action="store_true",
-        help="Fit a scalar temperature T per (d_model, split) on IWSLT valid "
-             "(Guo et al. protocol) and apply it to test logits before the "
-             "variance decomposition. Convergence diagnostics are logged per "
-             "model and the per-d_model evaluation row gets ts_temperatures + "
-             "ts_all_converged + ts_max_abs_grad. Output goes to "
-             "evaluation_ts.jsonl alongside the non-TS one.",
-    )
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -725,8 +582,7 @@ def main():
 
         ref_output = model_dir / "reference"
         ref_output.mkdir(parents=True, exist_ok=True)
-        eval_name = "evaluation_ts.jsonl" if args.temperature_scaling else "evaluation.jsonl"
-        eval_file = ref_output / eval_name
+        eval_file = ref_output / "evaluation.jsonl"
         if eval_file.exists():
             eval_file.unlink()
 
@@ -734,7 +590,7 @@ def main():
             result = evaluate_d_model_distributional(
                 model_paths, d_model, args.data_path, config, num_gpus, ref_data,
                 args.num_splits, args.samples_per_split, args.subsample_seed,
-                args.holdout_samples, args.temperature_scaling,
+                args.holdout_samples,
             )
             with open(eval_file, "a") as fh:
                 fh.write(json.dumps(result) + "\n")
@@ -752,8 +608,7 @@ def main():
     mp.set_start_method('spawn', force=True)
     num_gpus = torch.cuda.device_count()
 
-    out_name = "evaluation_ts.jsonl" if args.temperature_scaling else "evaluation.jsonl"
-    output_path = model_dir / out_name
+    output_path = model_dir / "evaluation.jsonl"
     if output_path.exists():
         output_path.unlink()
 
@@ -761,7 +616,7 @@ def main():
         result = evaluate_d_model_parallel(
             model_paths, d_model, args.data_path, config, num_gpus,
             args.num_splits, args.samples_per_split, args.subsample_seed,
-            args.holdout_samples, args.temperature_scaling,
+            args.holdout_samples,
         )
         with open(output_path, "a") as fh:
             fh.write(json.dumps(result) + "\n")
