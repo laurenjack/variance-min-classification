@@ -80,21 +80,11 @@ def run(args, config, d_models, num_gpus):
     train_samples = TRAIN_SAMPLES[0]
     samples_k = train_samples // 1000
 
+    # Round-robin assign jobs to GPUs so each GPU gets a mix of d_models.
     jobs = [(d, None) for d in d_models]
-    # Greedy bin-pack with REVERSED tie-break: when GPU loads tie, prefer the
-    # highest-indexed GPU. Pairs cleanly with an in-flight shadow run that
-    # uses the default (lowest-indexed first) tie-break, so the two runs end
-    # up with mirror-image assignments — each physical GPU holds one of each
-    # size class instead of two big models stacking on GPU 0.
-    # TODO: revert to default tie-break once we run clean stand-alone.
     gpu_to_jobs = [[] for _ in range(num_gpus)]
-    gpu_loads = [0] * num_gpus
-    jobs_sorted = sorted(jobs, key=lambda j: j[0], reverse=True)
-    for job in jobs_sorted:
-        # Pick GPU with smallest load; on ties pick the highest index.
-        gpu = min(range(num_gpus), key=lambda g: (gpu_loads[g], -g))
-        gpu_to_jobs[gpu].append(job)
-        gpu_loads[gpu] += job[0]
+    for i, job in enumerate(jobs):
+        gpu_to_jobs[i % num_gpus].append(job)
     max_per_gpu = max(len(j) for j in gpu_to_jobs)
     max_concurrent = max(1, args.max_concurrent_per_gpu)
     num_waves = (max_per_gpu + max_concurrent - 1) // max_concurrent
