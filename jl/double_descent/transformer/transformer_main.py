@@ -39,8 +39,8 @@ D_MODEL_VALUES = list(range(8, 392, 8))  # [8, 16, 24, ..., 384] - 48 values (de
 
 # For --variance runs we cap at d=192 (Nakkiran et al. Figure 3 range) so the
 # sweep matches the existing 03-24-0859 BPE variance run shape and can be
-# compared against it.
-VARIANCE_D_MODEL_VALUES = list(range(8, 200, 8))  # [8, 16, ..., 192] - 24 values
+# compared against it. Step 16 (12 values) keeps the run tractable on 2 GPUs.
+VARIANCE_D_MODEL_VALUES = list(range(16, 200, 16))  # [16, 32, ..., 192] - 12 values
 
 
 
