@@ -172,10 +172,17 @@ def run_double_descent(args, config, d_models, num_gpus):
     else:
         jobs = [(d_model, None) for d_model in d_models]
 
-    # Round-robin assign jobs to GPUs so each GPU gets a mix of d_models.
+    # Greedy bin-pack by d_model: assign jobs in descending-d_model order to
+    # the GPU with the currently-lightest cumulative d_model load. Beats
+    # round-robin when d_models vary (e.g. the largest model gets its own
+    # GPU before smaller ones double up).
     gpu_to_jobs = [[] for _ in range(num_gpus)]
-    for i, job in enumerate(jobs):
-        gpu_to_jobs[i % num_gpus].append(job)
+    gpu_loads = [0] * num_gpus
+    jobs_sorted = sorted(jobs, key=lambda j: j[0], reverse=True)
+    for job in jobs_sorted:
+        gpu = min(range(num_gpus), key=lambda g: gpu_loads[g])
+        gpu_to_jobs[gpu].append(job)
+        gpu_loads[gpu] += job[0]
     max_per_gpu = max(len(j) for j in gpu_to_jobs)
 
     max_concurrent = max(1, args.max_concurrent_per_gpu)
