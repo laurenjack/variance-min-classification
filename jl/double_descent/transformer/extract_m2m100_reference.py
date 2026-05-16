@@ -126,6 +126,23 @@ def main():
     parser.add_argument("--subsample-seed", type=int, default=42)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument(
+        "--train-chunk-test", action="store_true",
+        help="Extract the held-out in-distribution test chunk used by the "
+             "main-path --track-shadows runs: indices "
+             "[--train-samples : --train-samples + --holdout-samples] of the "
+             "seed=42 shuffle of IWSLT train. Requires --split train.",
+    )
+    parser.add_argument(
+        "--train-samples", type=int, default=36000,
+        help="With --train-chunk-test: size of the main-path train subsample "
+             "preceding the held-out chunk (default 36000).",
+    )
+    parser.add_argument(
+        "--holdout-samples", type=int, default=6750,
+        help="With --train-chunk-test: number of held-out test sentences to "
+             "extract (default 6750 to match IWSLT test).",
+    )
+    parser.add_argument(
         "--full-distributions", action="store_true",
         help="Save the full [N_positions, vocab_size] log p(.|context) "
              "distribution plus per-position entropy H(p). Output is much "
@@ -169,7 +186,33 @@ def main():
     assert len(src_texts) == len(tgt_texts)
     logger.info(f"{args.split}: {len(src_texts)} sentence pairs available")
 
-    if args.split == "train" and args.variance_split_id is not None:
+    if args.split == "train" and args.train_chunk_test:
+        # Held-out test chunk for main-path --track-shadows runs.
+        # Indices [train_samples : train_samples + holdout_samples] of the
+        # seed=42 shuffle. Matches load_m2m100_iwslt14_train_chunk_test.
+        if args.variance_split_id is not None:
+            raise ValueError(
+                "--train-chunk-test and --variance-split-id are mutually exclusive."
+            )
+        required = args.train_samples + args.holdout_samples
+        if len(src_texts) < required:
+            raise ValueError(
+                f"IWSLT train has {len(src_texts)} sentences; need "
+                f"{args.train_samples} train + {args.holdout_samples} holdout "
+                f"= {required}."
+            )
+        rng = random.Random(args.subsample_seed)
+        indices = list(range(len(src_texts)))
+        rng.shuffle(indices)
+        idx = indices[args.train_samples : args.train_samples + args.holdout_samples]
+        src_texts = [src_texts[i] for i in idx]
+        tgt_texts = [tgt_texts[i] for i in idx]
+        logger.info(
+            f"Selected train-chunk-test: indices "
+            f"[{args.train_samples}:{args.train_samples + args.holdout_samples}] "
+            f"of seed={args.subsample_seed} shuffle = {len(src_texts)} sentences"
+        )
+    elif args.split == "train" and args.variance_split_id is not None:
         idx = get_variance_split_indices(
             n_total=len(src_texts),
             split_id=args.variance_split_id,

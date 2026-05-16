@@ -65,23 +65,23 @@ BUCKET_PAD = -1  # sentinel: pad / non-aligned position
 def compute_bucket_id_sequences(
     train_dataset,
     oracle_path: str,
-    cutoff_quantile: float,
+    cutoff_quantile: Optional[float] = None,
+    cutoff_value: Optional[float] = None,
 ) -> Tuple[List[List[int]], np.ndarray, np.ndarray]:
     """For each sentence in train_dataset, build a per-token bucket-id list
     aligned to tgt_encoded[1:] (i.e., the prediction targets).
 
-    Single cutoff at `cutoff_quantile` over per-token entropy
-    (-log p_oracle) split into two buckets:
-      - bucket 0 = bottom quantile (low entropy, easy / predictable)
-      - bucket 1 = top 1 - quantile (high entropy, surprising)
+    Either `cutoff_quantile` (compute the cutoff as that quantile of this
+    oracle's entropies) or `cutoff_value` (use a precomputed cutoff — e.g.
+    the train-side threshold, applied to a test oracle) must be supplied.
 
-    Returns
-    -------
-    bucket_id_sequences : list of length len(train_dataset)
-        per-sentence list of int bucket ids, length matching tgt_encoded[1:]
-    edges : np.ndarray  -- [min, cutoff, max] entropy in nats
-    centers : np.ndarray -- mean entropy per bucket
+    Two buckets:
+      - bucket 0 = entropy <= cutoff (low entropy, easy / predictable)
+      - bucket 1 = entropy >  cutoff (high entropy, surprising)
     """
+    if (cutoff_quantile is None) == (cutoff_value is None):
+        raise ValueError("Provide exactly one of cutoff_quantile / cutoff_value.")
+
     oracle = torch.load(oracle_path, map_location="cpu", weights_only=False)
     o_targets = oracle["target_ids"].long().numpy()
     o_log_p = oracle["log_probs"].float().numpy()
@@ -91,12 +91,15 @@ def compute_bucket_id_sequences(
     n_sent_train = len(train_dataset)
     if n_sent_oracle != n_sent_train:
         raise ValueError(
-            f"Oracle has {n_sent_oracle} sentences but train_dataset has "
+            f"Oracle has {n_sent_oracle} sentences but dataset has "
             f"{n_sent_train}. They must come from the same subsample."
         )
 
     entropy_full = -o_log_p  # nats
-    cutoff = float(np.quantile(entropy_full, cutoff_quantile))
+    cutoff = (
+        float(np.quantile(entropy_full, cutoff_quantile))
+        if cutoff_value is None else float(cutoff_value)
+    )
     edges = np.array([entropy_full.min(), cutoff, entropy_full.max()])
     n_bins = 2
     flat_buckets = np.clip(

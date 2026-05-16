@@ -138,24 +138,40 @@ class _GPUBatchedBucketLoader:
 # ---------------------------------------------------------------------------
 
 
-def _evaluate(model, loader: GPUBatchedLoader, pad_idx: int) -> Tuple[float, float]:
+def _evaluate(model, loader, pad_idx: int, mask_high_entropy: bool = False
+              ) -> Tuple[float, float]:
+    """Evaluate CE loss / accuracy on the loader.
+
+    If `mask_high_entropy=True`, the loader is a _GPUBatchedBucketLoader
+    and only bucket-0 (low-entropy) tokens contribute. Otherwise it's a
+    plain GPUBatchedLoader and all non-pad tokens contribute.
+    """
     model.eval()
     total_loss, total_correct, total_tokens = 0.0, 0, 0
     with torch.no_grad():
-        for src, tgt in loader:
+        for batch in loader:
+            if mask_high_entropy:
+                src, tgt, bids = batch
+            else:
+                src, tgt = batch
+                bids = None
             logits = model(src, tgt[:, :-1])
             target = tgt[:, 1:].contiguous()
-            loss = F.cross_entropy(
+            pad_mask = target != pad_idx
+            if mask_high_entropy:
+                keep = pad_mask & (bids == 0)
+            else:
+                keep = pad_mask
+            per_token = F.cross_entropy(
                 logits.view(-1, logits.size(-1)),
                 target.view(-1),
                 ignore_index=pad_idx,
-                reduction="sum",
-            )
+                reduction="none",
+            ).view_as(target)
             preds = logits.argmax(dim=-1)
-            mask = target != pad_idx
-            total_loss += float(loss.item())
-            total_correct += int(((preds == target) & mask).sum().item())
-            total_tokens += int(mask.sum().item())
+            total_loss += float((per_token * keep.float()).sum().item())
+            total_correct += int(((preds == target) & keep).sum().item())
+            total_tokens += int(keep.sum().item())
     model.train()
     if total_tokens == 0:
         return 0.0, 0.0
@@ -176,6 +192,7 @@ def train_single_model_clean_only(
     data_path: str,
     oracle_path: str,
     cutoff_quantile: float = 0.85,
+    test_oracle_path: str = None,
 ) -> None:
     """Train a transformer where the loss is masked at high-entropy tokens.
 
@@ -213,10 +230,36 @@ def train_single_model_clean_only(
     bucket_id_sequences, edges, centers = compute_bucket_id_sequences(
         train_dataset, oracle_path, cutoff_quantile=cutoff_quantile,
     )
+    train_cutoff = float(edges[1])
     process_logger.info(
-        f"Entropy cutoff (nats): {edges[1]:.4f}; "
+        f"Train entropy cutoff (nats): {train_cutoff:.4f}; "
         f"bucket centers: {[round(float(c), 4) for c in centers]}"
     )
+
+    # Build test bucket-id sequences using the SAME train-side cutoff value.
+    test_bucket_id_sequences = None
+    if test_oracle_path:
+        from pathlib import Path as _P
+        if not _P(test_oracle_path).exists():
+            process_logger.warning(
+                f"test_oracle_path={test_oracle_path} not found; "
+                f"test eval will use all tokens (no high-entropy mask)."
+            )
+        else:
+            test_bucket_id_sequences, test_edges, test_centers = (
+                compute_bucket_id_sequences(
+                    test_dataset, test_oracle_path,
+                    cutoff_value=train_cutoff,
+                )
+            )
+            n_low = sum(
+                sum(1 for b in seq if b == 0) for seq in test_bucket_id_sequences
+            )
+            n_total = sum(len(seq) for seq in test_bucket_id_sequences)
+            process_logger.info(
+                f"Test bucket sizes: low={n_low}, high={n_total - n_low} "
+                f"(low fraction = {n_low / max(1, n_total):.3f})"
+            )
 
     model = TransformerModel(
         vocab_size=len(vocab),
@@ -252,10 +295,19 @@ def train_single_model_clean_only(
         valid_dataset, vocab.pad_idx, max_tokens=config.max_tokens,
         device=device, shuffle=False, seed=config.subsample_seed,
     )
-    test_loader = GPUBatchedLoader(
-        test_dataset, vocab.pad_idx, max_tokens=config.max_tokens,
-        device=device, shuffle=False, seed=config.subsample_seed,
-    )
+    if test_bucket_id_sequences is not None:
+        test_loader = _GPUBatchedBucketLoader(
+            test_dataset, test_bucket_id_sequences, vocab.pad_idx,
+            max_tokens=config.max_tokens, device=device,
+            shuffle=False, seed=config.subsample_seed,
+        )
+        test_mask_high = True
+    else:
+        test_loader = GPUBatchedLoader(
+            test_dataset, vocab.pad_idx, max_tokens=config.max_tokens,
+            device=device, shuffle=False, seed=config.subsample_seed,
+        )
+        test_mask_high = False
 
     use_bf16 = getattr(config, "use_bf16", True)
     if use_bf16:
@@ -322,6 +374,7 @@ def train_single_model_clean_only(
                 if step % config.eval_interval == 0:
                     valid_loss, valid_acc = _evaluate(
                         model, valid_loader, vocab.pad_idx,
+                        mask_high_entropy=False,
                     )
                     metrics["valid_loss"] = valid_loss
                     metrics["valid_acc"] = valid_acc
@@ -340,8 +393,10 @@ def train_single_model_clean_only(
             if step >= config.max_steps:
                 break
 
-    # Final eval on test
-    test_loss, test_acc = _evaluate(model, test_loader, vocab.pad_idx)
+    # Final eval on test — masked to low-entropy tokens when test oracle present.
+    test_loss, test_acc = _evaluate(
+        model, test_loader, vocab.pad_idx, mask_high_entropy=test_mask_high,
+    )
     final = {
         "step": step,
         "d_model": d_model,
