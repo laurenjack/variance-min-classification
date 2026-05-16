@@ -38,6 +38,10 @@ class TDDConfig:
     num_splits: int = 4
     samples_per_split: int = 32000  # 4 train + 1 held-out test = 160K (fits IWSLT-14)
 
+    # Mixed precision: BF16 autocast on forward+backward, FP32 weights / grads
+    # / optimizer state. Same protocol as resnet18 trainer.
+    use_bf16: bool = True
+
     # Logging
     log_interval: int = 100  # Log train metrics every N steps
     eval_interval: int = 100  # Evaluate on valid set every N steps

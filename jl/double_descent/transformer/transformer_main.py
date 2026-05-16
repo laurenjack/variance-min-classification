@@ -99,13 +99,15 @@ def parse_args():
 def run_double_descent(args, config, d_models, num_gpus):
     """Run the double-descent experiment.
 
-    Default mode: one job per d_model (one model per d_model).
+    Default mode: one job per d_model.
     Variance mode: one job per (d_model, split_id) for split_id in
         0..num_splits-1.
 
-    d_models: list of d_model values to train.
-    num_gpus: per-batch parallelism = available GPUs (after
-        CUDA_VISIBLE_DEVICES filtering).
+    All jobs are round-robin'd onto the available GPUs and spawned
+    concurrently as one mp.Process each. With more jobs than GPUs the
+    excess processes share each GPU — NVIDIA MPS
+    (`nvidia-cuda-mps-control -d`) makes kernels from different processes
+    actually run in parallel; without MPS they will time-slice.
     """
     total_start = time.time()
 
@@ -121,7 +123,11 @@ def run_double_descent(args, config, d_models, num_gpus):
     else:
         jobs = [(d_model, None) for d_model in d_models]
 
-    num_batches = (len(jobs) + num_gpus - 1) // num_gpus
+    # Round-robin assign jobs to GPUs so each GPU gets a mix of d_models.
+    gpu_to_jobs = [[] for _ in range(num_gpus)]
+    for i, job in enumerate(jobs):
+        gpu_to_jobs[i % num_gpus].append(job)
+    max_per_gpu = max(len(j) for j in gpu_to_jobs)
 
     logger.info("Transformer Double Descent")
     logger.info(f"Mode: {'variance' if config.variance else 'default'}")
@@ -134,24 +140,29 @@ def run_double_descent(args, config, d_models, num_gpus):
         )
     else:
         logger.info(f"Train samples: {train_samples}")
-    logger.info(f"Total jobs: {len(jobs)}")
-    logger.info(f"GPUs available: {num_gpus}, batches: {num_batches}")
+    logger.info(f"Total jobs: {len(jobs)} | GPUs: {num_gpus} | max jobs/GPU: {max_per_gpu}")
+    for gpu_id, jjs in enumerate(gpu_to_jobs):
+        logger.info(f"  GPU {gpu_id} -> {jjs}")
+    logger.info(f"BF16 autocast: {config.use_bf16}")
+    mps_pipe = os.environ.get("CUDA_MPS_PIPE_DIRECTORY")
+    if mps_pipe:
+        logger.info(f"CUDA_MPS_PIPE_DIRECTORY: {mps_pipe}")
+    else:
+        logger.info(
+            "CUDA_MPS_PIPE_DIRECTORY: unset — MPS not detected; models on "
+            "the same GPU will time-slice instead of running concurrently."
+        )
     logger.info(f"Max steps: {config.max_steps}, Max tokens/batch: {config.max_tokens}")
 
     logger.info(f"\n{'='*60}")
-    logger.info("Starting runs")
+    logger.info("Starting runs (all processes spawned concurrently)")
     logger.info(f"{'='*60}")
 
-    for batch_idx in range(0, len(jobs), num_gpus):
-        batch_jobs = jobs[batch_idx:batch_idx + num_gpus]
-        batch_num = batch_idx // num_gpus + 1
+    mp.set_start_method('spawn', force=True)
 
-        logger.info(f"\nBatch {batch_num}/{num_batches}: {batch_jobs}")
-
-        mp.set_start_method('spawn', force=True)
-
-        processes = []
-        for gpu_id, (d_model, split_id) in enumerate(batch_jobs):
+    processes = []
+    for gpu_id, gpu_jobs in enumerate(gpu_to_jobs):
+        for d_model, split_id in gpu_jobs:
             p = mp.Process(
                 target=train_single_model,
                 args=(gpu_id, d_model, train_samples, config,
@@ -159,12 +170,13 @@ def run_double_descent(args, config, d_models, num_gpus):
                       split_id),
             )
             p.start()
-            processes.append(p)
+            label = f"d{d_model}" + (f"_split{split_id}" if split_id is not None else "")
+            processes.append((gpu_id, label, p))
+            logger.info(f"Started process for {label} on GPU {gpu_id} (pid={p.pid})")
 
-        for p in processes:
-            p.join()
-
-        logger.info(f"Batch {batch_num}/{num_batches} complete")
+    for gpu_id, label, p in processes:
+        p.join()
+        logger.info(f"Process {label} (GPU {gpu_id}) completed")
 
     total_time = time.time() - total_start
     logger.info("\n" + "=" * 60)

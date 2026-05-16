@@ -205,6 +205,104 @@ def collate_fn(
     return torch.tensor(src_padded), torch.tensor(tgt_padded)
 
 
+class GPUBatchedLoader:
+    """Pre-materializes all training batches as padded GPU tensors.
+
+    Mirrors the batch-construction logic of MaxTokensBatchSampler (length-
+    bucketed, greedy fill to max_tokens) but the resulting padded src/tgt
+    pairs live on `device` from construction onward. Iteration is just an
+    index walk — no CPU-side collation per step, no .to(device).
+
+    IWSLT-14 train tokens are tiny (~30-40 MB on GPU even with padding), so
+    keeping the whole epoch resident is essentially free. Use this for the
+    transformer trainer's train/valid/test loaders.
+
+    Args:
+        dataset: Must implement __len__, __getitem__ -> (src_ids, tgt_ids),
+            and get_lengths() -> list[int]. Both TranslationDataset and
+            M2M100TranslationDataset satisfy this.
+        pad_idx: Padding token index.
+        max_tokens: Max tokens per batch (Vaswani max-tokens batching).
+        device: torch.device the batches will live on.
+        shuffle: If True, shuffles batch order each epoch (call set_epoch).
+        seed: Base RNG seed for shuffle (combined with epoch index).
+    """
+
+    def __init__(
+        self,
+        dataset,
+        pad_idx: int,
+        max_tokens: int,
+        device: torch.device,
+        shuffle: bool = True,
+        seed: int = 42,
+    ):
+        self.pad_idx = pad_idx
+        self.shuffle = shuffle
+        self.seed = seed
+        self.epoch = 0
+        self.device = device
+
+        lengths = dataset.get_lengths()
+        sorted_indices = sorted(range(len(lengths)), key=lambda i: lengths[i])
+
+        # Greedy batch construction matching MaxTokensBatchSampler.
+        batches_idx: List[List[int]] = []
+        current_batch: List[int] = []
+        current_max_len = 0
+        for idx in sorted_indices:
+            length = lengths[idx]
+            new_max_len = max(current_max_len, length)
+            new_batch_tokens = new_max_len * (len(current_batch) + 1)
+            if new_batch_tokens > max_tokens and current_batch:
+                batches_idx.append(current_batch)
+                current_batch = [idx]
+                current_max_len = length
+            else:
+                current_batch.append(idx)
+                current_max_len = new_max_len
+        if current_batch:
+            batches_idx.append(current_batch)
+
+        # Pre-pad and move every batch to device.
+        self.batches: List[Tuple[torch.Tensor, torch.Tensor]] = []
+        for idx_batch in batches_idx:
+            src_seqs = []
+            tgt_seqs = []
+            for i in idx_batch:
+                s, t = dataset[i]
+                src_seqs.append(s)
+                tgt_seqs.append(t)
+            max_src = max(len(s) for s in src_seqs)
+            max_tgt = max(len(t) for t in tgt_seqs)
+            src_padded = torch.tensor(
+                [s + [pad_idx] * (max_src - len(s)) for s in src_seqs],
+                dtype=torch.long, device=device,
+            )
+            tgt_padded = torch.tensor(
+                [t + [pad_idx] * (max_tgt - len(t)) for t in tgt_seqs],
+                dtype=torch.long, device=device,
+            )
+            self.batches.append((src_padded, tgt_padded))
+
+    def __len__(self) -> int:
+        return len(self.batches)
+
+    def set_epoch(self, epoch: int):
+        """Set epoch for deterministic shuffle."""
+        self.epoch = epoch
+
+    def __iter__(self):
+        if self.shuffle:
+            rng = random.Random(self.seed + self.epoch)
+            order = list(range(len(self.batches)))
+            rng.shuffle(order)
+        else:
+            order = range(len(self.batches))
+        for i in order:
+            yield self.batches[i]
+
+
 def build_vocab(data_dir: str) -> Vocab:
     """Build vocabulary from training data.
 

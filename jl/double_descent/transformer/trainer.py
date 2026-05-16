@@ -5,21 +5,19 @@ import logging
 import math
 import os
 import time
-from functools import partial
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.amp import autocast
 
 from jl.double_descent.transformer.bleu import compute_bleu
 from jl.double_descent.transformer.transformer_config import TDDConfig
 from jl.double_descent.transformer.transformer_data import (
-    MaxTokensBatchSampler,
+    GPUBatchedLoader,
     TranslationDataset,
     Vocab,
-    collate_fn,
     load_iwslt14,
     load_iwslt14_variance_split,
     load_m2m100_iwslt14,
@@ -32,33 +30,17 @@ logger = logging.getLogger(__name__)
 
 def evaluate(
     model: TransformerModel,
-    dataset: TranslationDataset,
+    loader: GPUBatchedLoader,
     vocab: Vocab,
-    device: torch.device,
     criterion: nn.Module,
-    batch_size: int = 64,
 ) -> Tuple[float, float]:
-    """Evaluate model on a dataset.
+    """Evaluate model on a pre-built GPU loader. Returns (loss, accuracy).
 
-    Args:
-        model: Transformer model.
-        dataset: Dataset to evaluate on.
-        vocab: Vocabulary.
-        device: Device to run on.
-        criterion: Loss function.
-        batch_size: Batch size for evaluation.
-
-    Returns:
-        (loss, accuracy) tuple.
+    The loader yields padded (src, tgt) batches already on the model's
+    device, so we skip the per-batch .to() copy. Evaluation runs in FP32
+    (no autocast wrap) to match the resnet18 evaluator's convention.
     """
     model.eval()
-
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        collate_fn=partial(collate_fn, pad_idx=vocab.pad_idx),
-    )
 
     total_loss = 0.0
     total_correct = 0
@@ -66,27 +48,23 @@ def evaluate(
 
     with torch.no_grad():
         for src, tgt in loader:
-            src = src.to(device)
-            tgt = tgt.to(device)
-
             # Forward pass (tgt[:, :-1] as input, tgt[:, 1:] as target)
             logits = model(src, tgt[:, :-1])
             target = tgt[:, 1:].contiguous()
 
-            # Compute loss
             loss = criterion(
                 logits.view(-1, logits.size(-1)),
                 target.view(-1),
             )
 
-            # Compute accuracy (excluding padding)
             predictions = logits.argmax(dim=-1)
             mask = target != vocab.pad_idx
+            n_tok = mask.sum().item()
             correct = ((predictions == target) & mask).sum().item()
 
-            total_loss += loss.item() * mask.sum().item()
+            total_loss += loss.item() * n_tok
             total_correct += correct
-            total_tokens += mask.sum().item()
+            total_tokens += n_tok
 
     model.train()
 
@@ -225,19 +203,26 @@ def train_single_model(
         label_smoothing=config.label_smoothing or 0.0,
     )
 
-    # Create dataloader with max-tokens batching
-    train_sampler = MaxTokensBatchSampler(
-        train_dataset,
-        max_tokens=config.max_tokens,
-        shuffle=True,
-        seed=config.subsample_seed,
+    # GPU-resident data: pre-build all (train/valid/test) batches as padded
+    # tensors on this worker's device. Removes per-step CPU collation +
+    # .to(device) copy entirely. IWSLT-14 train fits in <50 MB on-device
+    # even with padding, so the memory cost is trivial.
+    train_loader = GPUBatchedLoader(
+        train_dataset, vocab.pad_idx, max_tokens=config.max_tokens,
+        device=device, shuffle=True, seed=config.subsample_seed,
+    )
+    valid_loader = GPUBatchedLoader(
+        valid_dataset, vocab.pad_idx, max_tokens=config.max_tokens,
+        device=device, shuffle=False, seed=config.subsample_seed,
+    )
+    test_loader = GPUBatchedLoader(
+        test_dataset, vocab.pad_idx, max_tokens=config.max_tokens,
+        device=device, shuffle=False, seed=config.subsample_seed,
     )
 
-    train_loader = DataLoader(
-        train_dataset,
-        batch_sampler=train_sampler,
-        collate_fn=partial(collate_fn, pad_idx=vocab.pad_idx),
-    )
+    use_bf16 = getattr(config, "use_bf16", True)
+    if use_bf16:
+        process_logger.info(f"[d_model={d_model}, {output_suffix}] BF16 autocast enabled")
 
     # Clear metrics file
     metrics_file = Path(output_path) / f"metrics_d{d_model}_{output_suffix}.jsonl"
@@ -258,24 +243,20 @@ def train_single_model(
     train_start = time.time()
 
     while step < config.max_steps:
-        train_sampler.set_epoch(epoch)
+        train_loader.set_epoch(epoch)
         epoch += 1
 
         for src, tgt in train_loader:
-            src = src.to(device)
-            tgt = tgt.to(device)
-
-            # Forward pass
-            logits = model(src, tgt[:, :-1])
+            # src/tgt are already on `device` (GPUBatchedLoader).
             target = tgt[:, 1:].contiguous()
 
-            loss = criterion(
-                logits.view(-1, logits.size(-1)),
-                target.view(-1),
-            )
-
-            # Backward pass
             optimizer.zero_grad()
+            with autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_bf16):
+                logits = model(src, tgt[:, :-1])
+                loss = criterion(
+                    logits.view(-1, logits.size(-1)),
+                    target.view(-1),
+                )
             loss.backward()
             optimizer.step()
             if scheduler is not None:
@@ -285,7 +266,7 @@ def train_single_model(
 
             # Log training metrics
             if step % config.log_interval == 0:
-                # Compute training accuracy for this batch
+                # Compute training accuracy for this batch.
                 predictions = logits.argmax(dim=-1)
                 mask = target != vocab.pad_idx
                 train_acc = ((predictions == target) & mask).sum().item() / mask.sum().item()
@@ -304,7 +285,7 @@ def train_single_model(
                 # Evaluate on validation set
                 if step % config.eval_interval == 0:
                     valid_loss, valid_acc = evaluate(
-                        model, valid_dataset, vocab, device, criterion
+                        model, valid_loader, vocab, criterion
                     )
                     metrics["valid_loss"] = valid_loss
                     metrics["valid_acc"] = valid_acc
@@ -330,9 +311,16 @@ def train_single_model(
     # Final evaluation
     process_logger.info(f"[d_model={d_model}, {output_suffix}] Running final evaluation...")
 
-    train_loss, train_acc = evaluate(model, train_dataset, vocab, device, criterion)
-    valid_loss, valid_acc = evaluate(model, valid_dataset, vocab, device, criterion)
-    test_loss, test_acc = evaluate(model, test_dataset, vocab, device, criterion)
+    # Reuse train_loader for eval purposes (shuffle off-by-iteration; we just
+    # want a deterministic pass to compute final loss/acc on the train set).
+    eval_train_loader = GPUBatchedLoader(
+        train_dataset, vocab.pad_idx, max_tokens=config.max_tokens,
+        device=device, shuffle=False, seed=config.subsample_seed,
+    )
+    train_loss, train_acc = evaluate(model, eval_train_loader, vocab, criterion)
+    valid_loss, valid_acc = evaluate(model, valid_loader, vocab, criterion)
+    test_loss, test_acc = evaluate(model, test_loader, vocab, criterion)
+    del eval_train_loader
 
     process_logger.info(f"[d_model={d_model}, {output_suffix}] Computing BLEU scores...")
 
