@@ -292,13 +292,21 @@ def train_single_model_bucket_shadow(
         f"[bucket-shadow] d_model={d_model}, {samples_k}K samples on GPU {gpu_id}"
     )
 
-    # subsample_seed is locked to 42 in TDDConfig to match the M2M100 oracle
-    # (train_split0_log_probs.pt was generated for the seed=42 subsample).
-    # Both load_m2m100_iwslt14 and the variance_split loader produce the same
-    # 36k subsample with this seed.
-    from jl.double_descent.transformer.transformer_data import load_m2m100_iwslt14
-    train_dataset, valid_dataset, test_dataset, vocab = load_m2m100_iwslt14(
-        data_path, train_samples=train_samples, subsample_seed=config.subsample_seed,
+    # subsample_seed locked to 42 (TDDConfig) so train alignment with the
+    # M2M100 oracle (train_split0_log_probs.pt) is preserved. Test set is a
+    # held-out chunk carved from IWSLT train (indices
+    # [train_samples : train_samples + 6750] of the seed=42 shuffle) so it
+    # shares the train distribution — no IWSLT-test domain shift.
+    from jl.double_descent.transformer.transformer_data import (
+        load_m2m100_iwslt14_train_chunk_test,
+    )
+    train_dataset, valid_dataset, test_dataset, vocab = (
+        load_m2m100_iwslt14_train_chunk_test(
+            data_path,
+            train_samples=train_samples,
+            holdout_test_samples=6750,
+            subsample_seed=config.subsample_seed,
+        )
     )
     process_logger.info(
         f"Loaded data: {len(train_dataset)} train / {len(valid_dataset)} valid / "

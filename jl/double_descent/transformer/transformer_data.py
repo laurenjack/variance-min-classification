@@ -523,6 +523,58 @@ def load_m2m100_iwslt14(
     return train_dataset, valid_dataset, test_dataset, vocab
 
 
+def load_m2m100_iwslt14_train_chunk_test(
+    data_dir: str,
+    train_samples: int = 36000,
+    holdout_test_samples: int = 6750,
+    subsample_seed: int = 42,
+) -> Tuple[M2M100TranslationDataset, M2M100TranslationDataset, M2M100TranslationDataset, M2M100Vocab]:
+    """Load M2M100-tokenized IWSLT'14 with an in-distribution test chunk
+    carved from train.
+
+    Shuffles the full IWSLT train set with `subsample_seed`, takes:
+      - train  = shuffled indices [0 : train_samples]
+      - test   = shuffled indices [train_samples : train_samples + holdout_test_samples]
+    Both come from the same IWSLT-train distribution (no domain shift).
+    Valid is the standard IWSLT valid split (kept for early-stop signal).
+
+    Default holdout_test_samples=6750 matches the IWSLT-test split size so
+    estimator variance is comparable.
+    """
+    vocab = M2M100Vocab(str(Path(data_dir) / "vocab_mapping.json"))
+
+    train_src, train_tgt = load_m2m100_split_ids(data_dir, "train")
+    valid_src, valid_tgt = load_m2m100_split_ids(data_dir, "valid")
+
+    n_total = len(train_src)
+    required = train_samples + holdout_test_samples
+    if n_total < required:
+        raise ValueError(
+            f"IWSLT train has {n_total} sentences; need "
+            f"{train_samples} train + {holdout_test_samples} held-out test "
+            f"= {required}."
+        )
+
+    rng = random.Random(subsample_seed)
+    indices = list(range(n_total))
+    rng.shuffle(indices)
+    train_idx = indices[:train_samples]
+    test_idx = indices[train_samples : train_samples + holdout_test_samples]
+
+    train_dataset = M2M100TranslationDataset(
+        [train_src[i] for i in train_idx],
+        [train_tgt[i] for i in train_idx],
+        vocab,
+    )
+    valid_dataset = M2M100TranslationDataset(valid_src, valid_tgt, vocab)
+    test_dataset = M2M100TranslationDataset(
+        [train_src[i] for i in test_idx],
+        [train_tgt[i] for i in test_idx],
+        vocab,
+    )
+    return train_dataset, valid_dataset, test_dataset, vocab
+
+
 def _compute_variance_chunks(
     n_total: int,
     num_splits: int,
