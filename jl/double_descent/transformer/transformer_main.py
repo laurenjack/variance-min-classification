@@ -98,6 +98,18 @@ def parse_args():
              "samples_per_split must be <= |IWSLT train| (~160K). Default "
              "32000 → 5 chunks × 32K = 160K, fits exactly.",
     )
+    parser.add_argument(
+        "--max-concurrent-per-gpu",
+        type=int,
+        default=16,
+        help="Cap on the number of training processes spawned concurrently "
+             "per GPU. The NVIDIA MPS daemon hard-limits client connections "
+             "to ~48 per GPU; going higher returns error 805. 16 also "
+             "tends to be the practical sweet spot for kernel-level "
+             "parallelism on H100/H200 with tiny d=8..192 models. When the "
+             "total jobs/GPU exceeds this cap the dispatch runs in sequential "
+             "waves of this size.",
+    )
     return parser.parse_args()
 
 
@@ -134,6 +146,9 @@ def run_double_descent(args, config, d_models, num_gpus):
         gpu_to_jobs[i % num_gpus].append(job)
     max_per_gpu = max(len(j) for j in gpu_to_jobs)
 
+    max_concurrent = max(1, args.max_concurrent_per_gpu)
+    num_waves = (max_per_gpu + max_concurrent - 1) // max_concurrent
+
     logger.info("Transformer Double Descent")
     logger.info(f"Mode: {'variance' if config.variance else 'default'}")
     logger.info(f"d_model values: {d_models}")
@@ -146,6 +161,10 @@ def run_double_descent(args, config, d_models, num_gpus):
     else:
         logger.info(f"Train samples: {train_samples}")
     logger.info(f"Total jobs: {len(jobs)} | GPUs: {num_gpus} | max jobs/GPU: {max_per_gpu}")
+    logger.info(
+        f"Max concurrent per GPU: {max_concurrent} | wave count: {num_waves} "
+        f"(NVIDIA MPS server limit is ~48 clients/GPU; staying under is mandatory)"
+    )
     for gpu_id, jjs in enumerate(gpu_to_jobs):
         logger.info(f"  GPU {gpu_id} -> {jjs}")
     logger.info(f"BF16 autocast: {config.use_bf16}")
@@ -160,28 +179,46 @@ def run_double_descent(args, config, d_models, num_gpus):
     logger.info(f"Max steps: {config.max_steps}, Max tokens/batch: {config.max_tokens}")
 
     logger.info(f"\n{'='*60}")
-    logger.info("Starting runs (all processes spawned concurrently)")
+    logger.info(f"Starting runs in {num_waves} wave(s) of <= {max_concurrent} per GPU")
     logger.info(f"{'='*60}")
 
     mp.set_start_method('spawn', force=True)
 
-    processes = []
-    for gpu_id, gpu_jobs in enumerate(gpu_to_jobs):
-        for d_model, split_id in gpu_jobs:
-            p = mp.Process(
-                target=train_single_model,
-                args=(gpu_id, d_model, train_samples, config,
-                      args.output_path, args.data_path, args.m2m100,
-                      split_id),
-            )
-            p.start()
-            label = f"d{d_model}" + (f"_split{split_id}" if split_id is not None else "")
-            processes.append((gpu_id, label, p))
-            logger.info(f"Started process for {label} on GPU {gpu_id} (pid={p.pid})")
-
-    for gpu_id, label, p in processes:
-        p.join()
-        logger.info(f"Process {label} (GPU {gpu_id}) completed")
+    # Dispatch in waves: at most `max_concurrent` processes per GPU are alive
+    # simultaneously. After every wave we wait for the slowest process before
+    # starting the next.
+    for wave in range(num_waves):
+        wave_start_t = time.time()
+        wave_processes = []
+        for gpu_id, gpu_jobs in enumerate(gpu_to_jobs):
+            start = wave * max_concurrent
+            end = start + max_concurrent
+            for d_model, split_id in gpu_jobs[start:end]:
+                p = mp.Process(
+                    target=train_single_model,
+                    args=(gpu_id, d_model, train_samples, config,
+                          args.output_path, args.data_path, args.m2m100,
+                          split_id),
+                )
+                p.start()
+                label = f"d{d_model}" + (f"_split{split_id}" if split_id is not None else "")
+                wave_processes.append((gpu_id, label, p))
+        logger.info(
+            f"Wave {wave+1}/{num_waves}: started {len(wave_processes)} "
+            f"processes ({', '.join(l for _, l, _ in wave_processes[:8])}"
+            f"{'...' if len(wave_processes) > 8 else ''})"
+        )
+        for gpu_id, label, p in wave_processes:
+            p.join()
+            if p.exitcode != 0:
+                logger.warning(
+                    f"  Process {label} (GPU {gpu_id}) exited with code {p.exitcode}"
+                )
+        wave_time = time.time() - wave_start_t
+        logger.info(
+            f"Wave {wave+1}/{num_waves} complete in {wave_time:.1f}s "
+            f"({wave_time/60:.1f}m)"
+        )
 
     total_time = time.time() - total_start
     logger.info("\n" + "=" * 60)
