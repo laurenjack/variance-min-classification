@@ -42,6 +42,9 @@ from jl.double_descent.resnet18.resnet18_config import DDConfig
 from jl.double_descent.resnet18.resnet18_data import download_cifar10, save_val_set
 from jl.double_descent.resnet18.resnet18k import make_resnet18k
 from jl.double_descent.resnet18.trainer import train_single_model
+from jl.double_descent.resnet18.bucket_shadow_trainer import (
+    train_single_model_bucket_shadow,
+)
 
 # The 20 target k values for the main double descent sweep.
 K_VALUES = [2, 3, 4, 5, 6, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 64]
@@ -160,6 +163,15 @@ def parse_args():
         help="Number of disjoint training splits per k for --variance mode "
              "(default 4 → 4 × ~11.25K disjoint chunks of the 45K train pool).",
     )
+    parser.add_argument(
+        "--track-shadows",
+        action="store_true",
+        help="Decompose the AdamW trajectory into 2 buckets: clean vs "
+             "mislabeled training images (ground-truth mislabel mask). "
+             "Saves per-bucket shadow weight tensors alongside the model. "
+             "~3x per-step cost (extra backward pass per bucket). "
+             "Incompatible with --variance.",
+    )
     return parser.parse_args()
 
 
@@ -231,8 +243,12 @@ def run_training(k_values, num_gpus, args, config):
             else:
                 model_label = f"k{k}_split{split_id}"
                 model_params = {"k": k, "split_id": split_id}
+            target = (
+                train_single_model_bucket_shadow if args.track_shadows
+                else train_single_model
+            )
             p = mp.Process(
-                target=train_single_model,
+                target=target,
                 args=(gpu_id, model_factory, model_label, model_params,
                       config, args.output_path, args.data_path),
             )
@@ -281,6 +297,13 @@ def main():
         # is active (val_loader != None).
         config.use_val_split = True
         config.num_splits = args.num_splits
+
+    if args.track_shadows:
+        if config.variance:
+            raise ValueError("--track-shadows is incompatible with --variance")
+        # Shadow trainer always carves a val split internally for ES; force
+        # use_val_split on for consistency (no-op for the shadow path).
+        config.use_val_split = True
 
     # Determine k values and check GPUs
     if args.k_values is not None:

@@ -381,6 +381,84 @@ The shared utility lives in `jl/double_descent/temperature_scaling.py`.
 
 ---
 
+## Shadow Tracking (`--track-shadows`)
+
+Decomposes the AdamW trajectory into two oracle-entropy buckets:
+- **Bucket 0 (low entropy)**: bottom 85% of training tokens by
+  per-token oracle entropy `−log p_oracle(y_i | context_i)` — the
+  "easy" / predictable tokens.
+- **Bucket 1 (high entropy)**: top 15% — the surprising / unexplainable
+  tokens.
+
+The 85th-percentile cutoff is computed once over the M2M100 oracle's
+flat per-token entropies and held constant across the d_model sweep.
+
+### Prerequisites
+
+- `TDDConfig.subsample_seed = 42` (locked, so the main-path train
+  subsample matches the seed=42 oracle file).
+- M2M100 oracle log-probs file aligned with the train subsample, e.g.
+  `data/iwslt14.m2m100.de-en/train_split0_log_probs.pt`. Generate with:
+  ```bash
+  python -m jl.double_descent.transformer.extract_m2m100_reference \
+      --data-path ./data/iwslt14.m2m100.de-en \
+      --output-path ./data/iwslt14.m2m100.de-en/train_split0_log_probs.pt \
+      --split train --variance-split-id 0
+  ```
+
+### How it works
+
+Per step the trainer:
+1. One forward pass to get logits + per-token CE losses (`reduction="none"`).
+2. Two backward passes (one per bucket): `L_b = (per_token_loss *
+   mask_b).sum() / n_active`, gradients via `torch.autograd.grad`.
+3. AdamW update split per bucket using a per-bucket first moment `m_b`
+   and a shared second moment `v`; per-bucket increment
+   `−lr · m̂_b / (√v̂ + ε)` accumulates into `shadow_b`.
+4. Decoupled weight decay applied first; NOT attributed to any bucket.
+
+### Running
+
+```bash
+python -m jl.double_descent.transformer.transformer_main \
+    --output-path ./output/transformer_shadows/$(date +%m-%d-%H%M) \
+    --data-path ./data/iwslt14.m2m100.de-en \
+    --m2m100 \
+    --track-shadows
+```
+
+`--cutoff-quantile` defaults to 0.85; `--oracle-path` defaults to
+`./data/iwslt14.m2m100.de-en/train_split0_log_probs.pt`. Incompatible
+with `--variance`; requires `--m2m100` (oracle uses the M2M100 vocab).
+
+### Outputs (per d_model)
+
+```
+output/transformer_shadows/MM-DD-HHmm/
+├── metrics_d{D}_36k.jsonl         # per-step incl. shadow_norms + shadow_shares
+├── model_d{D}_36k.pt              # final model
+├── bucket_shadows_d{D}_36k.pt     # {shadows[2], param_names, edges, centers}
+├── bucket_shares_d{D}_36k.json    # final L2 norms + shares + ES diagnostics
+└── early_stop/
+    └── model_d{D}_36k.pt          # best valid_loss checkpoint
+```
+
+### Post-hoc projection
+
+```bash
+python -m jl.double_descent.transformer.extract_projection_shares \
+    ./output/transformer_shadows/MM-DD-HHmm \
+    --reference final_weight \
+    --model-dir ./output/transformer_shadows/MM-DD-HHmm
+```
+
+Writes `bucket_projection_shares_d{D}_36k.json` with `c_b = ⟨Δ_b, W_T⟩
+/ ‖W_T‖²` per bucket, plus the diagnostic `Σ_b c_b = ⟨V_grad, W_T⟩ /
+‖W_T‖²` — what fraction of `W_T`'s magnitude was actually built by
+gradients along `W_T`'s direction (vs. left over from W_0 + decay).
+
+---
+
 ## Variance Mode
 
 Trains `num_splits` independently-initialised Transformers per d_model on

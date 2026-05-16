@@ -29,7 +29,10 @@ class TDDConfig:
     label_smoothing: Optional[float] = None  # Label smoothing factor
 
     # Data
-    subsample_seed: int = 674931  # Fixed seed for reproducibility
+    # subsample_seed locked to 42 to match the M2M100 oracle file
+    # (train_split0_log_probs.pt was generated with seed=42 via
+    # variance_split(split_id=0)). Required for any --track-shadows run.
+    subsample_seed: int = 42
 
     # Variance mode: train num_splits independent models per d_model on
     # disjoint subsets of IWSLT train, with chunk num_splits reserved as

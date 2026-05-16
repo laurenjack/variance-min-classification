@@ -212,6 +212,77 @@ The shared utility lives in `jl/double_descent/temperature_scaling.py`.
 
 ---
 
+## Shadow Tracking (`--track-shadows`)
+
+Decomposes the AdamW trajectory into two ground-truth buckets so we can
+project per-bucket cumulative weight updates onto the trained model and
+test the "support-vector" reading of double descent on CIFAR-10 with
+15% label noise.
+
+- **Bucket 0 (clean)**: training images whose noisy label equals the
+  original CIFAR label (~85% of the 45K train pool).
+- **Bucket 1 (mislabeled)**: training images whose noisy label differs
+  from the original (~15%). Built from the ground-truth mislabel mask
+  — we know which images we flipped.
+
+### How it works
+
+Per step:
+1. One forward pass to get logits and per-sample CE losses.
+2. Two backward passes (one per bucket): `L_b = (per_sample_loss *
+   mask_b).sum() / batch_size`, gradients computed via
+   `torch.autograd.grad`.
+3. AdamW update split per bucket using a per-bucket first moment `m_b`
+   and a shared second moment `v` (same trick the transformer
+   `bucket_shadow_trainer` uses). The per-bucket increment
+   `−lr · m̂_b / (√v̂ + ε)` accumulates into `shadow_b`.
+4. Weight decay is W's self-shrinkage and is NOT attributed to any
+   bucket.
+
+Roughly 3× per-step cost vs. the standard trainer.
+
+### Running
+
+```bash
+python -m jl.double_descent.resnet18.resnet18_main \
+    --output-path ./output/resnet18_shadows/$(date +%m-%d-%H%M) \
+    --data-path ./data \
+    --track-shadows
+```
+
+Incompatible with `--variance`. Implies `--val-split` (the shadow trainer
+always carves a val set for the early-stop checkpoint).
+
+### Outputs (per width k)
+
+```
+output/resnet18_shadows/MM-DD-HHmm/
+├── metrics_k{K}.jsonl            # per-epoch incl. shadow_norms + shadow_shares
+├── model_k{K}.pt                  # final model
+├── bucket_shadows_k{K}.pt         # {shadows[2], param_names, bucket sizes}
+├── bucket_shares_k{K}.json        # final L2 norms + shares + best_val_*
+└── early_stop/
+    └── model_k{K}.pt              # best-val checkpoint
+```
+
+### Post-hoc projection
+
+Use `jl.double_descent.transformer.extract_projection_shares` (script is
+model-agnostic — operates on saved shadow files of any shape):
+
+```bash
+python -m jl.double_descent.transformer.extract_projection_shares \
+    ./output/resnet18_shadows/MM-DD-HHmm \
+    --reference final_weight \
+    --model-dir ./output/resnet18_shadows/MM-DD-HHmm
+```
+
+Computes `c_b = ⟨Δ_b, W_T⟩ / ‖W_T‖²` per bucket (the scalar projection
+coefficient onto `W_T`); `Σ_b c_b` reports what fraction of `W_T`'s
+magnitude was constructed by gradients along `W_T`'s direction.
+
+---
+
 ## Variance Mode
 
 Trains `num_splits` ResNet18 models per width k on disjoint subsets of CIFAR-10

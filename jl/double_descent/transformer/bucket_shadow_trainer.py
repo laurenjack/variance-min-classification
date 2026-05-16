@@ -65,21 +65,21 @@ BUCKET_PAD = -1  # sentinel: pad / non-aligned position
 def compute_bucket_id_sequences(
     train_dataset,
     oracle_path: str,
-    n_bins: int,
+    cutoff_quantile: float,
 ) -> Tuple[List[List[int]], np.ndarray, np.ndarray]:
     """For each sentence in train_dataset, build a per-token bucket-id list
     aligned to tgt_encoded[1:] (i.e., the prediction targets).
 
-    The oracle file contains flat per-token log-probs with sentence_offsets.
-    Quantile bucket edges are computed over the full set of token entropies
-    (-log p_oracle).  Buckets are 0 (most predictable) .. n_bins-1 (most
-    surprising).
+    Single cutoff at `cutoff_quantile` over per-token entropy
+    (-log p_oracle) split into two buckets:
+      - bucket 0 = bottom quantile (low entropy, easy / predictable)
+      - bucket 1 = top 1 - quantile (high entropy, surprising)
 
     Returns
     -------
     bucket_id_sequences : list of length len(train_dataset)
         per-sentence list of int bucket ids, length matching tgt_encoded[1:]
-    edges : np.ndarray  -- bucket edges (entropy, nats)
+    edges : np.ndarray  -- [min, cutoff, max] entropy in nats
     centers : np.ndarray -- mean entropy per bucket
     """
     oracle = torch.load(oracle_path, map_location="cpu", weights_only=False)
@@ -96,8 +96,9 @@ def compute_bucket_id_sequences(
         )
 
     entropy_full = -o_log_p  # nats
-    edges = np.quantile(entropy_full, np.linspace(0, 1, n_bins + 1))
-    # Bucket assignment: digitize into [edges[1] .. edges[-2]], then clip.
+    cutoff = float(np.quantile(entropy_full, cutoff_quantile))
+    edges = np.array([entropy_full.min(), cutoff, entropy_full.max()])
+    n_bins = 2
     flat_buckets = np.clip(
         np.digitize(entropy_full, edges[1:-1]), 0, n_bins - 1,
     ).astype(np.int8)
@@ -270,7 +271,7 @@ def train_single_model_bucket_shadow(
     output_path: str,
     data_path: str,
     oracle_path: str,
-    n_bins: int = 10,
+    cutoff_quantile: float = 0.85,
 ) -> None:
     """Train a single Transformer with d_model embedding dim, while
     tracking per-bucket shadow gradients.
@@ -291,19 +292,22 @@ def train_single_model_bucket_shadow(
         f"[bucket-shadow] d_model={d_model}, {samples_k}K samples on GPU {gpu_id}"
     )
 
-    # Use variance_split(split_id=0) so subsample_seed is locked to 42, matching
-    # how train_split0_log_probs.pt (the oracle) was generated.  The default
-    # config.subsample_seed (currently 674931) does NOT match.
-    train_dataset, valid_dataset, test_dataset, vocab = load_m2m100_iwslt14_variance_split(
-        data_path, split_id=0, num_splits=4, samples_per_split=train_samples,
+    # subsample_seed is locked to 42 in TDDConfig to match the M2M100 oracle
+    # (train_split0_log_probs.pt was generated for the seed=42 subsample).
+    # Both load_m2m100_iwslt14 and the variance_split loader produce the same
+    # 36k subsample with this seed.
+    from jl.double_descent.transformer.transformer_data import load_m2m100_iwslt14
+    train_dataset, valid_dataset, test_dataset, vocab = load_m2m100_iwslt14(
+        data_path, train_samples=train_samples, subsample_seed=config.subsample_seed,
     )
     process_logger.info(
         f"Loaded data: {len(train_dataset)} train / {len(valid_dataset)} valid / "
         f"{len(test_dataset)} test;  vocab={len(vocab)}"
     )
 
+    n_bins = 2
     bucket_id_sequences, edges, centers = compute_bucket_id_sequences(
-        train_dataset, oracle_path, n_bins,
+        train_dataset, oracle_path, cutoff_quantile=cutoff_quantile,
     )
     process_logger.info(
         f"Bucket entropy edges (nats): {[round(float(x), 4) for x in edges]}"

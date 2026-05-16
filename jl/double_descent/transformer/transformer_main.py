@@ -24,6 +24,9 @@ import torch.multiprocessing as mp
 
 from jl.double_descent.transformer.transformer_config import TDDConfig
 from jl.double_descent.transformer.trainer import train_single_model
+from jl.double_descent.transformer.bucket_shadow_trainer import (
+    train_single_model_bucket_shadow,
+)
 
 # Configure logging with timestamps
 logging.basicConfig(
@@ -97,6 +100,30 @@ def parse_args():
         help="Samples per split for --variance mode. (num_splits + 1) * "
              "samples_per_split must be <= |IWSLT train| (~160K). Default "
              "32000 → 5 chunks × 32K = 160K, fits exactly.",
+    )
+    parser.add_argument(
+        "--track-shadows",
+        action="store_true",
+        help="Decompose the AdamW trajectory into 2 oracle-entropy buckets "
+             "(bottom 85%% / top 15%% by per-token -log p_oracle), saving "
+             "per-bucket shadow weight tensors alongside the model. "
+             "Incompatible with --variance. Requires the M2M100 oracle file "
+             "at --oracle-path.",
+    )
+    parser.add_argument(
+        "--cutoff-quantile",
+        type=float,
+        default=0.85,
+        help="Train-side entropy quantile separating the low (bottom) bucket "
+             "from the high (top) bucket. Only used when --track-shadows is "
+             "set. Default 0.85.",
+    )
+    parser.add_argument(
+        "--oracle-path",
+        type=str,
+        default="./data/iwslt14.m2m100.de-en/train_split0_log_probs.pt",
+        help="Path to the M2M100 oracle log-probs file aligned with the "
+             "train subsample. Required when --track-shadows is set.",
     )
     parser.add_argument(
         "--max-concurrent-per-gpu",
@@ -199,12 +226,21 @@ def run_double_descent(args, config, d_models, num_gpus):
             start = wave * max_concurrent
             end = start + max_concurrent
             for d_model, split_id in gpu_jobs[start:end]:
-                p = mp.Process(
-                    target=train_single_model,
-                    args=(gpu_id, d_model, train_samples, config,
-                          args.output_path, args.data_path, args.m2m100,
-                          split_id),
-                )
+                if args.track_shadows:
+                    p = mp.Process(
+                        target=train_single_model_bucket_shadow,
+                        args=(gpu_id, d_model, train_samples, config,
+                              args.output_path, args.data_path,
+                              args.oracle_path),
+                        kwargs={"cutoff_quantile": args.cutoff_quantile},
+                    )
+                else:
+                    p = mp.Process(
+                        target=train_single_model,
+                        args=(gpu_id, d_model, train_samples, config,
+                              args.output_path, args.data_path, args.m2m100,
+                              split_id),
+                    )
                 p.start()
                 label = f"d{d_model}" + (f"_split{split_id}" if split_id is not None else "")
                 wave_processes.append((gpu_id, label, p))
@@ -242,6 +278,19 @@ def main():
         config.variance = True
         config.num_splits = args.num_splits
         config.samples_per_split = args.samples_per_split
+
+    if args.track_shadows:
+        if config.variance:
+            raise ValueError("--track-shadows is incompatible with --variance")
+        if not args.m2m100:
+            raise ValueError("--track-shadows requires --m2m100 (oracle is M2M100 vocab)")
+        if not os.path.isfile(args.oracle_path):
+            raise FileNotFoundError(
+                f"Oracle file not found at {args.oracle_path}. Generate via "
+                f"`python -m jl.double_descent.transformer.extract_m2m100_reference "
+                f"--data-path {args.data_path} --output-path {args.oracle_path} "
+                f"--split train --variance-split-id 0`."
+            )
 
     # Use whatever GPUs are visible (CUDA_VISIBLE_DEVICES filters this).
     num_gpus = torch.cuda.device_count()
