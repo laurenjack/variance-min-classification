@@ -166,13 +166,15 @@ def load_model(
 def _eval_worker(
     gpu_id, model_path_str, d_model, data_path, label_smoothing,
     num_splits, samples_per_split, subsample_seed, holdout_samples, output_file,
+    m2m100=False,
 ):
     """Worker process: evaluate one transformer model on one GPU on the
     held-out variance chunk. Saves log_q_j_y, total loss, total tokens."""
     device = torch.device(f"cuda:{gpu_id}")
     config = TDDConfig()
 
-    _, loader, vocab = _load_holdout_test_data(
+    loader_fn = _load_holdout_m2m100_test_data if m2m100 else _load_holdout_test_data
+    _, loader, vocab = loader_fn(
         data_path, num_splits, samples_per_split, subsample_seed, holdout_samples,
     )
     model = load_model(
@@ -229,6 +231,7 @@ def evaluate_d_model_parallel(
     samples_per_split: int,
     subsample_seed: int,
     holdout_samples: Optional[int] = None,
+    m2m100: bool = False,
 ) -> Dict:
     """Mean test loss + Jensen Gap for one d_model, parallelised across GPUs.
 
@@ -253,7 +256,7 @@ def evaluate_d_model_parallel(
                     args=(gpu_id, str(model_paths[split_idx]), d_model,
                           data_path, config.label_smoothing,
                           num_splits, samples_per_split, subsample_seed,
-                          holdout_samples, out_f),
+                          holdout_samples, out_f, m2m100),
                 )
                 p.start()
                 processes.append(p)
@@ -536,6 +539,14 @@ def main():
         help="Evaluate the early_stop/model_d*_split*.pt checkpoints instead. "
              "Output goes to early_stop/evaluation.jsonl.",
     )
+    parser.add_argument(
+        "--m2m100",
+        action="store_true",
+        help="Models were trained with M2M100-tokenized data (compact ~18K "
+             "vocab). Required for label-only mode if --m2m100 was used at "
+             "training time. Distributional mode (--reference-logits) is "
+             "implicitly M2M100.",
+    )
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -599,10 +610,16 @@ def main():
         return
 
     # Label-only mode
-    test_dataset, _, vocab = _load_holdout_test_data(
-        args.data_path, args.num_splits, args.samples_per_split,
-        args.subsample_seed, args.holdout_samples,
-    )
+    if args.m2m100:
+        test_dataset, _, vocab = _load_holdout_m2m100_test_data(
+            args.data_path, args.num_splits, args.samples_per_split,
+            args.subsample_seed, args.holdout_samples,
+        )
+    else:
+        test_dataset, _, vocab = _load_holdout_test_data(
+            args.data_path, args.num_splits, args.samples_per_split,
+            args.subsample_seed, args.holdout_samples,
+        )
     logger.info(f"Held-out test set: {len(test_dataset)} examples, vocab: {len(vocab)} tokens")
 
     mp.set_start_method('spawn', force=True)
@@ -616,7 +633,7 @@ def main():
         result = evaluate_d_model_parallel(
             model_paths, d_model, args.data_path, config, num_gpus,
             args.num_splits, args.samples_per_split, args.subsample_seed,
-            args.holdout_samples,
+            args.holdout_samples, m2m100=args.m2m100,
         )
         with open(output_path, "a") as fh:
             fh.write(json.dumps(result) + "\n")
