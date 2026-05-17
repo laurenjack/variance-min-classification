@@ -52,6 +52,11 @@ K_VALUES = [2, 3, 4, 5, 6, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60
 # 8 larger k values extending into the overparameterized regime.
 LARGE_K_VALUES = [72, 80, 88, 96, 104, 112, 120, 128]
 
+# For --variance runs we cap at k=48 so the per-(k, split) cost stays
+# tractable and the sweep matches the published bias-variance figure range.
+# Mirrors VARIANCE_D_MODEL_VALUES in the transformer trainer.
+VARIANCE_K_VALUES = [2, 3, 4, 5, 6, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48]
+
 # Configure logging with timestamps
 logging.basicConfig(
     level=logging.INFO,
@@ -310,6 +315,12 @@ def main():
         if args.large_k:
             raise RuntimeError("--k-values and --large-k are mutually exclusive.")
         k_values = list(args.k_values)
+    elif config.variance:
+        # Variance sweep caps at k=48 to keep total (k × split) cost
+        # tractable. --large-k is ignored here; --k-values still overrides.
+        if args.large_k:
+            raise RuntimeError("--variance and --large-k are mutually exclusive.")
+        k_values = VARIANCE_K_VALUES
     else:
         k_values = LARGE_K_VALUES if args.large_k else K_VALUES
     num_gpus = torch.cuda.device_count()

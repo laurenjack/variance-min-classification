@@ -49,7 +49,7 @@ def plot_evaluation(eval_path: str, output_dir: str) -> None:
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    title = "Bias-Variance Decomposition"
+    title = "Bias-Variance Decomposition (Transformer on IWSLT14)"
 
     plt.rcParams.update({
         'font.size': 12,
@@ -79,7 +79,7 @@ def plot_evaluation(eval_path: str, output_dir: str) -> None:
         ax.plot(d_models, entropy_bias, "-^", color="#2ca02c", lw=2, markersize=4, label="Entropy + Bias")
 
     ax.set_xlabel(r"Model Width ($d_{model}$)")
-    ax.set_ylabel("Cross-Entropy (nats)")
+    ax.set_ylabel("Cross-Entropy")
     ax.set_title(title)
     ax.set_ylim(bottom=0)
 
