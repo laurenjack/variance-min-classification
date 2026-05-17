@@ -643,8 +643,8 @@ def load_cifar10_variance_split_gpu(
       4. Partition the remaining 45K into num_splits disjoint chunks
          (split_seed). Train on chunk `split_id`.
 
-    val + test are shared across all (k, split) models; train is the
-    disjoint chunk for this split_id.
+    train and val are both disjoint per split_id; test is shared across
+    all (k, split) models.
     """
     if split_id < 0 or split_id >= num_splits:
         raise ValueError(f"split_id must be in [0, {num_splits - 1}], got {split_id}")
@@ -669,8 +669,17 @@ def load_cifar10_variance_split_gpu(
     )
     chunk_indices = chunks[split_id]
 
+    # Disjoint val chunk for this split_id, carved from the 5K val pool
+    # (different seed so val partition is independent of train partition).
+    val_chunks = compute_disjoint_split_indices(
+        pool_indices=val_indices,
+        num_splits=num_splits,
+        seed=split_seed + 1,
+    )
+    val_chunk_indices = val_chunks[split_id]
+
     train_idx_t = torch.from_numpy(chunk_indices.copy()).to(device)
-    val_idx_t = torch.from_numpy(val_indices).to(device)
+    val_idx_t = torch.from_numpy(val_chunk_indices.copy()).to(device)
 
     train_sub_imgs = train_images.index_select(0, train_idx_t).contiguous()
     train_sub_labels = train_noisy.index_select(0, train_idx_t).contiguous()

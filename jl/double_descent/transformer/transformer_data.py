@@ -575,6 +575,38 @@ def load_m2m100_iwslt14_train_chunk_test(
     return train_dataset, valid_dataset, test_dataset, vocab
 
 
+# Fixed seed for partitioning the IWSLT valid split into disjoint per-split
+# val chunks (variance mode). Different from subsample_seed so the train
+# partition and the val partition are independent.
+VARIANCE_VAL_SEED = 73132
+
+
+def _compute_disjoint_val_indices(
+    n_valid: int,
+    num_splits: int,
+    split_id: int,
+    val_split_seed: int = VARIANCE_VAL_SEED,
+) -> List[int]:
+    """Return the val indices assigned to split_id.
+
+    Shuffles range(n_valid) with val_split_seed and partitions into
+    num_splits disjoint chunks (sizes differ by at most 1; first (n_valid %
+    num_splits) chunks get one extra). Returns the chunk for this split_id.
+    """
+    if split_id < 0 or split_id >= num_splits:
+        raise ValueError(
+            f"split_id must be in [0, {num_splits - 1}], got {split_id}"
+        )
+    rng = random.Random(val_split_seed)
+    indices = list(range(n_valid))
+    rng.shuffle(indices)
+    base = n_valid // num_splits
+    rem = n_valid % num_splits
+    sizes = [base + (1 if i < rem else 0) for i in range(num_splits)]
+    start = sum(sizes[:split_id])
+    return indices[start:start + sizes[split_id]]
+
+
 def _compute_variance_chunks(
     n_total: int,
     num_splits: int,
@@ -679,8 +711,17 @@ def load_iwslt14_variance_split(
     test_src = [train_src_all[i] for i in test_indices]
     test_tgt = [train_tgt_all[i] for i in test_indices]
 
+    # Disjoint val chunk for this split_id, carved from the IWSLT valid set.
+    val_indices = _compute_disjoint_val_indices(
+        n_valid=len(valid_src),
+        num_splits=num_splits,
+        split_id=split_id,
+    )
+    valid_src_split = [valid_src[i] for i in val_indices]
+    valid_tgt_split = [valid_tgt[i] for i in val_indices]
+
     train_dataset = TranslationDataset(train_src, train_tgt, vocab)
-    valid_dataset = TranslationDataset(valid_src, valid_tgt, vocab)
+    valid_dataset = TranslationDataset(valid_src_split, valid_tgt_split, vocab)
     test_dataset = TranslationDataset(test_src, test_tgt, vocab)
 
     return train_dataset, valid_dataset, test_dataset, vocab
@@ -722,8 +763,17 @@ def load_m2m100_iwslt14_variance_split(
     test_src = [train_src_all[i] for i in test_indices]
     test_tgt = [train_tgt_all[i] for i in test_indices]
 
+    # Disjoint val chunk for this split_id, carved from the IWSLT valid set.
+    val_indices = _compute_disjoint_val_indices(
+        n_valid=len(valid_src),
+        num_splits=num_splits,
+        split_id=split_id,
+    )
+    valid_src_split = [valid_src[i] for i in val_indices]
+    valid_tgt_split = [valid_tgt[i] for i in val_indices]
+
     train_dataset = M2M100TranslationDataset(train_src, train_tgt, vocab)
-    valid_dataset = M2M100TranslationDataset(valid_src, valid_tgt, vocab)
+    valid_dataset = M2M100TranslationDataset(valid_src_split, valid_tgt_split, vocab)
     test_dataset = M2M100TranslationDataset(test_src, test_tgt, vocab)
 
     return train_dataset, valid_dataset, test_dataset, vocab
