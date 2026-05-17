@@ -148,7 +148,7 @@ def _collect_logits(
             images = images.to(device)
             logits = model(images)
             all_logits.append(logits.cpu())
-            all_labels.append(labels)
+            all_labels.append(labels.cpu())
     return torch.cat(all_logits), torch.cat(all_labels)
 
 
