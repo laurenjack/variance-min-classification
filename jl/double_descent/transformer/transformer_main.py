@@ -126,6 +126,13 @@ def parse_args():
              "train subsample. Required when --track-shadows is set.",
     )
     parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Skip (d_model, split_id) jobs whose final model file already "
+             "exists in --output-path. Useful for resuming a partially-failed "
+             "variance run without retraining the successful jobs.",
+    )
+    parser.add_argument(
         "--max-concurrent-per-gpu",
         type=int,
         default=16,
@@ -171,6 +178,20 @@ def run_double_descent(args, config, d_models, num_gpus):
         ]
     else:
         jobs = [(d_model, None) for d_model in d_models]
+
+    if args.skip_existing:
+        before = len(jobs)
+        def _model_path(d, s):
+            suffix = f"split{s}" if s is not None else f"{train_samples // 1000}k"
+            return os.path.join(args.output_path, f"model_d{d}_{suffix}.pt")
+        jobs = [(d, s) for d, s in jobs if not os.path.exists(_model_path(d, s))]
+        logger.info(
+            f"--skip-existing: {before - len(jobs)} jobs skipped, "
+            f"{len(jobs)} remaining"
+        )
+        if not jobs:
+            logger.info("Nothing to do; all jobs already have a saved model.")
+            return
 
     # Greedy bin-pack by d_model: assign jobs in descending-d_model order to
     # the GPU with the currently-lightest cumulative d_model load. Beats

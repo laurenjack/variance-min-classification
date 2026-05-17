@@ -322,10 +322,11 @@ def train_single_model(
     test_loss, test_acc = evaluate(model, test_loader, vocab, criterion)
     del eval_train_loader
 
-    process_logger.info(f"[d_model={d_model}, {output_suffix}] Computing BLEU scores...")
+    process_logger.info(f"[d_model={d_model}, {output_suffix}] Computing BLEU score (test only)...")
 
-    # Compute BLEU (only on subsets for speed)
-    train_bleu = compute_bleu(model, train_dataset, vocab, device, max_len=128)
+    # Compute BLEU on the test set only. train_bleu was previously also
+    # computed here but on 32K sentences it was the memory hog that OOMed
+    # the post-training phase when many processes shared a GPU under MPS.
     test_bleu = compute_bleu(model, test_dataset, vocab, device, max_len=128)
 
     # Log final metrics
@@ -339,7 +340,6 @@ def train_single_model(
         "valid_acc": valid_acc,
         "test_loss": test_loss,
         "test_acc": test_acc,
-        "train_bleu": train_bleu,
         "test_bleu": test_bleu,
         "lr": scheduler.get_last_lr()[0],
     }
