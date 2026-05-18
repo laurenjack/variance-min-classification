@@ -1,27 +1,17 @@
 # jl-research
 
-Reproducing double descent experiments — see the accompanying blog post [From Double Descent to Scaling Laws](https://jacklaurenson.ai/blog/from-double-descent-to-scaling-laws/) for context and results.
+A mono repo for my ML research projects, my recent focus has been studying how we went [From Double Descent to Scaling Laws](https://jacklaurenson.ai/blog/from-double-descent-to-scaling-laws/).
 
 ## What's in here
 
-- **ResNet18 on CIFAR-10** with 15% label noise — a reproduction of the Nakkiran et al. (2019) deep double descent result, plus a bias-variance decomposition of the test loss.
-- **Transformer seq2seq on IWSLT'14 de-en** — same double descent phenomenon in the original Vaswani et al. transformer architecture, trained on 36K sequence pairs.
-
-The repo also contains earlier variance-minimization experiments (`jl/feature_experiments/`, `jl/posterior_minimizer/`) and an RLHF reward-model training pipeline (`jl/reward_model/`).
+- **Novel bias-variance decomposition of the log loss**
+- **Pre-trained LLMs are low variance**
+- **Reproduction of Nakkrin et. al, 2019, with bias-variance decomposition**
+- **Older variance minimization work**
 
 ## Running it
 
-```bash
-source venv/bin/activate
-
-# ResNet18 double descent
-python -m jl.double_descent.resnet18.resnet18_main --output-path ./output --data-path ./data
-
-# Transformer double descent (requires 8 GPUs)
-python -m jl.double_descent.transformer.transformer_main --output-path ./output --data-path ./data/iwslt14.tokenized.de-en
-```
-
-See [`CLAUDE.md`](./CLAUDE.md) for full setup, plotting commands, and the reward-model pipeline.
+See [`CLAUDE.md`](./CLAUDE.md) for full setup.
 
 ## GPU infrastructure
 
