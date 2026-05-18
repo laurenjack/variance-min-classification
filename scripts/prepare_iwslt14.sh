@@ -9,7 +9,7 @@
 # 4. Outputs to data/iwslt14.tokenized.de-en/
 #
 # Usage:
-#   ./infra/prepare_iwslt14.sh
+#   ./scripts/prepare_iwslt14.sh
 #
 # Output: data/iwslt14.tokenized.de-en/
 #   train.de, train.en, valid.de, valid.en, test.de, test.en, code

@@ -7,7 +7,7 @@ data/
 __pycache__
 .env
 *.pdf
-CLAUDE.md
 temp_double_descent.pdf
 why_double_descent.md
 *.egg-info/
+.git.bak.*/

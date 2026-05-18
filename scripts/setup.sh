@@ -10,7 +10,7 @@
 #
 # Usage:
 #   cd /root/variance-min-classification
-#   ./infra/setup.sh
+#   ./scripts/setup.sh
 
 set -ex
 
@@ -30,7 +30,7 @@ source venv/bin/activate
 
 # Install dependencies
 # [gpu] includes transformers/sentencepiece (needed by M2M100Vocab.decode in BLEU).
-# Use ./infra/setup.sh --llm to add the FlashAttention 3 stack for reward model training.
+# Use ./scripts/setup.sh --llm to add the FlashAttention 3 stack for reward model training.
 pip install --upgrade pip
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 if [[ "${1:-}" == "--llm" ]]; then

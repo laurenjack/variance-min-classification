@@ -30,7 +30,7 @@ the IWSLT-test distribution shift, see [Variance Mode](#variance-mode) below).
 
 ## Phase 1: Data Preprocessing (Automatic)
 
-### 1.1 Preprocessing Script (`infra/prepare_iwslt14.sh`)
+### 1.1 Preprocessing Script (`scripts/prepare_iwslt14.sh`)
 
 A shell script that:
 1. Downloads IWSLT'14 de-en from HuggingFace (`bbaaaa/iwslt14-de-en`, parquet branch)
@@ -43,7 +43,7 @@ A shell script that:
 
 ### 1.2 Automatic Preprocessing in Training
 
-Run `./infra/prepare_iwslt14.sh` on the remote instance before training if data is not present.
+Run `./scripts/prepare_iwslt14.sh` on the remote instance before training if data is not present.
 
 The training script (`transformer_main.py`) will fail with a clear error message if data files are missing (as a safety check).
 
@@ -608,7 +608,7 @@ python -m jl.double_descent.transformer.plot_single_d_model ./data/transformer/0
 ### 6.1 Local Preprocessing Test
 ```bash
 # Run preprocessing script (required before any training)
-./infra/prepare_iwslt14.sh
+./scripts/prepare_iwslt14.sh
 
 # Verify output
 ls -la data/iwslt14.tokenized.de-en/

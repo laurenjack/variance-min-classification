@@ -349,7 +349,7 @@ def main():
         prep_hint = "  python -m jl.double_descent.transformer.prepare_m2m100_data\n"
     else:
         required_files = ["train.de", "train.en", "valid.de", "valid.en", "test.de", "test.en", "code"]
-        prep_hint = "  ./infra/prepare_iwslt14.sh\n"
+        prep_hint = "  ./scripts/prepare_iwslt14.sh\n"
     missing_files = [f for f in required_files if not os.path.isfile(os.path.join(args.data_path, f))]
     if missing_files:
         raise FileNotFoundError(
