@@ -1,12 +1,11 @@
 # jl-research
 
-A mono repo for my ML research projects, my recent focus has been studying how we went [from double descent to the scaling laws](https://jacklaurenson.ai/blog/from-double-descent-to-scaling-laws/).
+A repo for my personal ML research projects, my recent focus has been studying how we went [from double descent to the scaling laws](https://jacklaurenson.ai/blog/from-double-descent-to-scaling-laws/).
 
 ## What's in here
 
 - **Novel bias-variance decomposition of the log loss**
 - **Pre-trained LLMs are low variance**
-- **Reproduction of Nakkrin et. al, 2019, with bias-variance decomposition**
 - **Older variance minimization work**
 
 ## Running it
