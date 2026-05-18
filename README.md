@@ -4,9 +4,9 @@ A repo for my personal ML research projects, my recent focus has been studying h
 
 ## What's in here
 
-- **Novel bias-variance decomposition of the log loss**
-- **Pre-trained LLMs are low variance**
-- **Older variance minimization work**
+- **Novel bias-variance decomposition of the log loss** — trains many ResNet18 / Transformer models on disjoint training splits and decomposes the test cross-entropy as `CE(p, q̄) = H(p) + KL(p ‖ q̄) + Jensen Gap` — entropy, bias, and variance terms, all non-negative. For the IWSLT'14 transformer, an M2M100-12B oracle supplies the true distribution `p` so the full distributional decomposition is recovered rather than just the label-only Jensen Gap (`jl/double_descent/{resnet18,transformer}/variance_evaluation.py`).
+- **Pre-trained LLMs are low variance** — Bradley-Terry reward-model training on top of Llama-family pre-trained LLMs (Anthropic HH-RLHF, HelpSteer2-Preference). Training past the interpolation threshold continues to improve the held-out win rate — the regime the decomposition above predicts when the underlying pre-trained model is already low variance (`jl/reward_model/`).
+- **Older variance minimization work** — earlier synthetic-problem experiments (SingleFeatures, Kaleidoscope) and posterior / weight-tracking analyses that originally motivated this line of work, studying how architecture and regularization shift model variance directly (`jl/feature_experiments/`, `jl/posterior_minimizer/`).
 
 ## Running it
 
