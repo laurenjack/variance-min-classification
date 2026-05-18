@@ -350,7 +350,7 @@ output/transformer/03-01-1010/
 **Default double descent (d_model 8-192):**
 ```bash
 # SSH into the remote instance, then:
-cd /root/variance-min-classification && source venv/bin/activate && source .env
+cd /root/jl-research && source venv/bin/activate && source .env
 python -m jl.double_descent.transformer.transformer_main \
     --output-path ./output/transformer/$(date +%m-%d-%H%M) \
     --data-path ./data/iwslt14.tokenized.de-en

@@ -25,23 +25,23 @@ Sets up a remote RunPod GPU instance.
 2. **Clone or update repo on remote**:
    ```bash
    ssh -i $SSH_KEY_PATH -o StrictHostKeyChecking=no -p <port> root@<instance_ip> \
-     'if [[ -d /root/variance-min-classification ]]; then \
-        cd /root/variance-min-classification && git pull; \
+     'if [[ -d /root/jl-research ]]; then \
+        cd /root/jl-research && git pull; \
       else \
-        cd /root && git clone https://github.com/laurenjack/variance-min-classification.git; \
+        cd /root && git clone https://github.com/laurenjack/jl-research.git; \
       fi'
    ```
 
 3. **Run setup script** (default = GPU only; add `--llm` only for reward model training):
    ```bash
    ssh -i $SSH_KEY_PATH -o StrictHostKeyChecking=no -p <port> root@<instance_ip> \
-     'cd /root/variance-min-classification && ./scripts/setup.sh'
+     'cd /root/jl-research && ./scripts/setup.sh'
    ```
 
    For reward model training:
    ```bash
    ssh -i $SSH_KEY_PATH -o StrictHostKeyChecking=no -p <port> root@<instance_ip> \
-     'cd /root/variance-min-classification && HF_TOKEN='"'"'$HF_TOKEN'"'"' ./scripts/setup.sh --llm'
+     'cd /root/jl-research && HF_TOKEN='"'"'$HF_TOKEN'"'"' ./scripts/setup.sh --llm'
    ```
 
    This creates the venv, installs torch + GPU deps, writes API tokens to `.env`, creates `data/` and `output/`.
@@ -50,14 +50,14 @@ Sets up a remote RunPod GPU instance.
    - **IWSLT14 (transformer DD)**:
      ```bash
      ssh -i $SSH_KEY_PATH -o StrictHostKeyChecking=no -p <port> root@<instance_ip> \
-       'cd /root/variance-min-classification && source venv/bin/activate && ./scripts/prepare_iwslt14.sh'
+       'cd /root/jl-research && source venv/bin/activate && ./scripts/prepare_iwslt14.sh'
      ```
    - **CIFAR-10/100 (ResNet18 DD)**: no prep — auto-downloads.
 
 5. **Confirm**:
    ```bash
    ssh -i $SSH_KEY_PATH -o StrictHostKeyChecking=no -p <port> root@<instance_ip> \
-     'cd /root/variance-min-classification && source venv/bin/activate && \
+     'cd /root/jl-research && source venv/bin/activate && \
       python -c "import torch; print(f\"GPUs: {torch.cuda.device_count()}\")"'
    ```
 
@@ -65,5 +65,5 @@ Sets up a remote RunPod GPU instance.
 
 ```bash
 ssh -i $SSH_KEY_PATH -p <port> root@<instance_ip>
-cd /root/variance-min-classification && source venv/bin/activate && source .env
+cd /root/jl-research && source venv/bin/activate && source .env
 ```

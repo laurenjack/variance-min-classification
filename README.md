@@ -1,4 +1,4 @@
-# variance-min-classification
+# jl-research
 
 Reproducing double descent experiments — see the accompanying blog post [From Double Descent to Scaling Laws](https://jacklaurenson.ai/blog/from-double-descent-to-scaling-laws/) for context and results.
 

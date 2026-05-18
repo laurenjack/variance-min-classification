@@ -1,5 +1,5 @@
 [project]
-name = "variance-min-classification"
+name = "jl-research"
 version = "0.1.0"
 description = "Variance-minimizing classification models with various architectures and regularization strategies"
 requires-python = ">=3.11"

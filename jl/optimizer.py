@@ -1,5 +1,5 @@
 """
-Optimizer module for variance-min-classification.
+Optimizer module for jl-research.
 
 Provides:
 1. SignSGD - Signed gradient descent optimizer

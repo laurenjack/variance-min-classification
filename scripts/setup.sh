@@ -9,7 +9,7 @@
 #     HF_TOKEN, KAGGLE_USERNAME, KAGGLE_KEY
 #
 # Usage:
-#   cd /root/variance-min-classification
+#   cd /root/jl-research
 #   ./scripts/setup.sh
 
 set -ex

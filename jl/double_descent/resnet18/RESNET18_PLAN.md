@@ -170,7 +170,7 @@ Manually provision an 8-GPU instance (8x V100, 8x A100, or 8x H100), then:
 
 ```bash
 # SSH into the remote instance, then:
-cd /root/variance-min-classification && source venv/bin/activate && source .env
+cd /root/jl-research && source venv/bin/activate && source .env
 python -m jl.double_descent.resnet18.resnet18_main \
     --output-path ./output/resnet18/$(date +%m-%d-%H%M) --data-path ./data
 ```

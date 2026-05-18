@@ -104,8 +104,8 @@ ssh -i $SSH_KEY_PATH -p <port> root@<ip>
 
 # On the remote box:
 cd /root
-git clone https://github.com/laurenjack/variance-min-classification.git
-cd variance-min-classification
+git clone https://github.com/laurenjack/jl-research.git
+cd jl-research
 ./scripts/setup.sh           # creates venv, installs torch + GPU deps
 ./scripts/setup.sh --llm     # also installs transformers, flash attention (reward model only)
 ./scripts/prepare_iwslt14.sh  # only needed for transformer experiments
@@ -115,7 +115,7 @@ cd variance-min-classification
 ```bash
 # SSH in
 ssh -i $SSH_KEY_PATH -p <port> root@<ip>
-cd /root/variance-min-classification && source venv/bin/activate && source .env
+cd /root/jl-research && source venv/bin/activate && source .env
 
 # Run in background
 nohup python -m jl.double_descent.resnet18.resnet18_main \
@@ -125,12 +125,12 @@ nohup python -m jl.double_descent.resnet18.resnet18_main \
 
 **Monitoring:**
 ```bash
-ssh -i $SSH_KEY_PATH -p <port> root@<ip> 'tail -f /root/variance-min-classification/training.log'
+ssh -i $SSH_KEY_PATH -p <port> root@<ip> 'tail -f /root/jl-research/training.log'
 ```
 
 **Downloading results** (or use `/download`):
 ```bash
-scp -i $SSH_KEY_PATH -P <port> -r root@<ip>:/root/variance-min-classification/output/<experiment>/<timestamp>/ ./data/<experiment>/<timestamp>/
+scp -i $SSH_KEY_PATH -P <port> -r root@<ip>:/root/jl-research/output/<experiment>/<timestamp>/ ./data/<experiment>/<timestamp>/
 ```
 
 **Helper scripts on the remote box:**
